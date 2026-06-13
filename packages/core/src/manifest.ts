@@ -54,6 +54,15 @@ export interface CheckpointAdapter {
   list(jobId?: string): AsyncIterable<TaskCheckpoint>;
 }
 
+export interface TaskTransitionInput {
+  taskId: string;
+  nextState: TaskState;
+  idempotencyKey: string;
+  nowMs: number;
+  staleTimeoutMs?: number;
+  output?: OutputManifestEntry;
+}
+
 export interface BookmarkPosition {
   fileIndex: number;
   rowGroup: number;
@@ -188,6 +197,39 @@ export function memoryCheckpointAdapter(): MemoryCheckpointAdapter {
   return new MemoryCheckpointAdapter();
 }
 
+export function transitionTaskCheckpoint(
+  existing: TaskCheckpoint | undefined,
+  input: TaskTransitionInput,
+): TaskCheckpoint {
+  if (!existing) return createCheckpoint(input);
+  if (existing.taskId !== input.taskId) {
+    throw new LaQLError("LAQL_VALIDATION_ERROR", "Task checkpoint id does not match transition", {
+      existingTaskId: existing.taskId,
+      taskId: input.taskId,
+    });
+  }
+  if (existing.state === input.nextState && existing.idempotencyKey === input.idempotencyKey) {
+    return cloneCheckpoint(existing);
+  }
+  const stale =
+    input.staleTimeoutMs !== undefined && input.nowMs - existing.updatedAtMs > input.staleTimeoutMs;
+  if (existing.idempotencyKey !== input.idempotencyKey && !stale) {
+    throw new LaQLError("LAQL_VALIDATION_ERROR", "Task transition idempotency key mismatch", {
+      taskId: input.taskId,
+      existingIdempotencyKey: existing.idempotencyKey,
+      idempotencyKey: input.idempotencyKey,
+    });
+  }
+  if (!transitionAllowed(existing.state, input.nextState, stale)) {
+    throw new LaQLError("LAQL_VALIDATION_ERROR", "Task state transition is not allowed", {
+      taskId: input.taskId,
+      from: existing.state,
+      to: input.nextState,
+    });
+  }
+  return createCheckpoint(input);
+}
+
 export function stableStringify(value: unknown): string {
   return JSON.stringify(toStableJson(value));
 }
@@ -248,6 +290,29 @@ function jobIdFromTaskId(taskId: string): string {
   const marker = "-task-";
   const index = taskId.indexOf(marker);
   return index === -1 ? "" : taskId.slice(0, index);
+}
+
+function createCheckpoint(input: TaskTransitionInput): TaskCheckpoint {
+  const checkpoint: TaskCheckpoint = {
+    taskId: input.taskId,
+    state: input.nextState,
+    idempotencyKey: input.idempotencyKey,
+    updatedAtMs: input.nowMs,
+  };
+  if (input.output !== undefined) checkpoint.output = normalizeOutputEntry(input.output);
+  return checkpoint;
+}
+
+function transitionAllowed(from: TaskState, to: TaskState, stale: boolean): boolean {
+  if (stale && to === "running") return true;
+  const order: TaskState[] = [
+    "planned",
+    "running",
+    "output-written",
+    "manifest-recorded",
+    "complete",
+  ];
+  return order.indexOf(to) === order.indexOf(from) + 1;
 }
 
 function toStableJson(value: unknown): unknown {

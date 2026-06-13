@@ -9,6 +9,7 @@ import {
   memoryCheckpointAdapter,
   signPaginationToken,
   stableStringify,
+  transitionTaskCheckpoint,
   verifyPaginationToken,
 } from "./manifest.js";
 import { memoryStore } from "./memory-store.js";
@@ -225,6 +226,86 @@ describe("bookmarks and checkpoints", () => {
       output: { partitionValues: { country: "US" } },
     });
     expect(listed).toEqual(["job_3-task-000001-a", "job_3-task-000002-a"]);
+  });
+
+  it("advances task checkpoints idempotently and permits stale requeue", () => {
+    const planned = transitionTaskCheckpoint(undefined, {
+      taskId: "job_4-task-000001-a",
+      nextState: "planned",
+      idempotencyKey: "idem-1",
+      nowMs: 10,
+    });
+    const running = transitionTaskCheckpoint(planned, {
+      taskId: "job_4-task-000001-a",
+      nextState: "running",
+      idempotencyKey: "idem-1",
+      nowMs: 20,
+    });
+    const replay = transitionTaskCheckpoint(running, {
+      taskId: "job_4-task-000001-a",
+      nextState: "running",
+      idempotencyKey: "idem-1",
+      nowMs: 30,
+    });
+    const requeued = transitionTaskCheckpoint(running, {
+      taskId: "job_4-task-000001-a",
+      nextState: "running",
+      idempotencyKey: "idem-2",
+      nowMs: 100,
+      staleTimeoutMs: 10,
+    });
+    const outputWritten = transitionTaskCheckpoint(requeued, {
+      taskId: "job_4-task-000001-a",
+      nextState: "output-written",
+      idempotencyKey: "idem-2",
+      nowMs: 110,
+      output: {
+        taskId: "job_4-task-000001-a",
+        outputPath: "out/file.parquet",
+        partitionValues: {},
+        rowCount: 1,
+        byteSize: 2,
+      },
+    });
+
+    expect(replay).toEqual(running);
+    expect(requeued).toMatchObject({ state: "running", idempotencyKey: "idem-2" });
+    expect(outputWritten.output).toMatchObject({ outputPath: "out/file.parquet" });
+  });
+
+  it("rejects unsafe task checkpoint transitions", () => {
+    const running = {
+      taskId: "job_5-task-000001-a",
+      state: "running" as const,
+      idempotencyKey: "idem-1",
+      updatedAtMs: 10,
+    };
+
+    expect(() =>
+      transitionTaskCheckpoint(running, {
+        taskId: "job_5-task-000001-a",
+        nextState: "complete",
+        idempotencyKey: "idem-1",
+        nowMs: 20,
+      }),
+    ).toThrow(/not allowed/u);
+    expect(() =>
+      transitionTaskCheckpoint(running, {
+        taskId: "job_5-task-000001-a",
+        nextState: "output-written",
+        idempotencyKey: "idem-2",
+        nowMs: 20,
+        staleTimeoutMs: 100,
+      }),
+    ).toThrow(/idempotency/u);
+    expect(() =>
+      transitionTaskCheckpoint(running, {
+        taskId: "other-task-000001-a",
+        nextState: "output-written",
+        idempotencyKey: "idem-1",
+        nowMs: 20,
+      }),
+    ).toThrow(/does not match/u);
   });
 });
 
