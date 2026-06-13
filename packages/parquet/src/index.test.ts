@@ -29,6 +29,7 @@ import {
   readParquetObjects,
   rowGroupMayMatch,
   writeParquet,
+  writePartitionedParquet,
 } from "./index.js";
 
 const store = memoryStore();
@@ -158,6 +159,166 @@ describe("writeParquet", () => {
         ],
       }),
     ).rejects.toMatchObject({ code: "LAQL_PARQUET_WRITE_ERROR" });
+  });
+});
+
+describe("writePartitionedParquet", () => {
+  it("writes deterministic hive-partitioned Parquet chunks", async () => {
+    const outStore = memoryStore();
+    const result = await writePartitionedParquet(outStore, "out/events", {
+      rows: [
+        { date: "2026-01-02", country: "CA", id: 3, amount: 30 },
+        { date: "2026-01-01", country: "US", id: 1, amount: 10 },
+        { date: "2026-01-01", country: "US", id: 2, amount: 20 },
+      ],
+      partitionBy: ["date", "country"],
+      maxRowsPerFile: 1,
+      jobId: "job",
+    });
+
+    expect(result.files.map((file) => file.path)).toEqual([
+      "out/events/date=2026-01-01/country=US/part-job-00000.parquet",
+      "out/events/date=2026-01-01/country=US/part-job-00001.parquet",
+      "out/events/date=2026-01-02/country=CA/part-job-00002.parquet",
+    ]);
+    expect(result.files.map((file) => file.rowCount)).toEqual([1, 1, 1]);
+    expect(result.files[0]).toMatchObject({
+      byteSize: expect.any(Number),
+      partitionValues: { date: "2026-01-01", country: "US" },
+    });
+    expect(result.files[0]?.byteSize).toBeGreaterThan(0);
+
+    await expect(
+      readParquetObjects(outStore, "out/events/date=2026-01-01/country=US/part-job-00000.parquet"),
+    ).resolves.toEqual([{ amount: 10, id: 1 }]);
+
+    const lake = createParquetLake({ store: outStore });
+    await expect(
+      lake.hive("out/events/**/*.parquet").select(["id", "date", "country", "amount"]).toArray(),
+    ).resolves.toEqual([
+      { id: 1, date: "2026-01-01", country: "US", amount: 10 },
+      { id: 2, date: "2026-01-01", country: "US", amount: 20 },
+      { id: 3, date: "2026-01-02", country: "CA", amount: 30 },
+    ]);
+  });
+
+  it("writes unpartitioned chunks under the prefix", async () => {
+    const outStore = memoryStore();
+    const result = await writePartitionedParquet(outStore, "out/plain/", {
+      rows: [
+        { id: 1, active: true },
+        { id: 2, active: false },
+        { id: 3, active: true },
+      ],
+      maxRowsPerFile: 2,
+    });
+
+    expect(result.files.map((file) => file.path)).toEqual([
+      "out/plain/part-data-00000.parquet",
+      "out/plain/part-data-00001.parquet",
+    ]);
+    await expect(readParquetObjects(outStore, result.files[0]?.path ?? "")).resolves.toEqual([
+      { active: true, id: 1 },
+      { active: false, id: 2 },
+    ]);
+    await expect(readParquetObjects(outStore, result.files[1]?.path ?? "")).resolves.toEqual([
+      { active: true, id: 3 },
+    ]);
+  });
+
+  it("infers row column types and honors explicit type overrides", async () => {
+    const outStore = memoryStore();
+    const result = await writePartitionedParquet(outStore, "out/types", {
+      rows: [
+        {
+          id: 1,
+          active: true,
+          big: 9007199254740993n,
+          name: "a",
+          score: 1.5,
+          note: null,
+          forced: 1,
+        },
+        {
+          id: 2,
+          active: false,
+          big: 9007199254740994n,
+          name: "b",
+          score: 2.25,
+          note: "present",
+          forced: 2,
+        },
+      ],
+      columnTypes: { forced: "DOUBLE" },
+    });
+
+    await expect(readParquetObjects(outStore, result.files[0]?.path ?? "")).resolves.toEqual([
+      {
+        id: 1,
+        active: true,
+        big: 9007199254740993n,
+        name: "a",
+        score: 1.5,
+        note: null,
+        forced: 1,
+      },
+      {
+        id: 2,
+        active: false,
+        big: 9007199254740994n,
+        name: "b",
+        score: 2.25,
+        note: "present",
+        forced: 2,
+      },
+    ]);
+  });
+
+  it("validates row and option errors before writing", async () => {
+    const outStore = memoryStore();
+
+    await expect(
+      writePartitionedParquet(outStore, "", { rows: [{ id: 1 }] }),
+    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+    await expect(
+      writePartitionedParquet(outStore, "out/empty", { rows: [] }),
+    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    await expect(
+      writePartitionedParquet(outStore, "out/duplicate-partitions", {
+        rows: [{ date: "2026-01-01", id: 1 }],
+        partitionBy: ["date", "date"],
+      }),
+    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    await expect(
+      writePartitionedParquet(outStore, "out/bad-limit", {
+        rows: [{ id: 1 }],
+        maxRowsPerFile: 0,
+      }),
+    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+    await expect(
+      writePartitionedParquet(outStore, "out/bad-partition", {
+        rows: [{ date: null, id: 1 }],
+        partitionBy: ["date"],
+      }),
+    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    await expect(
+      writePartitionedParquet(outStore, "out/mixed", { rows: [{ value: 1 }, { value: "x" }] }),
+    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    await expect(
+      writePartitionedParquet(outStore, "out/non-finite", { rows: [{ value: Number.NaN }] }),
+    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    await expect(
+      writePartitionedParquet(outStore, "out/object", { rows: [{ value: { nested: true } }] }),
+    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    await expect(
+      writePartitionedParquet(outStore, "out/all-null", { rows: [{ value: null }] }),
+    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    await expect(
+      writePartitionedParquet(outStore, "out/partition-only", {
+        rows: [{ date: "2026-01-01" }],
+        partitionBy: ["date"],
+      }),
+    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
   });
 });
 

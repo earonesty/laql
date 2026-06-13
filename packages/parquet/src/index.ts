@@ -10,7 +10,7 @@ import {
 } from "@laql/core";
 import type { RowGroup } from "hyparquet";
 import { parquetMetadataAsync, parquetReadObjects } from "hyparquet";
-import type { ColumnSource, ParquetWriteOptions } from "hyparquet-writer";
+import type { BasicType, ColumnSource, ParquetWriteOptions } from "hyparquet-writer";
 import { parquetWriteBuffer } from "hyparquet-writer";
 
 export interface ReadParquetOptions {
@@ -23,6 +23,27 @@ export interface ReadParquetOptions {
 export interface WriteParquetOptions extends Omit<ParquetWriteOptions, "writer" | "columnData"> {
   columnData: ColumnSource[];
   contentType?: string;
+}
+
+export interface WriteParquetRowsOptions
+  extends Omit<WriteParquetOptions, "columnData" | "schema"> {
+  rows: Row[];
+  partitionBy?: string[];
+  maxRowsPerFile?: number;
+  jobId?: string;
+  columnTypes?: Record<string, BasicType>;
+}
+
+export interface WritePartitionedParquetFile {
+  path: string;
+  byteSize: number;
+  etag?: string;
+  rowCount: number;
+  partitionValues: Record<string, string>;
+}
+
+export interface WritePartitionedParquetResult {
+  files: WritePartitionedParquetFile[];
 }
 
 export interface ParquetLakeConfig extends Omit<LakeConfig, "scanner"> {
@@ -107,6 +128,50 @@ export async function writeParquet(
   }
 }
 
+export async function writePartitionedParquet(
+  store: ObjectStore,
+  prefix: string,
+  options: WriteParquetRowsOptions,
+): Promise<WritePartitionedParquetResult> {
+  const maxRowsPerFile = options.maxRowsPerFile ?? options.rows.length;
+  validatePartitionedWriteOptions(prefix, options, maxRowsPerFile);
+
+  const normalizedPrefix = prefix.replace(/\/+$/u, "");
+  const partitionBy = options.partitionBy ?? [];
+  const partitions = partitionRows(options.rows, partitionBy);
+  const files: WritePartitionedParquetFile[] = [];
+  let ordinal = 0;
+
+  for (const partition of partitions) {
+    for (let start = 0; start < partition.rows.length; start += maxRowsPerFile) {
+      const chunk = partition.rows.slice(start, start + maxRowsPerFile);
+      const path = partitionOutputPath(
+        normalizedPrefix,
+        partition.values,
+        partitionBy,
+        options.jobId,
+        ordinal,
+      );
+      const columnData = rowsToColumnData(chunk, partitionBy, options.columnTypes ?? {});
+      const written = await writeParquet(store, path, {
+        ...options,
+        columnData,
+      });
+      const result: WritePartitionedParquetFile = {
+        path: written.path,
+        byteSize: written.byteSize,
+        rowCount: chunk.length,
+        partitionValues: partition.values,
+      };
+      if (written.etag !== undefined) result.etag = written.etag;
+      files.push(result);
+      ordinal += 1;
+    }
+  }
+
+  return { files };
+}
+
 export class ParquetScanAdapter implements ScanAdapter {
   private readonly store: ObjectStore;
   private readonly defaultBatchSize: number;
@@ -160,6 +225,165 @@ export class ParquetScanAdapter implements ScanAdapter {
       rowGroupStart = rowGroupEnd;
     }
   }
+}
+
+interface RowPartition {
+  key: string;
+  values: Record<string, string>;
+  rows: Row[];
+}
+
+type ColumnValue = string | number | boolean | bigint | null;
+
+function validatePartitionedWriteOptions(
+  prefix: string,
+  options: WriteParquetRowsOptions,
+  maxRowsPerFile: number,
+): void {
+  if (!prefix || prefix.replace(/\/+$/u, "") === "") {
+    throw new LaQLError("LAQL_TYPE_ERROR", "Parquet output prefix must be non-empty");
+  }
+  if (options.rows.length === 0) {
+    throw new LaQLError("LAQL_VALIDATION_ERROR", "Cannot write an empty row set");
+  }
+  if (!Number.isInteger(maxRowsPerFile) || maxRowsPerFile < 1) {
+    throw new LaQLError("LAQL_TYPE_ERROR", "maxRowsPerFile must be a positive integer", {
+      maxRowsPerFile,
+    });
+  }
+  const partitionBy = options.partitionBy ?? [];
+  const uniquePartitions = new Set(partitionBy);
+  if (uniquePartitions.size !== partitionBy.length) {
+    throw new LaQLError("LAQL_VALIDATION_ERROR", "partitionBy columns must be unique", {
+      partitionBy,
+    });
+  }
+}
+
+function partitionRows(rows: Row[], partitionBy: string[]): RowPartition[] {
+  const byKey = new Map<string, RowPartition>();
+  for (const row of rows) {
+    const values: Record<string, string> = {};
+    for (const column of partitionBy) {
+      const raw = row[column];
+      if (!isPartitionValue(raw)) {
+        throw new LaQLError("LAQL_VALIDATION_ERROR", "Partition values must be scalar", {
+          column,
+        });
+      }
+      values[column] = String(raw);
+    }
+    const key = partitionBy.map((column) => `${column}=${values[column]}`).join("/");
+    const existing = byKey.get(key);
+    if (existing) {
+      existing.rows.push(row);
+    } else {
+      byKey.set(key, { key, values, rows: [row] });
+    }
+  }
+  return [...byKey.values()].sort((left, right) => left.key.localeCompare(right.key));
+}
+
+function partitionOutputPath(
+  prefix: string,
+  partitionValues: Record<string, string>,
+  partitionBy: string[],
+  jobId: string | undefined,
+  ordinal: number,
+): string {
+  const segments = [prefix];
+  for (const column of partitionBy) {
+    segments.push(`${column}=${encodeURIComponent(partitionValues[column] ?? "")}`);
+  }
+  const safeJobId = jobId ?? "data";
+  segments.push(`part-${safeJobId}-${String(ordinal).padStart(5, "0")}.parquet`);
+  return segments.join("/");
+}
+
+function rowsToColumnData(
+  rows: Row[],
+  partitionBy: string[],
+  columnTypes: Record<string, BasicType>,
+): ColumnSource[] {
+  const partitionColumns = new Set(partitionBy);
+  const columns = [
+    ...new Set(rows.flatMap((row) => Object.keys(row).filter((key) => !partitionColumns.has(key)))),
+  ].sort();
+  if (columns.length === 0) {
+    throw new LaQLError("LAQL_VALIDATION_ERROR", "At least one non-partition column is required");
+  }
+
+  return columns.map((name) => {
+    const data = rows.map((row) => normalizeColumnValue(row[name], name));
+    return {
+      name,
+      data,
+      type: columnTypes[name] ?? inferColumnType(name, data),
+      nullable: data.some((value) => value === null),
+    };
+  });
+}
+
+function normalizeColumnValue(value: unknown, column: string): ColumnValue {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string" || typeof value === "boolean" || typeof value === "bigint") {
+    return value;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new LaQLError("LAQL_VALIDATION_ERROR", "Numeric column values must be finite", {
+        column,
+      });
+    }
+    return value;
+  }
+  throw new LaQLError("LAQL_VALIDATION_ERROR", "Column values must be scalar", { column });
+}
+
+function inferColumnType(column: string, data: ColumnValue[]): BasicType {
+  const values = data.filter((value) => value !== null);
+  if (values.length === 0) {
+    throw new LaQLError("LAQL_VALIDATION_ERROR", "Cannot infer type for all-null column", {
+      column,
+    });
+  }
+  const kinds = new Set(values.map((value) => typeof value));
+  if (kinds.size !== 1) {
+    throw new LaQLError("LAQL_VALIDATION_ERROR", "Column values must have one scalar type", {
+      column,
+    });
+  }
+  const kind = kinds.values().next().value;
+  switch (kind) {
+    case "boolean":
+      return "BOOLEAN";
+    case "bigint":
+      return "INT64";
+    case "string":
+      return "STRING";
+    case "number":
+      return data.every((value) => value === null || isInt32Value(value)) ? "INT32" : "DOUBLE";
+    default:
+      throw new LaQLError("LAQL_VALIDATION_ERROR", "Unsupported column value type", { column });
+  }
+}
+
+function isInt32Value(value: ColumnValue): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= -2147483648 &&
+    value <= 2147483647
+  );
+}
+
+function isPartitionValue(value: unknown): value is string | number | boolean | bigint {
+  return (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    typeof value === "bigint"
+  );
 }
 
 type StatsValue = string | number | bigint | boolean;
