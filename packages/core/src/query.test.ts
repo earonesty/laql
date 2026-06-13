@@ -615,6 +615,22 @@ describe("Lake query runtime", () => {
       code: "LAQL_BUDGET_EXCEEDED",
       details: { metric: "buffered rows", limit: 2, actual: 3 },
     });
+
+    await expect(
+      (
+        await makeLake({
+          rowsByPath: { table: [{ id: 2 }, { id: 1 }] },
+          budget: { maxMemoryBytes: 1 },
+        })
+      ).lake
+        .path("table")
+        .orderBy([{ column: "id" }])
+        .limit(1)
+        .toArray(),
+    ).rejects.toMatchObject({
+      code: "LAQL_BUDGET_EXCEEDED",
+      details: { metric: "operator memory bytes", limit: 1 },
+    });
   });
 
   it("parses JSON orderBy and rejects invalid order terms", async () => {
@@ -757,14 +773,15 @@ describe("Lake query runtime", () => {
   });
 
   it("aggregates grouped rows with bounded group counts", async () => {
+    const rowsByPath = {
+      table: [
+        { region: "west", amount: 10, id: 1, label: "a" },
+        { region: "west", amount: 20, id: 2, label: "b" },
+        { region: "east", amount: 7, id: 2, label: "c" },
+      ],
+    };
     const { lake } = await makeLake({
-      rowsByPath: {
-        table: [
-          { region: "west", amount: 10, id: 1, label: "a" },
-          { region: "west", amount: 20, id: 2, label: "b" },
-          { region: "east", amount: 7, id: 2, label: "c" },
-        ],
-      },
+      rowsByPath,
     });
 
     await expect(
@@ -818,6 +835,16 @@ describe("Lake query runtime", () => {
         .groupBy(["region"])
         .aggregate({ rows: { op: "count" } }, { maxGroups: 1 }),
     ).rejects.toMatchObject({ code: "LAQL_GROUP_LIMIT_EXCEEDED" });
+
+    await expect(
+      (await makeLake({ rowsByPath, budget: { maxMemoryBytes: 1 } })).lake
+        .path("table")
+        .groupBy(["region"])
+        .aggregate({ rows: { op: "count" } }),
+    ).rejects.toMatchObject({
+      code: "LAQL_BUDGET_EXCEEDED",
+      details: { metric: "operator memory bytes", limit: 1 },
+    });
   });
 
   it("serializes and resumes aggregate operator state", async () => {

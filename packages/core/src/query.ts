@@ -12,6 +12,8 @@ import {
 import type { ObjectInfo, ObjectStore } from "./store.js";
 import type { Bookmark, QueryStats, Row, SliceResult } from "./types.js";
 
+const textEncoder = new TextEncoder();
+
 export interface QueryBudget {
   maxFiles?: number;
   maxBytes?: number;
@@ -21,6 +23,8 @@ export interface QueryBudget {
   maxElapsedMs?: number;
   /** Maximum rows an operator may buffer in memory for orderBy/top-k work. */
   maxBufferedRows?: number;
+  /** Maximum deterministic serialized bytes an in-memory operator may retain. */
+  maxMemoryBytes?: number;
 }
 
 export type QueryPolicyContext = Record<string, unknown>;
@@ -475,6 +479,7 @@ export class QueryResult {
       options.operatorState,
     );
     enforceBufferedRowsBudget(config.budget, matched.length);
+    enforceOperatorMemoryBudget(config.budget, estimateOperatorMemoryBytes(matched));
     const startedAt = config.now();
     await this.collectOrderedMatches(matched, topK, startedAt);
     matched.sort((left, right) => compareRows(left, right, orderBy));
@@ -597,6 +602,10 @@ export class QueryResult {
         groups.set(key, group);
       }
       group.add(row);
+      enforceOperatorMemoryBudget(
+        this.config.budget,
+        estimateAggregateOperatorMemoryBytes(groupColumns, spec, groups),
+      );
     }
     const state = aggregateOperatorState(groupColumns, spec, groups);
     return {
@@ -670,6 +679,7 @@ export class QueryResult {
           validateSortRow(row, orderBy);
           addOrderedMatch(matched, row, orderBy, topK);
           enforceBufferedRowsBudget(config.budget, matched.length);
+          enforceOperatorMemoryBudget(config.budget, estimateOperatorMemoryBytes(matched));
         }
       }
     }
@@ -1886,6 +1896,24 @@ function enforceBufferedRowsBudget(budget: QueryBudget, bufferedRows: number): v
   if (budget.maxBufferedRows !== undefined && bufferedRows > budget.maxBufferedRows) {
     throwBudget("buffered rows", budget.maxBufferedRows, bufferedRows);
   }
+}
+
+function enforceOperatorMemoryBudget(budget: QueryBudget, memoryBytes: number): void {
+  if (budget.maxMemoryBytes !== undefined && memoryBytes > budget.maxMemoryBytes) {
+    throwBudget("operator memory bytes", budget.maxMemoryBytes, memoryBytes);
+  }
+}
+
+function estimateAggregateOperatorMemoryBytes(
+  groupColumns: string[],
+  spec: AggregateSpec,
+  groups: Map<string, AggregateGroup>,
+): number {
+  return estimateOperatorMemoryBytes(aggregateOperatorState(groupColumns, spec, groups));
+}
+
+function estimateOperatorMemoryBytes(value: unknown): number {
+  return textEncoder.encode(stableStringify(jsonSafeValue(value))).byteLength;
 }
 
 function throwBudget(metric: string, limit: number, actual: number): never {
