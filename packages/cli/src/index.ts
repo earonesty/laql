@@ -1,6 +1,12 @@
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { LaQLError, type MemoryObjectStore, memoryStore, type QueryBuilder } from "@laql/core";
-import { createParquetLake, readParquetMetadata } from "@laql/parquet";
+import {
+  createParquetLake,
+  readParquetMetadata,
+  type WriteParquetRowsOptions,
+  writePartitionedParquet,
+} from "@laql/parquet";
 import { parseSql } from "@laql/sql";
 
 export const COMMANDS = ["query", "explain", "inspect", "write", "compact", "schema"] as const;
@@ -16,8 +22,11 @@ export interface CliResult {
 interface ParsedArgs {
   command?: string;
   path?: string;
+  output?: string;
   sql?: string;
   format?: "json" | "ndjson";
+  partitionBy?: string[];
+  maxRowsPerFile?: number;
   help: boolean;
 }
 
@@ -32,6 +41,8 @@ export async function runCli(argv: string[]): Promise<CliResult> {
         return ok(await explain(args));
       case "inspect":
         return ok(await inspect(args));
+      case "write":
+        return ok(await write(args));
       case "schema":
         return ok(await schema(args));
       default:
@@ -52,10 +63,11 @@ export function usage(): string {
     "  query   --path <file.parquet> --sql <query> [--format json|ndjson]",
     "  explain --path <file.parquet> --sql <query>",
     "  inspect --path <file.parquet>",
+    "  write   --path <file.parquet> --sql <query> --output <prefix> [--partition-by a,b] [--max-rows-per-file n]",
     "  schema  --path <file.parquet>",
     "",
     `other commands reserved by the build plan: ${COMMANDS.filter(
-      (command) => !["query", "explain", "schema"].includes(command),
+      (command) => !["query", "explain", "inspect", "write", "schema"].includes(command),
     ).join(", ")}`,
   ].join("\n");
 }
@@ -104,6 +116,36 @@ async function inspect(args: ParsedArgs): Promise<string> {
   })}\n`;
 }
 
+async function write(args: ParsedArgs): Promise<string> {
+  const inputPath = requireOption(args.path, "--path");
+  const outputPrefix = requireOption(args.output, "--output");
+  const sql = requireOption(args.sql, "--sql");
+  const { store, key } = await localStore(inputPath);
+  const ast = parseCliSql(sql, key);
+  const lake = createParquetLake({ store });
+  const rows = await builderFromAst(lake.path(ast.source), ast).toArray();
+  const outStore = memoryStore();
+  const writeOptions: WriteParquetRowsOptions = {
+    rows,
+  };
+  if (args.partitionBy !== undefined) writeOptions.partitionBy = args.partitionBy;
+  if (args.maxRowsPerFile !== undefined) writeOptions.maxRowsPerFile = args.maxRowsPerFile;
+  const result = await writePartitionedParquet(outStore, outputPrefix, writeOptions);
+
+  for (const file of result.files) {
+    const bytes = await outStore.get(file.path);
+    if (bytes === null) {
+      throw new LaQLError("LAQL_OBJECT_NOT_FOUND", `No generated output at ${file.path}`, {
+        path: file.path,
+      });
+    }
+    await mkdir(dirname(file.path), { recursive: true });
+    await writeFile(file.path, bytes);
+  }
+
+  return `${JSON.stringify({ files: result.files })}\n`;
+}
+
 function builderFromAst(builder: QueryBuilder, ast: ReturnType<typeof parseSql>): QueryBuilder {
   let next = builder;
   if (ast.select) next = next.select(ast.select);
@@ -138,12 +180,21 @@ function parseArgs(argv: string[]): ParsedArgs {
     else if (arg === "--path") {
       index += 1;
       args.path = requireValue(rest, index, arg);
+    } else if (arg === "--output") {
+      index += 1;
+      args.output = requireValue(rest, index, arg);
     } else if (arg === "--sql") {
       index += 1;
       args.sql = requireValue(rest, index, arg);
     } else if (arg === "--format") {
       index += 1;
       args.format = parseFormat(requireValue(rest, index, arg));
+    } else if (arg === "--partition-by") {
+      index += 1;
+      args.partitionBy = parseCsv(requireValue(rest, index, arg), arg);
+    } else if (arg === "--max-rows-per-file") {
+      index += 1;
+      args.maxRowsPerFile = parsePositiveInt(requireValue(rest, index, arg), arg);
     } else throw new LaQLError("LAQL_PARSE_ERROR", `Unknown argument ${arg}`);
   }
   return args;
@@ -165,6 +216,23 @@ function requireValue(args: string[], index: number, flag: string): string {
 function requireOption(value: string | undefined, flag: string): string {
   if (value === undefined) throw new LaQLError("LAQL_PARSE_ERROR", `${flag} is required`);
   return value;
+}
+
+function parseCsv(value: string, flag: string): string[] {
+  const values = value
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+  if (values.length === 0) throw new LaQLError("LAQL_PARSE_ERROR", `${flag} must not be empty`);
+  return values;
+}
+
+function parsePositiveInt(value: string, flag: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new LaQLError("LAQL_PARSE_ERROR", `${flag} must be a positive integer`);
+  }
+  return parsed;
 }
 
 function totalRows(rowGroups: { num_rows: bigint | number }[]): number {

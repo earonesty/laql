@@ -1,4 +1,9 @@
+import { mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { memoryStore } from "@laql/core";
 import { fixturePath, SALES } from "@laql/fixtures";
+import { createParquetLake } from "@laql/parquet";
 import { describe, expect, it } from "vitest";
 import { COMMANDS, runCli, usage } from "./index.js";
 
@@ -66,6 +71,35 @@ describe("runCli", () => {
     });
   });
 
+  it("writes query results to local Parquet files", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "laql-cli-"));
+    const output = join(dir, "west");
+    const result = await runCli([
+      "write",
+      "--path",
+      fixturePath(SALES.file),
+      "--sql",
+      "select store_id, region, amount where region = 'west' order by amount asc limit 2",
+      "--output",
+      output,
+      "--max-rows-per-file",
+      "1",
+    ]);
+
+    expect(result).toMatchObject({ exitCode: 0, stderr: "" });
+    const body = JSON.parse(result.stdout) as { files: { path: string; rowCount: number }[] };
+    expect(body.files.map((file) => file.rowCount)).toEqual([1, 1]);
+
+    const store = memoryStore();
+    for (const file of body.files) await store.put(file.path, await readFile(file.path));
+    await expect(
+      createParquetLake({ store }).path(`${output}/*.parquet`).toArray(),
+    ).resolves.toEqual([
+      { amount: 0, region: "west", store_id: "store-000" },
+      { amount: 36.28, region: "west", store_id: "store-000" },
+    ]);
+  });
+
   it("returns typed failures for unsupported commands and bad arguments", async () => {
     await expect(runCli([])).resolves.toMatchObject({
       exitCode: 0,
@@ -75,7 +109,13 @@ describe("runCli", () => {
       exitCode: 0,
       stdout: expect.stringContaining("usage:"),
     });
-    await expect(runCli(["write"])).resolves.toMatchObject({ exitCode: 2 });
+    await expect(runCli(["compact"])).resolves.toMatchObject({ exitCode: 2 });
+    await expect(
+      runCli(["write", "--path", fixturePath(SALES.file), "--sql", "select id"]),
+    ).resolves.toMatchObject({
+      exitCode: 1,
+      stderr: expect.stringContaining("--output"),
+    });
     await expect(runCli(["query", "--path"])).resolves.toMatchObject({
       exitCode: 1,
       stderr: expect.stringContaining("LAQL_PARSE_ERROR"),
