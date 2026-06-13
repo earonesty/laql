@@ -9,15 +9,17 @@
   "scripts": {
     "build": "tsc -b && tsc -p fixtures",
     "test": "vitest run",
+    "test:workerd": "vitest run -c vitest.workerd.config.ts",
     "coverage": "vitest run --coverage",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "typecheck": "tsc -b --noEmit",
     "fixtures": "pnpm --filter @laql/fixtures generate",
-    "check": "pnpm lint && pnpm build && pnpm coverage"
+    "check": "pnpm lint && pnpm build && pnpm test && pnpm test:workerd && pnpm coverage"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.0",
+    "@cloudflare/vitest-pool-workers": "0.16.15",
     "@types/node": "^25.9.3",
     "@vitest/coverage-v8": "^4.1.8",
     "typescript": "^6.0.3",
