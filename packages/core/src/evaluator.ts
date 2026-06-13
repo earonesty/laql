@@ -244,6 +244,8 @@ function callFunction(name: string, args: EvalValue[]): EvalValue {
       return spatialPredicate(fn, args, (left, right) => bboxContains(right, left));
     case "h3_in":
       return h3In(args);
+    case "h3_within":
+      return h3Within(args);
     default:
       throw new LaQLError("LAQL_UNSUPPORTED_PUSHDOWN", `Unsupported scalar function ${name}`, {
         function: name,
@@ -348,6 +350,26 @@ function h3In(args: EvalValue[]): EvalValue {
     throw new LaQLError("LAQL_TYPE_ERROR", "h3_in() cell list must be a JSON string array");
   }
   return parsed.includes(cell);
+}
+
+function h3Within(args: EvalValue[]): EvalValue {
+  requireArgCount("h3_within", args, 3);
+  const cell = args[0] ?? null;
+  const origin = args[1] ?? null;
+  const k = args[2] ?? null;
+  if (cell === null || origin === null || k === null) return null;
+  if (typeof cell !== "string" || typeof origin !== "string") {
+    throw new LaQLError("LAQL_TYPE_ERROR", "h3_within() expects string cells");
+  }
+  if (typeof k !== "number" || !Number.isInteger(k) || k < 0) {
+    throw new LaQLError("LAQL_TYPE_ERROR", "h3_within() expects a non-negative integer radius");
+  }
+  if (k === 0) return cell === origin;
+  return h3Prefix(cell, k) === h3Prefix(origin, k);
+}
+
+function h3Prefix(cell: string, k: number): string {
+  return cell.slice(0, Math.max(1, cell.length - k * 6));
 }
 
 function envelope(value: EvalValue, name: string): BBox {

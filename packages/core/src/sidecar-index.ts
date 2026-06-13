@@ -215,6 +215,7 @@ function callMayMatch(file: SidecarFileIndex, expr: Expr): boolean {
   if (expr.kind !== "call") return true;
   if (expr.fn === "st_intersects") return stIntersectsMayMatch(file, expr);
   if (expr.fn === "h3_in") return h3InMayMatch(file, expr);
+  if (expr.fn === "h3_within") return h3WithinMayMatch(file, expr);
   return true;
 }
 
@@ -239,6 +240,25 @@ function h3InMayMatch(file: SidecarFileIndex, expr: Extract<Expr, { kind: "call"
   if (!indexed) return true;
   const wanted = parseStringArray(cells.value);
   return wanted ? wanted.some((cell) => indexed.includes(cell)) : true;
+}
+
+function h3WithinMayMatch(file: SidecarFileIndex, expr: Extract<Expr, { kind: "call" }>): boolean {
+  const [target, origin, k] = expr.args;
+  if (
+    target?.kind !== "column" ||
+    origin?.kind !== "literal" ||
+    typeof origin.value !== "string" ||
+    k?.kind !== "literal" ||
+    typeof k.value !== "number" ||
+    !Number.isInteger(k.value) ||
+    k.value < 0
+  ) {
+    return true;
+  }
+  const indexed = file.h3?.[target.name];
+  if (!indexed) return true;
+  if (k.value > 0) return true;
+  return indexed.includes(origin.value);
 }
 
 function parseBBoxLiteral(value: string): BBoxIndex | undefined {

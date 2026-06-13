@@ -266,4 +266,31 @@ describe("sidecar bbox and h3 indexes", () => {
       }).planned,
     ).toHaveLength(1);
   });
+
+  it("prunes h3_within exact-radius calls conservatively", () => {
+    expect(
+      pruneFilesWithIndex(
+        [
+          { path: "a.parquet", h3: { h3_8: ["8829a1d757fffff"] } },
+          { path: "b.parquet", h3: { h3_8: ["8829a1d75bfffff"] } },
+        ],
+        fn("h3_within", col("h3_8"), "8829a1d757fffff", 0),
+      ),
+    ).toMatchObject({
+      planned: [{ path: "a.parquet" }],
+      skipped: [{ path: "b.parquet" }],
+    });
+    expect(
+      pruneFilesWithIndex(
+        [{ path: "positive-radius.parquet", h3: { h3_8: ["8829a1d75bfffff"] } }],
+        fn("h3_within", col("h3_8"), "8829a1d757fffff", 1),
+      ).planned,
+    ).toHaveLength(1);
+    expect(
+      pruneFilesWithIndex(
+        [{ path: "bad-radius.parquet", h3: { h3_8: ["8829a1d75bfffff"] } }],
+        fn("h3_within", col("h3_8"), "8829a1d757fffff", -1),
+      ).planned,
+    ).toHaveLength(1);
+  });
 });

@@ -624,6 +624,14 @@ describe("createParquetLake", () => {
         )
         .toArray(),
     ).resolves.toEqual([{ id: 1 }, { id: 3 }]);
+
+    await expect(
+      lake
+        .path(`data/${H3.file}`)
+        .select(["id"])
+        .where(fn("h3_within", col("h3_8"), lit("8829a1d757fffff"), lit(1)))
+        .toArray(),
+    ).resolves.toEqual([{ id: 1 }, { id: 2 }]);
   });
 
   it("prunes Parquet row groups using min/max statistics", async () => {

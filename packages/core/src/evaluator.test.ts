@@ -108,6 +108,9 @@ describe("evaluate", () => {
     expect(evaluate(fn("h3_in", col("h3_8"), JSON.stringify(["8829a1d753fffff"])), row)).toBe(
       false,
     );
+    expect(evaluate(fn("h3_within", col("h3_8"), "8829a1d757fffff", 0), row)).toBe(true);
+    expect(evaluate(fn("h3_within", col("h3_8"), "8829a1d753fffff", 1), row)).toBe(true);
+    expect(evaluate(fn("h3_within", col("h3_8"), "8829a1d753fffff", 0), row)).toBe(false);
   });
 
   it("returns null from null-propagating functions", () => {
@@ -120,6 +123,7 @@ describe("evaluate", () => {
     expect(evaluate(fn("least", 1, lit(null)), row)).toBeNull();
     expect(evaluate(fn("st_intersects", lit(null), col("geom")), row)).toBeNull();
     expect(evaluate(fn("h3_in", lit(null), JSON.stringify(["8829a1d757fffff"])), row)).toBeNull();
+    expect(evaluate(fn("h3_within", lit(null), "8829a1d757fffff", 1), row)).toBeNull();
   });
 
   it("throws typed errors for unknown columns and functions", () => {
@@ -155,6 +159,10 @@ describe("evaluate", () => {
     ).toThrowError(LaQLError);
     expect(() => evaluate(fn("h3_in", col("h3_8"), "{}"), row)).toThrowError(LaQLError);
     expect(() => evaluate(fn("h3_in", 1, "[]"), row)).toThrowError(LaQLError);
+    expect(() => evaluate(fn("h3_within", 1, "8829a1d757fffff", 1), row)).toThrowError(LaQLError);
+    expect(() => evaluate(fn("h3_within", col("h3_8"), "8829a1d757fffff", -1), row)).toThrowError(
+      LaQLError,
+    );
     expect(() => evaluate(like("amount", "%"), row)).toThrowError(LaQLError);
     expect(() => matches(lit(1), row)).toThrowError(LaQLError);
   });
