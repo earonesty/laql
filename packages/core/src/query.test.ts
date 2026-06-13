@@ -453,6 +453,125 @@ describe("Lake query runtime", () => {
     expect(replayed).toEqual(await query.toArray());
   });
 
+  it("orders rows before offset, limit, and projection", async () => {
+    const { lake, scanner } = await makeLake({
+      rowsByPath: {
+        "data/b.parquet": [
+          { id: 4, score: 10, name: "low" },
+          { id: 2, score: 30, name: "same-b" },
+        ],
+        "data/a.parquet": [
+          { id: 3, score: 30, name: "same-a" },
+          { id: 1, score: null, name: "missing" },
+        ],
+      },
+    });
+
+    await expect(
+      lake
+        .path("data/*.parquet")
+        .select(["id", "name"])
+        .orderBy([
+          { column: "score", direction: "desc", nulls: "last" },
+          { column: "id", direction: "asc" },
+        ])
+        .offset(1)
+        .limit(2)
+        .batchSize(1)
+        .toArray(),
+    ).resolves.toEqual([
+      { id: 3, name: "same-a" },
+      { id: 4, name: "low" },
+    ]);
+    expect(scanner.requestedColumns[0]).toEqual(["id", "name", "score"]);
+    await expect(
+      lake
+        .path("data/*.parquet")
+        .orderBy([{ column: "score", direction: "asc" }])
+        .limit(2)
+        .toArray(),
+    ).resolves.toEqual([{ score: 10 }, { score: 30 }]);
+    await expect(
+      lake
+        .path("data/*.parquet")
+        .orderBy([{ column: "score", direction: "desc" }])
+        .limit(1)
+        .toArray(),
+    ).resolves.toEqual([{ score: null }]);
+    await expect(
+      lake
+        .path("data/*.parquet")
+        .orderBy([
+          { column: "score", direction: "desc", nulls: "last" },
+          { column: "id", direction: "desc" },
+        ])
+        .limit(1)
+        .toArray(),
+    ).resolves.toEqual([{ id: 3, score: 30 }]);
+    expect(
+      (
+        await lake
+          .path("data/*.parquet")
+          .orderBy([{ column: "score" }])
+          .planTasks()
+      )[0],
+    ).toMatchObject({ projectedColumns: ["score"] });
+  });
+
+  it("parses JSON orderBy and rejects invalid order terms", async () => {
+    expect(
+      parseJsonQuery({
+        version: 1,
+        from: "t",
+        orderBy: [{ column: "score", direction: "desc", nulls: "first" }],
+      }).orderBy,
+    ).toEqual([{ column: "score", direction: "desc", nulls: "first" }]);
+    expect(() => parseJsonQuery({ version: 1, from: "t", orderBy: {} })).toThrow(/orderBy/u);
+    expect(() =>
+      parseJsonQuery({ version: 1, from: "t", orderBy: [{ column: "a", direction: "sideways" }] }),
+    ).toThrow(/direction/u);
+    expect(() =>
+      parseJsonQuery({ version: 1, from: "t", orderBy: [{ column: "a", nulls: "middle" }] }),
+    ).toThrow(/nulls/u);
+
+    const { lake } = await makeLake({ rowsByPath: { table: [{ id: 1, value: {} }] } });
+    expect(() => lake.path("table").orderBy([]).run()).toThrow(/orderBy/u);
+    expect(() =>
+      lake
+        .path("table")
+        .orderBy([{ column: "" }])
+        .run(),
+    ).toThrow(/columns/u);
+    expect(() =>
+      lake
+        .path("table")
+        .orderBy([{ column: "id", direction: "sideways" }])
+        .run(),
+    ).toThrow(/direction/u);
+    await expect(
+      lake
+        .path("table")
+        .orderBy([{ column: "missing" }])
+        .toArray(),
+    ).rejects.toMatchObject({ code: "LAQL_UNKNOWN_COLUMN" });
+    await expect(
+      lake
+        .path("table")
+        .orderBy([{ column: "value" }])
+        .toArray(),
+    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+
+    const mixed = await makeLake({
+      rowsByPath: { table: [{ value: 1 }, { value: "two" }] },
+    });
+    await expect(
+      mixed.lake
+        .path("table")
+        .orderBy([{ column: "value" }])
+        .toArray(),
+    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+  });
+
   it("rejects stale or invalid slice bookmarks", async () => {
     const { lake } = await makeLake({ rowsByPath: { table: [{ id: 1 }] } });
     const query = lake.path("table");

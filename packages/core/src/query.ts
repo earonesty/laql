@@ -47,10 +47,17 @@ export interface PathQueryInit {
   source: string;
   select?: string[];
   where?: Expr;
+  orderBy?: OrderByTerm[];
   limit?: number;
   offset?: number;
   batchSize?: number;
   hive?: boolean;
+}
+
+export interface OrderByTerm {
+  column: string;
+  direction?: "asc" | "desc";
+  nulls?: "first" | "last";
 }
 
 export interface SliceOptions {
@@ -116,8 +123,15 @@ export interface JsonQueryV1 {
   from: string;
   select?: string[];
   where?: JsonExpr;
+  orderBy?: JsonOrderByTerm[];
   limit?: number;
   offset?: number;
+}
+
+export interface JsonOrderByTerm {
+  column: string;
+  direction?: "asc" | "desc";
+  nulls?: "first" | "last";
 }
 
 export type JsonExpr =
@@ -192,6 +206,10 @@ export class QueryBuilder {
 
   where(expr: Expr): QueryBuilder {
     return new QueryBuilder(this.lake, { ...this.init, where: expr });
+  }
+
+  orderBy(terms: OrderByTerm[]): QueryBuilder {
+    return new QueryBuilder(this.lake, { ...this.init, orderBy: normalizeOrderBy(terms) });
   }
 
   limit(limit: number): QueryBuilder {
@@ -302,6 +320,10 @@ export class QueryResult {
   }
 
   async *batches(): AsyncIterable<Row[]> {
+    if (this.config.orderBy !== undefined) {
+      yield* this.orderedBatches();
+      return;
+    }
     const config = this.config;
     const { stats } = this;
     const startedAt = config.now();
@@ -463,6 +485,63 @@ export class QueryResult {
     return [...groups.values()].map((group) => group.finish());
   }
 
+  private async *orderedBatches(): AsyncIterable<Row[]> {
+    const config = this.config;
+    const { stats } = this;
+    const startedAt = config.now();
+    const { planned: paths, skipped: skippedFiles } = await this.planObjects();
+    stats.filesSkipped = skippedFiles;
+    const columns = projectedReadColumns(config.select, config.where, config.orderBy);
+    const matched: Row[] = [];
+    for (const object of paths) {
+      stats.filesPlanned += 1;
+      stats.filesRead += 1;
+      stats.bytesRequested += object.size;
+      enforceBudget(config.budget, stats, config.now, startedAt);
+      const scanOptions: ScanOptions = {
+        batchSize: config.batchSize ?? 4096,
+        stats,
+        budget: config.budget,
+        now: config.now,
+        startedAt,
+      };
+      const partitionValues = config.hive ? parseHivePartitions(object.path) : {};
+      const physicalColumns = columns?.filter((column) => !(column in partitionValues));
+      if (physicalColumns !== undefined && physicalColumns.length > 0) {
+        scanOptions.columns = physicalColumns;
+      }
+      if (config.where !== undefined) scanOptions.where = config.where;
+      for await (const rawBatch of config.scanner.scan(object.path, scanOptions)) {
+        for (const rawRow of rawBatch) {
+          const row = config.hive ? { ...partitionValues, ...rawRow } : rawRow;
+          stats.rowsDecoded += 1;
+          enforceBudget(config.budget, stats, config.now, startedAt);
+          if (!matches(config.where, row)) continue;
+          stats.rowsMatched += 1;
+          validateSortRow(row, config.orderBy ?? []);
+          matched.push(row);
+        }
+      }
+    }
+    matched.sort((left, right) => compareRows(left, right, config.orderBy ?? []));
+    const start = config.offset ?? 0;
+    const end = config.limit === undefined ? matched.length : start + config.limit;
+    const batchSize = config.batchSize ?? 4096;
+    let batch: Row[] = [];
+    for (const row of matched.slice(start, end)) {
+      batch.push(project(row, config.select));
+      stats.rowsReturned += 1;
+      enforceBudget(config.budget, stats, config.now, startedAt);
+      if (batch.length >= batchSize) {
+        stats.elapsedMs = config.now() - startedAt;
+        yield batch;
+        batch = [];
+      }
+    }
+    stats.elapsedMs = config.now() - startedAt;
+    if (batch.length > 0) yield batch;
+  }
+
   async explain(): Promise<ExplainResult> {
     const { planned, skipped } = await this.planObjects();
     const tasks = this.tasksFromObjects(planned);
@@ -486,7 +565,7 @@ export class QueryResult {
 
   private tasksFromObjects(objects: ObjectInfo[]): TaskInput[] {
     const config = this.config;
-    const projectedColumns = projectedReadColumns(config.select, config.where);
+    const projectedColumns = projectedReadColumns(config.select, config.where, config.orderBy);
     return objects.map((object) => {
       const task: TaskInput = {
         path: object.path,
@@ -810,9 +889,32 @@ export function parseJsonQuery(input: unknown): PathQueryInit {
     init.select = input.select;
   }
   if (input.where !== undefined) init.where = parseJsonExpr(input.where);
+  if (input.orderBy !== undefined) {
+    if (!Array.isArray(input.orderBy)) throwParse("JSON query orderBy must be an array");
+    init.orderBy = normalizeOrderBy(input.orderBy.map(parseJsonOrderByTerm));
+  }
   if (input.limit !== undefined) init.limit = parseNonNegativeInt(input.limit, "limit");
   if (input.offset !== undefined) init.offset = parseNonNegativeInt(input.offset, "offset");
   return init;
+}
+
+function parseJsonOrderByTerm(input: unknown): OrderByTerm {
+  if (!isRecord(input)) throwParse("JSON query orderBy terms must be objects");
+  if (typeof input.column !== "string") throwParse("JSON query orderBy column must be a string");
+  const term: OrderByTerm = { column: input.column };
+  if (input.direction !== undefined) {
+    if (input.direction !== "asc" && input.direction !== "desc") {
+      throwParse("JSON query orderBy direction must be asc or desc");
+    }
+    term.direction = input.direction;
+  }
+  if (input.nulls !== undefined) {
+    if (input.nulls !== "first" && input.nulls !== "last") {
+      throwParse("JSON query orderBy nulls must be first or last");
+    }
+    term.nulls = input.nulls;
+  }
+  return term;
 }
 
 function parseJsonExpr(input: unknown): Expr {
@@ -942,6 +1044,7 @@ function validateQueryInit(init: PathQueryInit): void {
   if (init.batchSize !== undefined && (!Number.isInteger(init.batchSize) || init.batchSize <= 0)) {
     throw new LaQLError("LAQL_TYPE_ERROR", "batchSize must be a positive integer");
   }
+  if (init.orderBy !== undefined) normalizeOrderBy(init.orderBy);
 }
 
 async function expandPaths(store: ObjectStore, pattern: string): Promise<ObjectInfo[]> {
@@ -988,9 +1091,11 @@ function globRegex(pattern: string): RegExp {
 function projectedReadColumns(
   select: string[] | undefined,
   where: Expr | undefined,
+  orderBy: OrderByTerm[] | undefined = undefined,
 ): string[] | undefined {
   const columns = new Set<string>();
   for (const column of select ?? []) columns.add(column);
+  for (const term of orderBy ?? []) columns.add(term.column);
   collectExprColumns(where, columns);
   return columns.size === 0 ? undefined : [...columns].sort();
 }
@@ -1044,6 +1149,83 @@ function project(row: Row, select: string[] | undefined): Row {
     out[column] = row[column];
   }
   return out;
+}
+
+function normalizeOrderBy(terms: OrderByTerm[]): OrderByTerm[] {
+  if (!Array.isArray(terms) || terms.length === 0) {
+    throw new LaQLError("LAQL_TYPE_ERROR", "orderBy must contain at least one term");
+  }
+  return terms.map((term) => {
+    if (typeof term.column !== "string" || term.column.length === 0) {
+      throw new LaQLError("LAQL_TYPE_ERROR", "orderBy columns must be non-empty strings");
+    }
+    const direction = term.direction ?? "asc";
+    if (direction !== "asc" && direction !== "desc") {
+      throw new LaQLError("LAQL_TYPE_ERROR", "orderBy direction must be asc or desc", { term });
+    }
+    const nulls = term.nulls ?? (direction === "asc" ? "last" : "first");
+    if (nulls !== "first" && nulls !== "last") {
+      throw new LaQLError("LAQL_TYPE_ERROR", "orderBy nulls must be first or last", { term });
+    }
+    return { column: term.column, direction, nulls };
+  });
+}
+
+function compareRows(left: Row, right: Row, orderBy: OrderByTerm[]): number {
+  for (const term of orderBy) {
+    const comparison = compareSortValues(
+      valueForColumn(left, term.column),
+      valueForColumn(right, term.column),
+      term,
+    );
+    if (comparison !== 0) return comparison;
+  }
+  return 0;
+}
+
+function validateSortRow(row: Row, orderBy: OrderByTerm[]): void {
+  for (const term of orderBy) {
+    const value = valueForColumn(row, term.column);
+    if (value === null || value === undefined) continue;
+    if (!isSortableValue(value)) {
+      throw new LaQLError("LAQL_TYPE_ERROR", "orderBy values must be scalar", {
+        column: term.column,
+      });
+    }
+  }
+}
+
+function compareSortValues(left: unknown, right: unknown, term: OrderByTerm): number {
+  const leftNull = left === null || left === undefined;
+  const rightNull = right === null || right === undefined;
+  if (leftNull || rightNull) {
+    if (leftNull && rightNull) return 0;
+    const nullOrder = term.nulls === "first" ? -1 : 1;
+    return leftNull ? nullOrder : -nullOrder;
+  }
+  if (!isSortableValue(left) || !isSortableValue(right)) {
+    throw new LaQLError("LAQL_TYPE_ERROR", "orderBy values must be scalar", {
+      column: term.column,
+    });
+  }
+  if (typeof left !== typeof right) {
+    throw new LaQLError("LAQL_TYPE_ERROR", "orderBy values must have matching types", {
+      column: term.column,
+    });
+  }
+  const direction = term.direction === "desc" ? -1 : 1;
+  if (left < right) return -1 * direction;
+  if (left > right) return direction;
+  return 0;
+}
+
+function isSortableValue(value: unknown): value is string | number | bigint | boolean {
+  return (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "bigint" ||
+    typeof value === "boolean"
+  );
 }
 
 export function parseHivePartitions(path: string): Record<string, string> {
