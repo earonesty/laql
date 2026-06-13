@@ -21,7 +21,8 @@ Budgets can cap files, bytes, decoded rows, returned rows, range requests, elaps
 For bounded top-k sorts, use `orderBy(...).limit(...).topKWithState()` to
 serialize or spill the retained heap state between slices. For full global sorts,
 `sortWithState()` builds sorted runs capped by `maxBufferedRows`, merges those runs
-for output, and can persist the run state through a `SpillAdapter`:
+for output, and can persist each run plus the compact run manifest through a
+`SpillAdapter`:
 
 ```ts
 const result = await lake
