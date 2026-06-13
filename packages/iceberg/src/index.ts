@@ -18,6 +18,11 @@ export interface LoadIcebergTableOptions {
   metadataPath: string;
 }
 
+export interface LoadIcebergTableFromObjectStoreOptions {
+  store: ObjectStore;
+  tableLocation: string;
+}
+
 export interface PlanIcebergFilesOptions {
   snapshotId?: number;
   asOfTimestampMs?: number;
@@ -461,6 +466,11 @@ export class ObjectStoreIcebergCommitCatalog implements IcebergCommitCatalog {
       new TextEncoder().encode(`${JSON.stringify(input.metadata, null, 2)}\n`),
       { contentType: "application/json" },
     );
+    await input.store.put(
+      metadataVersionHintPath(input.nextMetadataPath),
+      new TextEncoder().encode(`${input.nextSnapshotId}\n`),
+      { contentType: "text/plain" },
+    );
     return true;
   }
 }
@@ -490,6 +500,20 @@ export async function loadIcebergTable(options: LoadIcebergTableOptions): Promis
       },
     );
   }
+}
+
+export async function loadIcebergTableFromObjectStore(
+  options: LoadIcebergTableFromObjectStoreOptions,
+): Promise<IcebergTable> {
+  const tableLocation = trimTrailingSlash(options.tableLocation);
+  const metadataPrefix = `${tableLocation}/metadata/`;
+  const versionHintPath = `${metadataPrefix}version-hint.text`;
+  const hintedVersion = await readVersionHint(options.store, versionHintPath);
+  const metadataPath =
+    hintedVersion === undefined
+      ? await latestMetadataPathFromList(options.store, metadataPrefix)
+      : `${metadataPrefix}v${hintedVersion}.metadata.json`;
+  return await loadIcebergTable({ store: options.store, metadataPath });
 }
 
 export function applyIcebergDeletes(options: ApplyIcebergDeletesOptions): Row[] {
@@ -616,6 +640,51 @@ function nextMetadataPathFor(metadataPath: string, snapshotId: number): string {
   const slash = metadataPath.lastIndexOf("/");
   const prefix = slash === -1 ? "" : `${metadataPath.slice(0, slash + 1)}`;
   return `${prefix}v${snapshotId}.metadata.json`;
+}
+
+function metadataVersionHintPath(metadataPath: string): string {
+  const slash = metadataPath.lastIndexOf("/");
+  const prefix = slash === -1 ? "" : `${metadataPath.slice(0, slash + 1)}`;
+  return `${prefix}version-hint.text`;
+}
+
+async function readVersionHint(store: ObjectStore, path: string): Promise<number | undefined> {
+  const bytes = await store.get(path);
+  if (!bytes) return undefined;
+  const text = new TextDecoder().decode(bytes).trim();
+  const version = Number(text);
+  if (!Number.isInteger(version) || version < 0) {
+    throw new LaQLError("LAQL_CATALOG_ERROR", "Invalid Iceberg version hint", {
+      path,
+      versionHint: text,
+    });
+  }
+  return version;
+}
+
+async function latestMetadataPathFromList(
+  store: ObjectStore,
+  metadataPrefix: string,
+): Promise<string> {
+  let latest: { path: string; version: number } | undefined;
+  for await (const object of store.list(metadataPrefix)) {
+    const name = object.path.slice(metadataPrefix.length);
+    const match = /^v(\d+)\.metadata\.json$/u.exec(name);
+    if (!match) continue;
+    const version = Number(match[1]);
+    if (!Number.isSafeInteger(version)) continue;
+    if (latest === undefined || version > latest.version) latest = { path: object.path, version };
+  }
+  if (latest === undefined) {
+    throw new LaQLError("LAQL_OBJECT_NOT_FOUND", "No Iceberg metadata files found", {
+      prefix: metadataPrefix,
+    });
+  }
+  return latest.path;
+}
+
+function trimTrailingSlash(value: string): string {
+  return value.endsWith("/") ? value.slice(0, -1) : value;
 }
 
 function equalityKey(row: Row, columns: string[]): string {

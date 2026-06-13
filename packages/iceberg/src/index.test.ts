@@ -18,7 +18,12 @@ import { fixturePath, HIVE, ICEBERG } from "@laql/fixtures";
 import { beforeAll, describe, expect, it } from "vitest";
 import { readIcebergParquetDeletes, readParquetObjects } from "../../parquet/src/index.js";
 import type { IcebergCommitCatalog, IcebergCommitInput } from "./index.js";
-import { applyIcebergDeletes, loadIcebergTable, scanPlannedIcebergRows } from "./index.js";
+import {
+  applyIcebergDeletes,
+  loadIcebergTable,
+  loadIcebergTableFromObjectStore,
+  scanPlannedIcebergRows,
+} from "./index.js";
 
 const store = memoryStore();
 
@@ -38,6 +43,61 @@ beforeAll(async () => {
 });
 
 describe("loadIcebergTable", () => {
+  it("loads the current metadata file from an object-store table location", async () => {
+    const catalogStore = memoryStore();
+    await catalogStore.put(ICEBERG.metadataFile, readFileSync(fixturePath(ICEBERG.metadataFile)));
+    await catalogStore.put(
+      "iceberg/warehouse/places/metadata/version-hint.text",
+      new TextEncoder().encode("2\n"),
+    );
+
+    const table = await loadIcebergTableFromObjectStore({
+      store: catalogStore,
+      tableLocation: "iceberg/warehouse/places/",
+    });
+
+    expect(table.metadataPath).toBe(ICEBERG.metadataFile);
+    expect(table.planFiles({ ref: "main" }).snapshotId).toBe(2);
+  });
+
+  it("falls back to the highest vN metadata file when the version hint is absent", async () => {
+    const catalogStore = memoryStore();
+    await catalogStore.put(
+      "tables/events/metadata/v1.metadata.json",
+      new TextEncoder().encode(
+        JSON.stringify({
+          "format-version": 2,
+          "table-uuid": "events",
+          location: "memory",
+          "current-snapshot-id": 1,
+          schemas: [
+            {
+              "schema-id": 1,
+              fields: [{ id: 1, name: "id", type: "int", required: true }],
+            },
+          ],
+          snapshots: [
+            {
+              "snapshot-id": 1,
+              "timestamp-ms": 1,
+              "schema-id": 1,
+              manifests: [],
+            },
+          ],
+        }),
+      ),
+    );
+    await catalogStore.put(ICEBERG.metadataFile, readFileSync(fixturePath(ICEBERG.metadataFile)));
+
+    const table = await loadIcebergTableFromObjectStore({
+      store: catalogStore,
+      tableLocation: "iceberg/warehouse/places",
+    });
+
+    expect(table.metadataPath).toBe(ICEBERG.metadataFile);
+    expect(table.snapshot()["snapshot-id"]).toBe(2);
+  });
+
   it("loads metadata and plans the current snapshot deterministically", async () => {
     const table = await loadIcebergTable({ store, metadataPath: ICEBERG.metadataFile });
     const plan = table.planFiles({
@@ -435,11 +495,16 @@ describe("loadIcebergTable", () => {
       store: appendStore,
       metadataPath: result.metadataPath,
     });
+    const appendedFromCatalog = await loadIcebergTableFromObjectStore({
+      store: appendStore,
+      tableLocation: "iceberg/warehouse/places",
+    });
     const plan = appended.planFiles({
       snapshotId: 3,
       where: eq("country", "US"),
       readMode: "ignore-unsupported-deletes",
     });
+    expect(appendedFromCatalog.metadataPath).toBe(result.metadataPath);
     expect(plan.files.map((file) => file.path)).toEqual([
       HIVE.files[0],
       HIVE.files[2],
@@ -654,6 +719,19 @@ describe("loadIcebergTable", () => {
     await expect(
       loadIcebergTable({ store, metadataPath: "invalid-required.json" }),
     ).rejects.toMatchObject({ code: "LAQL_CATALOG_ERROR" });
+
+    const badHintStore = memoryStore();
+    await badHintStore.put(
+      "tables/bad/metadata/version-hint.text",
+      new TextEncoder().encode("two"),
+    );
+    await expect(
+      loadIcebergTableFromObjectStore({ store: badHintStore, tableLocation: "tables/bad" }),
+    ).rejects.toMatchObject({ code: "LAQL_CATALOG_ERROR" });
+
+    await expect(
+      loadIcebergTableFromObjectStore({ store: memoryStore(), tableLocation: "tables/missing" }),
+    ).rejects.toMatchObject({ code: "LAQL_OBJECT_NOT_FOUND" });
   });
 
   it("validates append inputs and snapshot schemas", async () => {

@@ -20,6 +20,19 @@ const plan = table.planFiles({
 });
 ```
 
+For object-store table layouts, load by table location. LaQL first reads
+`metadata/version-hint.text`, then falls back to listing `metadata/vN.metadata.json`
+files and choosing the highest version:
+
+```ts
+import { loadIcebergTableFromObjectStore } from "@laql/iceberg";
+
+const table = await loadIcebergTableFromObjectStore({
+  store,
+  tableLocation: "iceberg/warehouse/places",
+});
+```
+
 Use `projectRow()` to map decoded physical rows into the selected Iceberg schema.
 For renamed fields, `sourceId` maps old physical column names to the current field
 name:
