@@ -37,7 +37,7 @@ export interface Bookmark {
   operatorState?: {
     limitEmitted?: number;
     groupBy?: Uint8Array | { spillRef: string };
-    topK?: Uint8Array;
+    topK?: Uint8Array | { spillRef: string };
     sketches?: Record<string, Uint8Array>;
   };
 }

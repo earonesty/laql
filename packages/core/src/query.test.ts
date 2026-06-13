@@ -776,6 +776,17 @@ describe("Lake query runtime", () => {
 
     const snapshot = deserializeTopKOperatorState(partial.operatorState);
     expect(deserializeTopKOperatorState(serializeTopKOperatorState(snapshot))).toEqual(snapshot);
+    const spill = memorySpillAdapter();
+    const spilled = await first.lake
+      .path("table")
+      .orderBy([{ column: "id" }])
+      .limit(3)
+      .topKWithState({ spill, spillId: "topk-state" });
+    expect(spilled.operatorSpill).toEqual({
+      id: "topk-state",
+      byteSize: spilled.operatorState.byteLength,
+    });
+    await expect(spill.read("topk-state")).resolves.toEqual(spilled.operatorState);
 
     const second = await makeLake({
       rowsByPath: { table: [{ id: 2 }, { id: 3 }, { id: 0 }] },
@@ -790,6 +801,22 @@ describe("Lake query runtime", () => {
     ).resolves.toMatchObject({
       rows: [{ id: 0 }, { id: 1 }, { id: 2 }],
     });
+    await expect(
+      second.lake
+        .path("table")
+        .orderBy([{ column: "id" }])
+        .limit(3)
+        .topKWithState({ operatorState: { spillRef: "topk-state" }, spill }),
+    ).resolves.toMatchObject({
+      rows: [{ id: 0 }, { id: 1 }, { id: 2 }],
+    });
+    await expect(
+      second.lake
+        .path("table")
+        .orderBy([{ column: "id" }])
+        .limit(3)
+        .topKWithState({ operatorState: { spillRef: "topk-state" } }),
+    ).rejects.toMatchObject({ code: "LAQL_BOOKMARK_INVALID" });
 
     await expect(
       second.lake

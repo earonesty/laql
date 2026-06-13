@@ -146,12 +146,15 @@ export interface AggregateResult {
 }
 
 export interface TopKOptions {
-  operatorState?: Uint8Array | TopKOperatorState;
+  operatorState?: Uint8Array | TopKOperatorState | { spillRef: string };
+  spill?: SpillAdapter;
+  spillId?: string;
 }
 
 export interface TopKResult {
   rows: Row[];
   operatorState: Uint8Array;
+  operatorSpill?: SpillRef;
 }
 
 export interface TopKOperatorState {
@@ -528,12 +531,7 @@ export class QueryResult {
     }
     const orderBy = normalizeOrderBy(config.orderBy);
     const topK = (config.offset ?? 0) + config.limit;
-    const matched = topKRowsFromState(
-      orderBy,
-      config.offset ?? 0,
-      config.limit,
-      options.operatorState,
-    );
+    const matched = await topKRowsFromState(orderBy, config.offset ?? 0, config.limit, options);
     enforceBufferedRowsBudget(config.budget, matched.length);
     enforceOperatorMemoryBudget(config.budget, estimateOperatorMemoryBytes(matched));
     const startedAt = config.now();
@@ -548,7 +546,15 @@ export class QueryResult {
     }
     this.stats.elapsedMs = config.now() - startedAt;
     const state = topKOperatorState(orderBy, config.offset ?? 0, config.limit, matched);
-    return { rows, operatorState: serializeTopKOperatorState(state) };
+    const operatorState = serializeTopKOperatorState(state);
+    const result: TopKResult = { rows, operatorState };
+    if (options.spill !== undefined) {
+      result.operatorSpill = await options.spill.write(
+        options.spillId ?? `topk-${this.stats.queryId}`,
+        operatorState,
+      );
+    }
+    return result;
   }
 
   async first(): Promise<Row | undefined> {
@@ -1174,12 +1180,21 @@ export function deserializeTopKOperatorState(
   return validateTopKOperatorState(JSON.parse(new TextDecoder().decode(bytes)));
 }
 
-function topKRowsFromState(
+async function topKRowsFromState(
   orderBy: OrderByTerm[],
   offset: number,
   limit: number,
-  state: Uint8Array | TopKOperatorState | undefined,
-): Row[] {
+  options: TopKOptions,
+): Promise<Row[]> {
+  const state =
+    isSpilledOperatorState(options.operatorState) && options.spill !== undefined
+      ? await options.spill.read(options.operatorState.spillRef)
+      : options.operatorState;
+  if (isSpilledOperatorState(state)) {
+    throw new LaQLError("LAQL_BOOKMARK_INVALID", "Top-k spill state requires a spill adapter", {
+      spillRef: state.spillRef,
+    });
+  }
   if (state === undefined) return [];
   const snapshot = deserializeTopKOperatorState(state);
   if (
