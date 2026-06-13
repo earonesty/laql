@@ -68,6 +68,7 @@ export interface InsertValidationRules {
 export interface WritePartitionedParquetFile {
   path: string;
   byteSize: number;
+  contentHash: string;
   etag?: string;
   rowCount: number;
   partitionValues: Record<string, string>;
@@ -255,6 +256,7 @@ export async function writePartitionedParquet(
         const result: WritePartitionedParquetFile = {
           path: written.path,
           byteSize: written.byteSize,
+          contentHash: await contentHash(encodedChunk.bytes),
           rowCount: encodedChunk.rows.length,
           partitionValues: partition.values,
         };
@@ -279,6 +281,7 @@ export function partitionedParquetOutputEntries(
       partitionValues: sortStringRecord(file.partitionValues),
       rowCount: file.rowCount,
       byteSize: file.byteSize,
+      contentHash: file.contentHash,
     };
     if (file.etag !== undefined) entry.etag = file.etag;
     if (options.iceberg === true) {
@@ -793,6 +796,16 @@ async function putParquetBytes(
   };
   if (head?.etag !== undefined) result.etag = head.etag;
   return result;
+}
+
+async function contentHash(bytes: Uint8Array): Promise<string> {
+  const source = new Uint8Array(bytes.byteLength);
+  source.set(bytes);
+  const digest = await crypto.subtle.digest("SHA-256", source.buffer);
+  const hex = [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+  return `sha256:${hex}`;
 }
 
 function validateWriteMode(writeMode: WriteParquetOptions["writeMode"]): void {

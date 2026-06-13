@@ -30,6 +30,9 @@ const entries = partitionedParquetOutputEntries(result, {
 });
 ```
 
+Each written file and output-manifest entry includes a deterministic `sha256:` content
+hash computed from the exact Parquet bytes written to the object store.
+
 Set `iceberg: true` when the manifest should carry data-file metadata for a later Iceberg append commit.
 
 `writeMode: "create"` fails if an output object already exists; omit it or use `"overwrite"` when replacing existing output is intentional.

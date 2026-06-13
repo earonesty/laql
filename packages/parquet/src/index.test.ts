@@ -312,6 +312,7 @@ describe("writePartitionedParquet", () => {
     expect(result.files.map((file) => file.rowCount)).toEqual([1, 1, 1]);
     expect(result.files[0]).toMatchObject({
       byteSize: expect.any(Number),
+      contentHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
       partitionValues: { date: "2026-01-01", country: "US" },
     });
     expect(result.files[0]?.byteSize).toBeGreaterThan(0);
@@ -375,6 +376,21 @@ describe("writePartitionedParquet", () => {
     await expect(readParquetObjects(outStore, result.files[0]?.path ?? "")).resolves.toEqual([
       { id: 1 },
     ]);
+
+    const retried = await writePartitionedParquet(outStore, "out/tasks-retry", {
+      rows: [
+        { date: "2026-01-01", id: 1 },
+        { date: "2026-01-01", id: 2 },
+      ],
+      partitionBy: ["date"],
+      maxRowsPerFile: 1,
+      jobId: "job",
+      taskId: "task/7",
+      idempotencyKey: "attempt 1",
+    });
+    expect(retried.files.map((file) => file.contentHash)).toEqual(
+      result.files.map((file) => file.contentHash),
+    );
   });
 
   it("enforces create-only output mode for partitioned writes", async () => {
@@ -461,6 +477,7 @@ describe("writePartitionedParquet", () => {
         partitionValues: { country: "US", date: "2026-01-01" },
         rowCount: 1,
         byteSize: result.files[0]?.byteSize,
+        contentHash: result.files[0]?.contentHash,
         etag: result.files[0]?.etag,
         iceberg: {
           recordCount: 1,
@@ -474,6 +491,7 @@ describe("writePartitionedParquet", () => {
         partitionValues: { country: "CA", date: "2026-01-02" },
         rowCount: 1,
         byteSize: result.files[1]?.byteSize,
+        contentHash: result.files[1]?.contentHash,
         etag: result.files[1]?.etag,
         iceberg: {
           recordCount: 1,
