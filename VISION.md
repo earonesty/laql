@@ -16,18 +16,18 @@ h3-js             (optional, via @laql/geo)
 @turf/*           (optional, via @laql/geo)
 ```
 
-Dependency check (light pass, 2026-06-12 — npm + README review, not a deep audit):
+Dependency roles:
 
 ```txt
-hyparquet 1.26     pure JS, snappy built in, zstd/gzip/lz4 via hyparquet-compressors;
-                   HTTP range reads, column projection, row-group selection confirmed
+hyparquet          pure JS Parquet reads; snappy built in; zstd/gzip/lz4 via
+                   hyparquet-compressors; HTTP range reads; column projection;
+                   row-group selection
 
 hyparquet-writer   snappy by default, custom compressors pluggable (zstd = bring your own);
                    column statistics on by default; nested records; row-group sizing
 
 icebird 0.8        reads Iceberg v1/v2/v3; position deletes and v3 deletion vectors
-                   confirmed; experimental v2/v3 writes (create/append/delete);
-                   equality-delete read coverage needs a closer look before relying on it
+                   support; v2/v3 writes (create/append/delete)
 
 iceberg-js 1.0     Supabase REST catalog client, catalog + commit endpoints only —
                    no data ops; laql owns building commit requirements/updates
@@ -128,6 +128,58 @@ laql/node          filesystem / S3              (same core)
 ```
 
 Cloudflare is the flagship driver, not a dependency.
+
+---
+
+# Responsibility boundary
+
+`laql` owns lake-query mechanics:
+
+```txt
+read Iceberg and Parquet metadata
+plan bounded tasks from snapshots, manifests, files, and row groups
+apply predicates and column projection
+stream rows and batches within memory budgets
+write Parquet output files
+generate bookmarks and checkpoints
+enforce scan, runtime, memory, output, and concurrency limits
+move tasks through retry-safe state transitions
+aggregate task and output manifests
+execute Iceberg commit protocol mechanics
+```
+
+The application owns intent, policy, and infrastructure:
+
+```txt
+source selection          catalog/table location, credentials or signed access,
+                          snapshot/release choice, source-level filters
+
+query intent              selected fields, predicates, derived columns,
+                          row transforms, output schema, partitioning strategy
+
+limits                    max files, row groups, range requests, bytes read,
+                          rows per output file, task runtime, memory,
+                          concurrency, stale timeout, retry limit
+
+execution substrate       object store, queue, checkpoint/state store,
+                          lock or commit coordinator, clock, id generator,
+                          logging hooks
+
+output policy             destination prefix, output format, partition layout,
+                          manifest format, append/overwrite behavior,
+                          promotion rules
+
+lifecycle policy          job id, idempotency key, cancellation behavior,
+                          stale detection, retry/requeue behavior,
+                          completion and fan-in behavior
+
+observability             progress callbacks, metrics, structured logs,
+                          error reporting, audit/event hooks
+```
+
+The boundary is intentional: the library turns declared intent and limits into
+deterministic bounded work; the application decides what work is meaningful and
+where it runs.
 
 ---
 
@@ -694,6 +746,23 @@ Mismatch fails loudly:
 LAQL_BOOKMARK_STALE
 ```
 
+Task manifests are deterministic too: the same normalized query, snapshot,
+schema, partition spec, and write options produce the same ordered task list.
+Each task has a stable id derived from its input files, row-group ranges,
+partition values, and output role.
+
+Write output manifests are deterministic records of produced files:
+
+```txt
+task id
+output path
+partition values
+row count
+byte size
+content hash / etag
+Iceberg data file metadata
+```
+
 ## Slice API
 
 ```ts
@@ -779,6 +848,22 @@ export default {
 
 The same loop works from a Durable Object alarm, a Lambda + SQS consumer, or any scheduler that can hold a small JSON value. The engine only produces and consumes bookmarks; the transport is the caller's.
 
+Queue retries are safe by construction. A retried message replays the same
+bookmark against the same deterministic task id and output manifest. Already
+completed task outputs are recognized by manifest entry and content identity,
+so retries either reuse the committed output or replace an incomplete temporary
+object before advancing the bookmark.
+
+Queue-visible side effects happen at task boundaries:
+
+```txt
+write temporary output
+verify output manifest entry
+promote output or include it in the final Iceberg commit
+emit next bookmark
+ack message
+```
+
 ## Cursor pagination
 
 In HTTP server mode the bookmark doubles as a pagination token.
@@ -826,7 +911,7 @@ A long CTAS or compaction is a chain of slices ending in one commit.
 
 # Query planner
 
-Planner phases:
+Planner stages:
 
 ```txt
 parse
@@ -1074,19 +1159,15 @@ This engine build applies position deletes only.
 Set readMode: "ignore-unsupported-deletes" to scan anyway.
 ```
 
-Delete support is phased in, easy first:
+Delete handling covers the Iceberg delete mechanisms that affect row visibility:
 
 ```txt
-1. position delete files        (icebird supports today)
-2. v3 deletion vectors          (icebird supports today)
-3. equality delete files        (later; needs research)
+position delete files
+v3 deletion vectors
+equality delete files
 ```
 
-Strict mode makes the phasing safe: a snapshot containing a not-yet-supported delete type fails loudly instead of silently returning deleted rows, so correctness never depends on which phase shipped.
-
-The finished product applies all Iceberg delete file types.
-
-Strict mode then only triggers on delete formats from newer Iceberg spec versions than the engine knows.
+Strict mode fails loudly on delete formats from newer Iceberg spec versions than the engine knows.
 
 The opt-outs remain as escape hatches for intentional raw scans.
 
@@ -1172,6 +1253,8 @@ footer reads
 schema reads
 column projection
 row group pruning
+row-group streaming
+row-group-sized batches
 dictionary filtering where available
 statistics filtering
 nested fields
@@ -2522,16 +2605,16 @@ await lake.table("permits")
 
 ---
 
-# Build plan (very high level)
+# Implementation Map
 
-Rough dependency order. Each phase is shippable on its own.
+Major subsystems and their responsibilities:
 
 ```txt
 1. core read path
    AST, expression evaluator, planner skeleton
    @laql/http + @laql/parquet (hyparquet adapter)
    scan / filter / project / limit over plain Parquet paths
-   streaming rows and NDJSON
+   row-group streaming, streaming rows, NDJSON
 
 2. pruning
    predicate split and classification
@@ -2540,28 +2623,32 @@ Rough dependency order. Each phase is shippable on its own.
 
 3. Iceberg reads
    icebird adapter: metadata, snapshots, manifests, manifest pruning
-   delete handling phased in, easy first: position deletes,
-   then deletion vectors, equality deletes later
-   strict mode fails loudly on whatever isn't supported yet,
-   so each phase ships correct
-   (research: equality-delete coverage in icebird)
+   position deletes, deletion vectors, equality deletes
+   strict mode fails loudly on unknown delete formats
 
 4. R2/S3 adapters + Worker ergonomics
    createLake, budgets, stats, explain, policy layer
 
-5. aggregation, sort, bookmarks
-   group by, aggregates, top-k sort
+5. task manifests, bookmarks, retry semantics
+   deterministic task manifests
+   deterministic output manifests
    slice API and bookmark serialization
-   (research: operator state serialization format, plan fingerprint stability)
+   queue-safe retry semantics
 
-6. writes
+6. aggregation, sort, bounded memory operators
+   group by, aggregates, top-k sort
+   serialized operator state
+   spill-backed operator contract
+
+7. writes
    hyparquet-writer adapter, partitioned writes
-   (research: zstd write codec — pluggable compressor)
+   deterministic output manifests
+   pluggable compression
    Iceberg append commit via iceberg-js + Durable Object commit coordinator
-   (research: commit requirements/updates logic — laql owns it)
+   commit requirements and updates
    resumable writes
 
-7. the rest, additive on the core
+8. the rest, additive on the core
    geo + H3, SQL dialect, sidecar indexes, CLI, joins, spill
 ```
 

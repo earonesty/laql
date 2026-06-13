@@ -1,8 +1,9 @@
 # LaQL build plan
 
 Companion to [README.md](README.md) (the product spec). The spec says *what*; this says *in
-what order, with what tests, against what fixtures*. The very-high-level phase list in the
-spec is expanded here into buildable milestones.
+what order, with what tests, against what fixtures*. This plan turns the responsibility
+boundary in the spec into buildable milestones: caller intent and infrastructure go in;
+bounded deterministic lake work comes out.
 
 ---
 
@@ -63,6 +64,42 @@ scaffolded.
 
 ---
 
+## Scope boundary
+
+The library owns mechanics. Milestones should move responsibility into `laql` only when it
+is generic lake-query machinery:
+
+```txt
+metadata reads, snapshot/manifest/file/row-group planning
+bounded task construction
+predicate/projection execution
+row and batch streaming
+Parquet output file writing
+bookmark/checkpoint generation
+limit enforcement
+retry-safe task state transitions
+task/output manifest aggregation
+Iceberg commit protocol mechanics
+```
+
+The caller owns intent, policy, and infrastructure:
+
+```txt
+source/table selection, credentials, snapshot/release choice
+selected fields, predicates, transforms, output schema, partitioning strategy
+budgets, stale timeout, retry limit, concurrency
+object store, queue, state/checkpoint store, lock/commit adapter
+destination prefix, manifest format, append/overwrite/promotion rules
+job id, idempotency key, cancellation/requeue/completion behavior
+progress, metrics, logs, audit and error hooks
+```
+
+Tests should reflect the boundary: fixtures provide caller intent and fake substrates;
+assertions verify that `laql` turns them into deterministic bounded work without baking in
+domain-specific policy.
+
+---
+
 ## Fixture strategy
 
 Fixtures are **generated, committed, and reproducible**:
@@ -94,12 +131,15 @@ phase 2   stats.parquet           (row groups with disjoint min/max ranges)
           wide.parquet            (30+ columns, for projection assertions)
 phase 3   iceberg-v2 warehouse    (metadata.json chain, manifest list, manifests,
                                    2 snapshots, schema evolution: add/rename/drop)
-          iceberg-deletes         (position delete files; later: deletion vectors,
+          iceberg-deletes         (position deletes, deletion vectors,
                                    equality deletes)
-phase 5   groupby.parquet         (known group cardinalities incl. a >maxGroups case)
+phase 5   task-manifest golden JSON
+          output-manifest golden JSON
+          retry replay logs       (same task retried at each transition)
+phase 6   groupby.parquet         (known group cardinalities incl. a >maxGroups case)
           bookmark replay logs    (golden bookmark JSON at fixed positions)
-phase 6   write golden files      (expected parquet output bytes for fixed input)
-phase 7   geo.parquet             (GeoJSON column + bbox columns)
+phase 7   write golden files      (expected parquet output bytes for fixed input)
+phase 8   geo.parquet             (GeoJSON column + bbox columns)
           h3.parquet              (h3_7/h3_8 columns aligned with partition layout)
 ```
 
@@ -122,7 +162,8 @@ runtime       same fixture suite executed in workerd via
               jobs follow once workerd is green.
 
 property      fast-check generators for expression eval (eval(ast) == eval
-              (normalize(ast))), bookmark round-trips, and SQL->AST->SQL echo.
+              (normalize(ast))), bookmark round-trips, deterministic task
+              manifests, retry replay idempotence, and SQL->AST->SQL echo.
               Added per-phase where invariants are crisp.
 
 benchmark     vitest bench over fixture scans (bytes requested, range request
@@ -158,26 +199,33 @@ fixture round-trip tests.
 
 ### Phase 1 — core read path
 
-Scope: scan/filter/project/limit over plain Parquet paths, streaming-first.
+Scope: scan/filter/project/limit over plain Parquet paths, streaming-first and
+row-group-aware.
 
 ```txt
 deliverables
   - expression evaluator over rows (all spec operators; scalar functions:
     string, numeric, date families)
   - logical plan: from/select/where/limit/offset as AST -> operator pipeline
-  - AsyncIterable<Row> execution; rows() / toArray() / first() / count()
+  - parquet row-group streaming; batches are bounded by row group and caller
+    batch size, never whole-file materialization
+  - AsyncIterable<Row> execution; rows() / batches() / toArray() / first() / count()
   - streamNdjson() / streamJson() as ReadableStream<Uint8Array>
   - lake.path("...*.parquet") with glob over ObjectStore.list
   - JSON query API v1 parse + validate (version field, typed errors)
   - JS value mapping per spec (int64 bigint; JSON output safe-number-or-string)
+  - per-query budget checks for rows decoded, bytes read, range requests, and
+    elapsed runtime where the engine can observe them
 
 fixtures   wide.parquet; reuse sales/types
 tests      unit (evaluator: every operator x null handling), fixture (end-to-end
-           queries with expected row sets), property (evaluator vs naive
-           reference impl on random rows)
+           queries with expected row sets), row-group streaming fixture tests
+           that prove peak buffered rows stay bounded, property (evaluator vs
+           naive reference impl on random rows)
 research   none — all mechanisms verified in phase 0
 exit       query a multi-file glob from MemoryObjectStore and stream NDJSON;
-           every spec operator evaluated with SQL three-valued null semantics
+           every spec operator evaluated with SQL three-valued null semantics;
+           no public read path requires holding a full Parquet file in memory
 ```
 
 ### Phase 2 — pruning
@@ -193,14 +241,17 @@ deliverables
   - hive partition discovery (lake.hive) + partition pruning
   - explain(): text + JSON with skipped/planned counts per spec
   - QueryStats wired through every read
+  - task input model for bounded plain-Parquet scans:
+    path, etag/version, row-group ranges, projected columns, residual predicate
 
 fixtures   stats.parquet, hive/ layout
 tests      unit (classifier: each predicate shape -> expected class), fixture
            (assert filesSkipped/rowGroupsSkipped exact numbers — pruning tests
-           must count, not just pass), benchmark baseline
+           must count, not just pass), task input golden tests, benchmark baseline
 research   hyparquet dictionary-filter API surface
 exit       a selective query over hive/ reads strictly fewer bytes than a full
-           scan, and explain() proves it with exact counts
+           scan, explain() proves it with exact counts, and planned task inputs
+           are stable for the same object versions and query
 ```
 
 ### Phase 3 — Iceberg reads
@@ -209,21 +260,24 @@ exit       a selective query over hive/ reads strictly fewer bytes than a full
 deliverables
   - icebird adapter: metadata.json chain, snapshot by id/timestamp/branch/tag
   - manifest list + manifest pruning using partition predicates
+  - deterministic data-file planning from Iceberg manifests, including file
+    sequence/order, delete-file association, partition values, and stats
   - schema evolution mapping (field-id based projection)
-  - delete handling, phased easy-first per spec: position deletes ->
-    deletion vectors -> equality deletes; strict mode throws
-    LAQL_UNSUPPORTED_DELETE_FILES for whatever isn't supported yet
+  - delete handling per spec: position deletes, deletion vectors, equality
+    deletes; strict mode throws LAQL_UNSUPPORTED_DELETE_FILES for unknown delete
+    formats
   - readMode: strict | ignore-deletes | ignore-unsupported-deletes
   - static metadata.json + R2/S3-layout catalogs; iceberg-rest via iceberg-js
 
 fixtures   iceberg-v2 warehouse (generated: avsc manifests + metadata chain),
            iceberg-deletes; external Iceberg reference tables in conformance
 tests      fixture (snapshot pinning: same query, two snapshots, different
-           rows), conformance, unit (manifest pruning math)
-research   icebird equality-delete coverage (flagged in spec); manifest
-           generation via avsc for our own fixtures
+           rows), conformance, unit (manifest pruning math), golden planned
+           data-file/task order
+research   manifest generation via avsc for our own fixtures
 exit       time-travel query against the fixture warehouse with position
-           deletes applied and manifests pruned (counted in explain)
+           deletes applied and manifests pruned (counted in explain); the same
+           snapshot and query yield the same planned files and row groups
 ```
 
 ### Phase 4 — runtime drivers + Worker ergonomics
@@ -237,46 +291,91 @@ deliverables
   - laql/cloudflare, laql/node driver subpaths in the umbrella package
   - workerd test lane: fixture suite green under vitest-pool-workers
   - cache adapters: memoryCache + cacheApiCache; footer/metadata caches
+  - substrate interfaces for caller-supplied queue, checkpoint/state store,
+    lock/commit coordinator, clock/id generator, metrics/log hooks
 
 fixtures   reuse all; add a policy fixture config
 tests      runtime matrix lane goes live; unit (SigV4 vectors, Range header
-           edges); budget/policy fixture tests
-research   pin the non-Iceberg consistency story (etag-pinned plans) — spec
-           gap flagged earlier; decide before bookmarks ship in phase 5
+           edges); budget/policy fixture tests; fake substrate tests that prove
+           core remains runtime-agnostic
+research   pin the non-Iceberg consistency story for etag-pinned plain
+           Parquet plans before bookmarks ship in phase 5
 exit       same fixture suite passes on Node and workerd; an R2-backed Worker
-           example streams NDJSON under a budget
+           example streams NDJSON under a budget with caller-provided queue and
+           checkpoint adapters
 ```
 
-### Phase 5 — aggregation, sort, bookmarks
+### Phase 5 — task manifests, bookmarks, queue-safe retry
+
+```txt
+deliverables
+  - deterministic TaskManifest:
+    job id, plan fingerprint, snapshot/object versions, ordered task list,
+    task ids, row-group/file ranges, projected columns, partition values,
+    output role
+  - deterministic OutputManifest:
+    task id, output path, partition values, row count, byte size,
+    content hash/etag, Iceberg data file metadata when applicable
+  - slice API: run({ slice }) -> SliceResult with bookmark
+  - bookmark serialization for position-only scans and write tasks:
+    fileIndex, rowGroup, rowOffset, task id, output manifest cursor,
+    plan fingerprint + LAQL_BOOKMARK_STALE
+  - retry-safe task state machine:
+    planned -> running -> output-written -> manifest-recorded -> complete
+    with idempotency key checks and stale timeout handling
+  - checkpoint adapter contract; in-memory fake for tests
+  - queue-safe requeue contract: retry limit, stale detection, cancellation,
+    completion/fan-in hooks remain caller policy but engine exposes state
+    transitions and typed outcomes
+  - resumableBatches({ bookmarkEvery }); lake.resume(bookmark)
+  - HMAC-signed pagination tokens (LAQL_BOOKMARK_INVALID on forgery)
+
+fixtures   task-manifest golden JSON, output-manifest golden JSON, retry replay
+           logs, golden bookmark JSON
+tests      property (run-to-completion == run-sliced-and-resumed, any slice
+           boundary — THE invariant of the product), property (same query and
+           snapshot -> same task manifest), property (replaying a completed or
+           partially completed task is idempotent), unit (fingerprint stability),
+           fixture (kill/resume at every row-group and task transition)
+research   plan-compat fingerprint vs engine version (decision flagged in
+           spec discussion); task/output manifest format versioning
+exit       a query sliced at arbitrary points yields byte-identical output to
+           an unsliced run, across simulated process restarts; replaying every
+           queue-visible transition produces exactly one logical task completion
+```
+
+### Phase 6 — aggregation, sort, bounded memory operators
 
 ```txt
 deliverables
   - group by + aggregates (count/sum/avg/min/max/count_distinct/first/last/any)
     with maxGroups -> LAQL_GROUP_LIMIT_EXCEEDED
-  - top-k order by; order-by-after-limit; spill adapter interface (impl later)
-  - slice API: run({ slice }) -> SliceResult with bookmark
-  - bookmark serialization: position-only first, then serialized operator
-    state (group hash table, top-k heap); plan fingerprint + LAQL_BOOKMARK_STALE
-  - resumableBatches({ bookmarkEvery }); lake.resume(bookmark)
-  - HMAC-signed pagination tokens (LAQL_BOOKMARK_INVALID on forgery)
+  - serialized operator state for group hash table, top-k heap, approximate
+    sketches; bookmark/checkpoint format versioning
+  - top-k order by; order-by-after-limit; spill adapter interface
+  - spill-backed operator contract for large global sort/hash join operators
+  - budget enforcement for maxGroups, max memory, spill bytes, output rows
 
-fixtures   groupby.parquet, golden bookmark JSON
-tests      property (run-to-completion == run-sliced-and-resumed, any slice
-           boundary — THE invariant of the product), unit (fingerprint
-           stability), fixture (kill/resume at every row-group edge)
-research   plan-compat fingerprint vs engine version (decision flagged in
-           spec discussion); operator-state format versioning
-exit       a query sliced at arbitrary points yields byte-identical output to
-           an unsliced run, across simulated process restarts
+fixtures   groupby.parquet, bookmark replay logs at operator-state boundaries
+tests      property (sliced/resumed aggregation == unsliced aggregation), unit
+           (operator state serialization), fixture (>maxGroups typed failure),
+           memory-budget tests with deterministic fake allocator/counters
+research   operator-state serialization format details
+exit       aggregations and bounded sorts resume across process restarts and
+           never exceed configured group/memory budgets without typed failure
 ```
 
-### Phase 6 — writes
+### Phase 7 — writes
 
 ```txt
 deliverables
   - hyparquet-writer adapter: writeParquet with schema/compression/rowGroupSize
     (research: zstd = pluggable compressor; snappy default)
   - partitioned directory writes (hive layout, maxRows/maxBytes per file)
+  - deterministic output path planning from job id/idempotency key, task id,
+    partition values, file ordinal, and output policy
+  - output manifest writer and aggregator; task-level output manifest entries
+    feed final commit/fan-in
   - Iceberg append commit: data file metadata, avsc manifests, commit via
     iceberg-js requirements/updates (we own the commit protocol logic)
   - commit conflict retry -> LAQL_ICEBERG_COMMIT_CONFLICT; DO coordinator recipe
@@ -286,14 +385,16 @@ deliverables
 
 fixtures   write golden files; round-trip (write -> read back through phase 1-3)
 tests      golden-byte comparisons, round-trips, commit-conflict simulation
-           against a fake REST catalog
+           against a fake REST catalog, output-manifest aggregation tests,
+           overwrite/append policy fixture tests
 research   iceberg-js updateTable requirements semantics against a real
            catalog (conformance lane)
 exit       append to the fixture warehouse, read it back with time travel, and
-           survive a mid-write resume
+           survive a mid-write resume; retrying any write task produces one
+           logical output manifest entry and one committed file set
 ```
 
-### Phase 7 — geo/H3, SQL, indexes, CLI, joins
+### Phase 8 — geo/H3, SQL, indexes, CLI, joins
 
 Additive tracks, parallelizable, each gated the same way:
 
