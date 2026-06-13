@@ -644,6 +644,22 @@ describe("createParquetLake", () => {
     expect(result.stats.rowGroupsSkipped).toBe(2);
   });
 
+  it("plans bounded row-group task ranges from Parquet footer statistics", async () => {
+    const lake = createParquetLake({ store, queryId: () => "task-range-query" });
+    const query = lake.path(`data/${STATS.file}`).select(["id"]).where(gte("metric", 100));
+
+    const tasks = await query.planTasks();
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({
+      path: `data/${STATS.file}`,
+      projectedColumns: ["id", "metric"],
+      rowGroupRanges: [{ start: 1, end: 3 }],
+    });
+
+    const explain = await query.explain();
+    expect(explain.json.tasks[0]?.rowGroupRanges).toEqual([{ start: 1, end: 3 }]);
+  });
+
   it("reuses cached Parquet footer metadata across scans", async () => {
     const metadataCache = memoryCache<ParquetMetadata>();
     const lake = createParquetLake({ store, metadataCache });

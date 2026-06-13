@@ -60,6 +60,17 @@ export interface ScanOptions {
 
 export interface ScanAdapter {
   scan(path: string, options: ScanOptions): AsyncIterable<Row[]>;
+  planTask?(path: string, options: ScanTaskPlanOptions): Promise<ScanTaskPlan>;
+}
+
+export interface ScanTaskPlanOptions {
+  columns?: string[];
+  where?: Expr;
+  partitionValues: Record<string, string>;
+}
+
+export interface ScanTaskPlan {
+  rowGroupRanges: { start: number; end: number }[];
 }
 
 export interface PathQueryInit {
@@ -728,7 +739,7 @@ export class QueryResult {
 
   async explain(): Promise<ExplainResult> {
     const { planned, skipped } = await this.planObjects();
-    const tasks = this.tasksFromObjects(planned);
+    const tasks = await this.tasksFromObjects(planned);
     const projectedColumns = projectedReadColumns(this.config.select, this.config.where) ?? [];
     const json: ExplainJson = {
       queryId: this.stats.queryId,
@@ -747,20 +758,31 @@ export class QueryResult {
     };
   }
 
-  private tasksFromObjects(objects: ObjectInfo[]): TaskInput[] {
+  private async tasksFromObjects(objects: ObjectInfo[]): Promise<TaskInput[]> {
     const config = this.config;
     const projectedColumns = projectedReadColumns(config.select, config.where, config.orderBy);
-    return objects.map((object) => {
+    const tasks: TaskInput[] = [];
+    for (const object of objects) {
+      const partitionValues = config.hive ? parseHivePartitions(object.path) : {};
+      const physicalColumns = projectedColumns?.filter((column) => !(column in partitionValues));
+      const scanPlan = await config.scanner.planTask?.(object.path, {
+        partitionValues,
+        ...(physicalColumns !== undefined && physicalColumns.length > 0
+          ? { columns: physicalColumns }
+          : {}),
+        ...(config.where !== undefined ? { where: config.where } : {}),
+      });
       const task: TaskInput = {
         path: object.path,
-        rowGroupRanges: [{ start: 0, end: Number.POSITIVE_INFINITY }],
-        partitionValues: config.hive ? parseHivePartitions(object.path) : {},
+        rowGroupRanges: scanPlan?.rowGroupRanges ?? [{ start: 0, end: Number.POSITIVE_INFINITY }],
+        partitionValues,
       };
       if (object.etag !== undefined) task.etag = object.etag;
       if (projectedColumns !== undefined) task.projectedColumns = projectedColumns;
       if (config.where !== undefined) task.residualPredicate = config.where;
-      return task;
-    });
+      tasks.push(task);
+    }
+    return tasks;
   }
 
   private async planObjects(): Promise<{ planned: ObjectInfo[]; skipped: number }> {

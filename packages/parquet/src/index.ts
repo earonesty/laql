@@ -9,6 +9,8 @@ import {
   type Row,
   type ScanAdapter,
   type ScanOptions,
+  type ScanTaskPlan,
+  type ScanTaskPlanOptions,
 } from "@laql/core";
 import type { RowGroup } from "hyparquet";
 import { parquetMetadataAsync, parquetReadObjects } from "hyparquet";
@@ -281,6 +283,12 @@ export class ParquetScanAdapter implements ScanAdapter {
     }
   }
 
+  async planTask(path: string, options: ScanTaskPlanOptions): Promise<ScanTaskPlan> {
+    const file = await asyncBufferFromStore(this.store, path);
+    const metadata = await parquetMetadataAsync(file);
+    return { rowGroupRanges: matchingRowGroupRanges(metadata.row_groups, options.where) };
+  }
+
   private async metadata(
     path: string,
     file: StoreAsyncBuffer,
@@ -298,6 +306,21 @@ export class ParquetScanAdapter implements ScanAdapter {
     await this.metadataCache.set(key, { value: metadata });
     return metadata;
   }
+}
+
+function matchingRowGroupRanges(
+  rowGroups: RowGroup[],
+  where: Expr | undefined,
+): { start: number; end: number }[] {
+  const ranges: { start: number; end: number }[] = [];
+  for (let index = 0; index < rowGroups.length; index += 1) {
+    const rowGroup = rowGroups[index];
+    if (rowGroup === undefined || !rowGroupMayMatch(rowGroup, where)) continue;
+    const previous = ranges.at(-1);
+    if (previous && previous.end === index) previous.end = index + 1;
+    else ranges.push({ start: index, end: index + 1 });
+  }
+  return ranges;
 }
 
 function metadataCacheKey(path: string, byteLength: number, etag: string | undefined): string {
