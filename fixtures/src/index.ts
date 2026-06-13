@@ -42,6 +42,13 @@ export const WRITE = {
   rows: 3,
 } as const;
 
+export const MANIFESTS = {
+  taskManifest: "manifests/task-manifest.golden.json",
+  outputManifest: "manifests/output-manifest.golden.json",
+  bookmark: "manifests/bookmark.golden.json",
+  retryLog: "manifests/retry-log.golden.json",
+} as const;
+
 export const HIVE = {
   files: [
     "hive/date=2026-01-01/country=US/part-000.parquet",

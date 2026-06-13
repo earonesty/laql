@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { eq } from "./expr.js";
 import {
@@ -64,23 +65,7 @@ describe("task and output manifests", () => {
   });
 
   it("normalizes task and output manifest JSON for golden comparisons", () => {
-    const taskManifest = createTaskManifest({
-      jobId: "job_2",
-      snapshot: "snapshot_2",
-      outputRole: "data-file",
-      tasks: [
-        {
-          path: "b.parquet",
-          etag: "v2",
-          rowGroupRanges: [
-            { start: 10, end: 20 },
-            { start: 0, end: 10 },
-          ],
-          projectedColumns: ["z", "a"],
-          partitionValues: { country: "US", date: "2026-01-01" },
-        },
-      ],
-    });
+    const taskManifest = goldenTaskManifest();
     const outputManifest = createOutputManifest({
       jobId: "job_2",
       planFingerprint: taskManifest.planFingerprint,
@@ -104,6 +89,12 @@ describe("task and output manifests", () => {
 
     expect(taskManifest.snapshot).toBe("snapshot_2");
     expect(taskManifest.tasks[0]?.outputRole).toBe("data-file");
+    expect(stableStringify(taskManifest)).toBe(
+      goldenFixture("manifests/task-manifest.golden.json"),
+    );
+    expect(stableStringify(outputManifest)).toBe(
+      goldenFixture("manifests/output-manifest.golden.json"),
+    );
     expect(stableStringify(taskManifest)).toContain('"projectedColumns":["a","z"]');
     expect(stableStringify(outputManifest)).toContain(
       '"partitionValues":{"country":"US","date":"2026-01-01"}',
@@ -135,6 +126,7 @@ describe("bookmarks and checkpoints", () => {
       },
     });
 
+    expect(stableStringify(bookmark)).toBe(goldenFixture("manifests/bookmark.golden.json"));
     expect(() => assertBookmarkMatches(bookmark, "fp_other")).toThrowError(/current query plan/u);
     assertBookmarkMatches(bookmark, "fp_0123456789abcdef");
 
@@ -271,6 +263,9 @@ describe("bookmarks and checkpoints", () => {
     expect(replay).toEqual(running);
     expect(requeued).toMatchObject({ state: "running", idempotencyKey: "idem-2" });
     expect(outputWritten.output).toMatchObject({ outputPath: "out/file.parquet" });
+    expect(stableStringify([planned, running, requeued, outputWritten])).toBe(
+      goldenFixture("manifests/retry-log.golden.json"),
+    );
   });
 
   it("rejects unsafe task checkpoint transitions", () => {
@@ -308,6 +303,30 @@ describe("bookmarks and checkpoints", () => {
     ).toThrow(/does not match/u);
   });
 });
+
+function goldenTaskManifest() {
+  return createTaskManifest({
+    jobId: "job_2",
+    snapshot: "snapshot_2",
+    outputRole: "data-file",
+    tasks: [
+      {
+        path: "b.parquet",
+        etag: "v2",
+        rowGroupRanges: [
+          { start: 10, end: 20 },
+          { start: 0, end: 10 },
+        ],
+        projectedColumns: ["z", "a"],
+        partitionValues: { country: "US", date: "2026-01-01" },
+      },
+    ],
+  });
+}
+
+function goldenFixture(name: string): string {
+  return readFileSync(new URL(`../../../fixtures/data/${name}`, import.meta.url), "utf8").trim();
+}
 
 async function signRawPayload(payload: string, secret: string): Promise<string> {
   const encoder = new TextEncoder();

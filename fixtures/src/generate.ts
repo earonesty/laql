@@ -9,6 +9,7 @@ import {
   GROUPBY,
   HIVE,
   ICEBERG,
+  MANIFESTS,
   SALES,
   STATS,
   TYPES,
@@ -142,6 +143,106 @@ function generateWriteGolden() {
   });
 }
 
+function generateManifestGoldens() {
+  const taskInput = {
+    path: "b.parquet",
+    etag: "v2",
+    rowGroupRanges: [
+      { start: 10, end: 20 },
+      { start: 0, end: 10 },
+    ],
+    projectedColumns: ["z", "a"],
+    partitionValues: { country: "US", date: "2026-01-01" },
+  };
+  const normalizedTaskInput = normalizeTaskInput(taskInput);
+  const taskManifest = {
+    version: 1,
+    jobId: "job_2",
+    planFingerprint: fingerprint({
+      version: 1,
+      snapshot: "snapshot_2",
+      tasks: [normalizedTaskInput],
+    }),
+    snapshot: "snapshot_2",
+    tasks: [
+      {
+        id: taskId("job_2", 0, taskInput),
+        input: normalizedTaskInput,
+        outputRole: "data-file",
+      },
+    ],
+  };
+  const outputEntry = {
+    taskId: taskManifest.tasks[0]?.id ?? "",
+    outputPath: "out/date=2026-01-01/file.parquet",
+    partitionValues: { country: "US", date: "2026-01-01" },
+    rowCount: 12,
+    byteSize: 256,
+    contentHash: "sha256:abc",
+    etag: "out-v1",
+    iceberg: {
+      recordCount: 12,
+      fileSizeInBytes: 256,
+      partitionValues: { country: "US", date: "2026-01-01" },
+    },
+  };
+  const bookmark = {
+    version: 1,
+    planFingerprint: "fp_0123456789abcdef",
+    snapshot: "snapshot_1",
+    position: {
+      fileIndex: 1,
+      rowGroup: 2,
+      rowOffset: 3,
+      taskId: "job-task-000001-deadbeef",
+      outputManifestCursor: 4,
+    },
+  };
+  const retryLog = [
+    {
+      taskId: "job_4-task-000001-a",
+      state: "planned",
+      idempotencyKey: "idem-1",
+      updatedAtMs: 10,
+    },
+    {
+      taskId: "job_4-task-000001-a",
+      state: "running",
+      idempotencyKey: "idem-1",
+      updatedAtMs: 20,
+    },
+    {
+      taskId: "job_4-task-000001-a",
+      state: "running",
+      idempotencyKey: "idem-2",
+      updatedAtMs: 100,
+    },
+    {
+      taskId: "job_4-task-000001-a",
+      state: "output-written",
+      idempotencyKey: "idem-2",
+      updatedAtMs: 110,
+      output: {
+        taskId: "job_4-task-000001-a",
+        outputPath: "out/file.parquet",
+        partitionValues: {},
+        rowCount: 1,
+        byteSize: 2,
+      },
+    },
+  ];
+
+  writeJsonFixture(MANIFESTS.taskManifest, taskManifest);
+  writeJsonFixture(MANIFESTS.outputManifest, {
+    version: 1,
+    jobId: "job_2",
+    planFingerprint: taskManifest.planFingerprint,
+    entries: [normalizeOutputEntry(outputEntry)],
+  });
+  writeJsonFixture(MANIFESTS.bookmark, bookmark);
+  writeJsonFixture(MANIFESTS.retryLog, retryLog);
+}
+
 function generateHive() {
   for (const file of HIVE.files) {
     const path = fixturePath(file);
@@ -263,6 +364,119 @@ generateWide();
 generateStats();
 generateGroupby();
 generateWriteGolden();
+generateManifestGoldens();
 generateHive();
 generateIceberg();
 console.log(`fixtures written to ${fixtureDataDir}`);
+
+function writeJsonFixture(name: string, value: unknown) {
+  const path = fixturePath(name);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${stableStringify(value)}\n`);
+}
+
+function normalizeTaskInput(task: {
+  path: string;
+  etag?: string;
+  rowGroupRanges: { start: number; end: number }[];
+  projectedColumns?: string[];
+  partitionValues: Record<string, string>;
+}) {
+  return {
+    path: task.path,
+    etag: task.etag,
+    rowGroupRanges: [...task.rowGroupRanges]
+      .map((range) => ({ start: range.start, end: range.end }))
+      .sort((a, b) => a.start - b.start || a.end - b.end),
+    projectedColumns: task.projectedColumns ? [...task.projectedColumns].sort() : undefined,
+    partitionValues: sortRecord(task.partitionValues),
+  };
+}
+
+function normalizeOutputEntry(entry: {
+  taskId: string;
+  outputPath: string;
+  partitionValues: Record<string, string>;
+  rowCount: number;
+  byteSize: number;
+  contentHash?: string;
+  etag?: string;
+  iceberg?: {
+    recordCount: number;
+    fileSizeInBytes: number;
+    partitionValues: Record<string, string>;
+  };
+}) {
+  return {
+    taskId: entry.taskId,
+    outputPath: entry.outputPath,
+    partitionValues: sortRecord(entry.partitionValues),
+    rowCount: entry.rowCount,
+    byteSize: entry.byteSize,
+    contentHash: entry.contentHash,
+    etag: entry.etag,
+    iceberg: entry.iceberg
+      ? {
+          recordCount: entry.iceberg.recordCount,
+          fileSizeInBytes: entry.iceberg.fileSizeInBytes,
+          partitionValues: sortRecord(entry.iceberg.partitionValues),
+        }
+      : undefined,
+  };
+}
+
+function taskId(jobId: string, index: number, task: unknown): string {
+  return `${jobId}-task-${String(index).padStart(6, "0")}-${fingerprint(task).slice(3, 11)}`;
+}
+
+function fingerprint(value: unknown): string {
+  return `fp_${fnv1a64(stableStringify(value)).toString(16).padStart(16, "0")}`;
+}
+
+function fnv1a64(input: string): bigint {
+  let hash = 0xcbf29ce484222325n;
+  const prime = 0x100000001b3n;
+  for (const char of input) {
+    hash ^= BigInt(char.codePointAt(0) ?? 0);
+    hash = BigInt.asUintN(64, hash * prime);
+  }
+  return hash;
+}
+
+function stableStringify(value: unknown): string {
+  return JSON.stringify(toStableJson(value));
+}
+
+function toStableJson(value: unknown): unknown {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    if (typeof value === "number" && !Number.isFinite(value)) return String(value);
+    return value;
+  }
+  if (typeof value === "bigint") return value.toString();
+  if (value instanceof Date) return value.toISOString();
+  if (value instanceof Uint8Array) return base64UrlEncode(value);
+  if (Array.isArray(value)) return value.map(toStableJson);
+  if (typeof value === "object" && value !== null) {
+    const out: Record<string, unknown> = {};
+    for (const [key, inner] of Object.entries(value).sort(([a], [b]) => a.localeCompare(b))) {
+      if (inner !== undefined) out[key] = toStableJson(inner);
+    }
+    return out;
+  }
+  return String(value);
+}
+
+function sortRecord(record: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(record).sort(([a], [b]) => a.localeCompare(b)));
+}
+
+function base64UrlEncode(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
