@@ -5,6 +5,7 @@ import {
   assertBookmarkMatches,
   createBookmark,
   createOutputManifest,
+  createOutputManifestFromCheckpoints,
   createTaskManifest,
   fingerprint,
   memoryCheckpointAdapter,
@@ -354,6 +355,75 @@ describe("bookmarks and checkpoints", () => {
       output: { partitionValues: { country: "US" } },
     });
     expect(listed).toEqual(["job_3-task-000001-a", "job_3-task-000002-a"]);
+  });
+
+  it("aggregates output manifests from task checkpoints deterministically", async () => {
+    const checkpoints = memoryCheckpointAdapter();
+    await checkpoints.put({
+      taskId: "job_6-task-000002-b",
+      state: "output-written",
+      idempotencyKey: "idem-2",
+      updatedAtMs: 20,
+      output: {
+        taskId: "job_6-task-000002-b",
+        outputPath: "out/b.parquet",
+        partitionValues: { date: "2026-01-02", country: "CA" },
+        rowCount: 2,
+        byteSize: 20,
+        contentHash: "sha256:b",
+      },
+    });
+    await checkpoints.put({
+      taskId: "job_6-task-000001-a",
+      state: "complete",
+      idempotencyKey: "idem-1",
+      updatedAtMs: 10,
+      output: {
+        taskId: "job_6-task-000001-a",
+        outputPath: "out/a.parquet",
+        partitionValues: { country: "US", date: "2026-01-01" },
+        rowCount: 1,
+        byteSize: 10,
+        contentHash: "sha256:a",
+        etag: "etag-a",
+      },
+    });
+    await checkpoints.put({
+      taskId: "other-task-000001-a",
+      state: "output-written",
+      idempotencyKey: "idem-other",
+      updatedAtMs: 30,
+      output: {
+        taskId: "other-task-000001-a",
+        outputPath: "out/other.parquet",
+        partitionValues: {},
+        rowCount: 1,
+        byteSize: 1,
+      },
+    });
+
+    const manifest = await createOutputManifestFromCheckpoints({
+      jobId: "job_6",
+      planFingerprint: "fp_outputs",
+      checkpoints,
+    });
+    expect(manifest.entries.map((entry) => entry.taskId)).toEqual([
+      "job_6-task-000001-a",
+      "job_6-task-000002-b",
+    ]);
+    expect(stableStringify(manifest)).toBe(
+      '{"entries":[{"byteSize":10,"contentHash":"sha256:a","etag":"etag-a","outputPath":"out/a.parquet","partitionValues":{"country":"US","date":"2026-01-01"},"rowCount":1,"taskId":"job_6-task-000001-a"},{"byteSize":20,"contentHash":"sha256:b","outputPath":"out/b.parquet","partitionValues":{"country":"CA","date":"2026-01-02"},"rowCount":2,"taskId":"job_6-task-000002-b"}],"jobId":"job_6","planFingerprint":"fp_outputs","version":1}',
+    );
+
+    const firstEntry = manifest.entries[0];
+    if (!firstEntry) throw new Error("expected output manifest entry");
+    firstEntry.partitionValues.country = "MX";
+    const repeated = await createOutputManifestFromCheckpoints({
+      jobId: "job_6",
+      planFingerprint: "fp_outputs",
+      checkpoints,
+    });
+    expect(repeated.entries[0]?.partitionValues.country).toBe("US");
   });
 
   it("advances task checkpoints idempotently and permits stale requeue", () => {

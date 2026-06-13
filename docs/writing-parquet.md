@@ -32,6 +32,8 @@ const entries = partitionedParquetOutputEntries(result, {
 
 Each written file and output-manifest entry includes a deterministic `sha256:` content
 hash computed from the exact Parquet bytes written to the object store.
+When write tasks persist their `OutputManifestEntry` values in a checkpoint adapter,
+`createOutputManifestFromCheckpoints` fans them into one sorted manifest for commit.
 
 Set `iceberg: true` when the manifest should carry data-file metadata for a later Iceberg append commit.
 

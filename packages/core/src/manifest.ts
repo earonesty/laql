@@ -117,6 +117,24 @@ export function createOutputManifest(input: {
   };
 }
 
+export async function createOutputManifestFromCheckpoints(input: {
+  jobId: string;
+  planFingerprint: string;
+  checkpoints: CheckpointAdapter;
+}): Promise<OutputManifest> {
+  const entries: OutputManifestEntry[] = [];
+  for await (const checkpoint of input.checkpoints.list(input.jobId)) {
+    if (!checkpoint.output) continue;
+    entries.push(checkpoint.output);
+  }
+  entries.sort((left, right) => left.taskId.localeCompare(right.taskId));
+  return createOutputManifest({
+    jobId: input.jobId,
+    planFingerprint: input.planFingerprint,
+    entries,
+  });
+}
+
 export function createBookmark(init: BookmarkInit): Bookmark {
   const position: Bookmark["position"] = {
     fileIndex: init.position.fileIndex,
