@@ -6,12 +6,14 @@ import { memoryStore } from "./memory-store.js";
 import {
   type AggregateSpec,
   deserializeAggregateOperatorState,
+  deserializeTopKOperatorState,
   Lake,
   parseHivePartitions,
   parseJsonQuery,
   type ScanAdapter,
   type ScanOptions,
   serializeAggregateOperatorState,
+  serializeTopKOperatorState,
 } from "./query.js";
 import type { Row } from "./types.js";
 
@@ -666,6 +668,70 @@ describe("Lake query runtime", () => {
         .path("table")
         .orderBy([{ column: "value" }])
         .toArray(),
+    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+  });
+
+  it("serializes and resumes top-k operator state", async () => {
+    const first = await makeLake({
+      rowsByPath: { table: [{ id: 5 }, { id: 1 }, { id: 4 }] },
+      budget: { maxBufferedRows: 3 },
+    });
+    const partial = await first.lake
+      .path("table")
+      .orderBy([{ column: "id" }])
+      .limit(3)
+      .topKWithState();
+    expect(partial.rows).toEqual([{ id: 1 }, { id: 4 }, { id: 5 }]);
+
+    const snapshot = deserializeTopKOperatorState(partial.operatorState);
+    expect(deserializeTopKOperatorState(serializeTopKOperatorState(snapshot))).toEqual(snapshot);
+
+    const second = await makeLake({
+      rowsByPath: { table: [{ id: 2 }, { id: 3 }, { id: 0 }] },
+      budget: { maxBufferedRows: 3 },
+    });
+    await expect(
+      second.lake
+        .path("table")
+        .orderBy([{ column: "id" }])
+        .limit(3)
+        .topKWithState({ operatorState: partial.operatorState }),
+    ).resolves.toMatchObject({
+      rows: [{ id: 0 }, { id: 1 }, { id: 2 }],
+    });
+
+    await expect(
+      second.lake
+        .path("table")
+        .orderBy([{ column: "id", direction: "desc" }])
+        .limit(3)
+        .topKWithState({ operatorState: partial.operatorState }),
+    ).rejects.toMatchObject({ code: "LAQL_BOOKMARK_STALE" });
+    await expect(
+      second.lake
+        .path("table")
+        .orderBy([{ column: "id" }])
+        .limit(2)
+        .topKWithState({ operatorState: partial.operatorState }),
+    ).rejects.toMatchObject({ code: "LAQL_BOOKMARK_STALE" });
+    await expect(
+      second.lake
+        .path("table")
+        .orderBy([{ column: "id" }])
+        .limit(3)
+        .topKWithState({ operatorState: new TextEncoder().encode("{}") }),
+    ).rejects.toMatchObject({ code: "LAQL_BOOKMARK_INVALID" });
+
+    const nested = await makeLake({
+      rowsByPath: { table: [{ id: 1, payload: { nested: true } }] },
+    });
+    await expect(
+      nested.lake
+        .path("table")
+        .select(["id", "payload"])
+        .orderBy([{ column: "id" }])
+        .limit(1)
+        .topKWithState(),
     ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
   });
 

@@ -117,7 +117,26 @@ export interface AggregateResult {
   operatorState: Uint8Array;
 }
 
-export type AggregateSnapshotValue = string | number | boolean | null;
+export interface TopKOptions {
+  operatorState?: Uint8Array | TopKOperatorState;
+}
+
+export interface TopKResult {
+  rows: Row[];
+  operatorState: Uint8Array;
+}
+
+export interface TopKOperatorState {
+  version: 1;
+  orderBy: OrderByTerm[];
+  offset: number;
+  limit: number;
+  rows: Record<string, OperatorSnapshotValue>[];
+}
+
+export type OperatorSnapshotValue = string | number | boolean | null;
+
+export type AggregateSnapshotValue = OperatorSnapshotValue;
 
 export interface AggregateOperatorState {
   version: 1;
@@ -302,6 +321,10 @@ export class QueryBuilder {
     return this.run().toArray();
   }
 
+  topKWithState(options: TopKOptions = {}): Promise<TopKResult> {
+    return this.run().topKWithState(options);
+  }
+
   first(): Promise<Row | undefined> {
     return this.run().first();
   }
@@ -435,6 +458,38 @@ export class QueryResult {
     return rows;
   }
 
+  async topKWithState(options: TopKOptions = {}): Promise<TopKResult> {
+    const config = this.config;
+    if (config.orderBy === undefined) {
+      throw new LaQLError("LAQL_TYPE_ERROR", "topKWithState requires orderBy");
+    }
+    if (config.limit === undefined) {
+      throw new LaQLError("LAQL_TYPE_ERROR", "topKWithState requires limit");
+    }
+    const orderBy = normalizeOrderBy(config.orderBy);
+    const topK = (config.offset ?? 0) + config.limit;
+    const matched = topKRowsFromState(
+      orderBy,
+      config.offset ?? 0,
+      config.limit,
+      options.operatorState,
+    );
+    enforceBufferedRowsBudget(config.budget, matched.length);
+    const startedAt = config.now();
+    await this.collectOrderedMatches(matched, topK, startedAt);
+    matched.sort((left, right) => compareRows(left, right, orderBy));
+    const start = config.offset ?? 0;
+    const end = start + config.limit;
+    const rows = matched.slice(start, end).map((row) => project(row, config.select));
+    for (const _row of rows) {
+      this.stats.rowsReturned += 1;
+      enforceBudget(config.budget, this.stats, config.now, startedAt);
+    }
+    this.stats.elapsedMs = config.now() - startedAt;
+    const state = topKOperatorState(orderBy, config.offset ?? 0, config.limit, matched);
+    return { rows, operatorState: serializeTopKOperatorState(state) };
+  }
+
   async first(): Promise<Row | undefined> {
     for await (const row of this.rows()) return row;
     return undefined;
@@ -553,12 +608,40 @@ export class QueryResult {
   private async *orderedBatches(): AsyncIterable<Row[]> {
     const config = this.config;
     const { stats } = this;
-    const startedAt = config.now();
-    const { planned: paths, skipped: skippedFiles } = await this.planObjects();
-    stats.filesSkipped = skippedFiles;
-    const columns = projectedReadColumns(config.select, config.where, config.orderBy);
     const matched: Row[] = [];
     const topK = config.limit === undefined ? undefined : (config.offset ?? 0) + config.limit;
+    const startedAt = config.now();
+    await this.collectOrderedMatches(matched, topK, startedAt);
+    matched.sort((left, right) => compareRows(left, right, config.orderBy ?? []));
+    const start = config.offset ?? 0;
+    const end = config.limit === undefined ? matched.length : start + config.limit;
+    const batchSize = config.batchSize ?? 4096;
+    let batch: Row[] = [];
+    for (const row of matched.slice(start, end)) {
+      batch.push(project(row, config.select));
+      stats.rowsReturned += 1;
+      enforceBudget(config.budget, stats, config.now, startedAt);
+      if (batch.length >= batchSize) {
+        stats.elapsedMs = config.now() - startedAt;
+        yield batch;
+        batch = [];
+      }
+    }
+    stats.elapsedMs = config.now() - startedAt;
+    if (batch.length > 0) yield batch;
+  }
+
+  private async collectOrderedMatches(
+    matched: Row[],
+    topK: number | undefined,
+    startedAt: number,
+  ): Promise<void> {
+    const config = this.config;
+    const { stats } = this;
+    const { planned: paths, skipped: skippedFiles } = await this.planObjects();
+    stats.filesSkipped = skippedFiles;
+    const orderBy = config.orderBy ?? [];
+    const columns = projectedReadColumns(config.select, config.where, orderBy);
     for (const object of paths) {
       stats.filesPlanned += 1;
       stats.filesRead += 1;
@@ -584,29 +667,13 @@ export class QueryResult {
           enforceBudget(config.budget, stats, config.now, startedAt);
           if (!matches(config.where, row)) continue;
           stats.rowsMatched += 1;
-          validateSortRow(row, config.orderBy ?? []);
-          addOrderedMatch(matched, row, config.orderBy ?? [], topK);
+          validateSortRow(row, orderBy);
+          addOrderedMatch(matched, row, orderBy, topK);
           enforceBufferedRowsBudget(config.budget, matched.length);
         }
       }
     }
-    matched.sort((left, right) => compareRows(left, right, config.orderBy ?? []));
-    const start = config.offset ?? 0;
-    const end = config.limit === undefined ? matched.length : start + config.limit;
-    const batchSize = config.batchSize ?? 4096;
-    let batch: Row[] = [];
-    for (const row of matched.slice(start, end)) {
-      batch.push(project(row, config.select));
-      stats.rowsReturned += 1;
-      enforceBudget(config.budget, stats, config.now, startedAt);
-      if (batch.length >= batchSize) {
-        stats.elapsedMs = config.now() - startedAt;
-        yield batch;
-        batch = [];
-      }
-    }
     stats.elapsedMs = config.now() - startedAt;
-    if (batch.length > 0) yield batch;
   }
 
   async explain(): Promise<ExplainResult> {
@@ -945,6 +1012,70 @@ export function deserializeAggregateOperatorState(
   return validateAggregateOperatorState(JSON.parse(new TextDecoder().decode(bytes)));
 }
 
+export function serializeTopKOperatorState(state: TopKOperatorState): Uint8Array {
+  return new TextEncoder().encode(stableStringify(state));
+}
+
+export function deserializeTopKOperatorState(
+  bytes: Uint8Array | TopKOperatorState,
+): TopKOperatorState {
+  if (!(bytes instanceof Uint8Array)) return validateTopKOperatorState(bytes);
+  return validateTopKOperatorState(JSON.parse(new TextDecoder().decode(bytes)));
+}
+
+function topKRowsFromState(
+  orderBy: OrderByTerm[],
+  offset: number,
+  limit: number,
+  state: Uint8Array | TopKOperatorState | undefined,
+): Row[] {
+  if (state === undefined) return [];
+  const snapshot = deserializeTopKOperatorState(state);
+  if (
+    stableStringify(snapshot.orderBy) !== stableStringify(orderBy) ||
+    snapshot.offset !== offset ||
+    snapshot.limit !== limit
+  ) {
+    throw new LaQLError("LAQL_BOOKMARK_STALE", "Top-k operator state does not match request", {
+      stateOrderBy: snapshot.orderBy,
+      orderBy,
+      stateOffset: snapshot.offset,
+      offset,
+      stateLimit: snapshot.limit,
+      limit,
+    });
+  }
+  return snapshot.rows.map((row) => ({ ...row }));
+}
+
+function topKOperatorState(
+  orderBy: OrderByTerm[],
+  offset: number,
+  limit: number,
+  rows: Row[],
+): TopKOperatorState {
+  return {
+    version: 1,
+    orderBy: normalizeOrderBy(orderBy),
+    offset,
+    limit,
+    rows: rows.map(snapshotRecord),
+  };
+}
+
+function validateTopKOperatorState(value: unknown): TopKOperatorState {
+  if (!isTopKOperatorState(value)) {
+    throw new LaQLError("LAQL_BOOKMARK_INVALID", "Top-k operator state is invalid");
+  }
+  return {
+    version: 1,
+    orderBy: normalizeOrderBy(value.orderBy),
+    offset: value.offset,
+    limit: value.limit,
+    rows: value.rows.map((row) => ({ ...row })),
+  };
+}
+
 function aggregateGroupsFromState(
   groupColumns: string[],
   spec: AggregateSpec,
@@ -1049,6 +1180,38 @@ function isAggregateOperatorState(value: unknown): value is AggregateOperatorSta
   );
 }
 
+function isTopKOperatorState(value: unknown): value is TopKOperatorState {
+  return (
+    isRecord(value) &&
+    value.version === 1 &&
+    Array.isArray(value.orderBy) &&
+    value.orderBy.every(isOrderByTerm) &&
+    typeof value.offset === "number" &&
+    Number.isInteger(value.offset) &&
+    value.offset >= 0 &&
+    typeof value.limit === "number" &&
+    Number.isInteger(value.limit) &&
+    value.limit >= 0 &&
+    Array.isArray(value.rows) &&
+    value.rows.length <= value.offset + value.limit &&
+    value.rows.every(isTopKSnapshotRow)
+  );
+}
+
+function isOrderByTerm(value: unknown): value is OrderByTerm {
+  return (
+    isRecord(value) &&
+    typeof value.column === "string" &&
+    value.column.length > 0 &&
+    (value.direction === undefined || value.direction === "asc" || value.direction === "desc") &&
+    (value.nulls === undefined || value.nulls === "first" || value.nulls === "last")
+  );
+}
+
+function isTopKSnapshotRow(value: unknown): value is Record<string, OperatorSnapshotValue> {
+  return isRecord(value) && Object.values(value).every(isOperatorSnapshotValue);
+}
+
 function isAggregateGroupSnapshot(value: unknown): value is AggregateGroupSnapshot {
   return (
     isRecord(value) &&
@@ -1086,6 +1249,10 @@ function isAggregateStateSnapshot(value: unknown): value is AggregateStateSnapsh
 }
 
 function isAggregateSnapshotValue(value: unknown): value is AggregateSnapshotValue {
+  return isOperatorSnapshotValue(value);
+}
+
+function isOperatorSnapshotValue(value: unknown): value is OperatorSnapshotValue {
   return (
     value === null ||
     typeof value === "string" ||
