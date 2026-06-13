@@ -222,6 +222,15 @@ export function memoryCheckpointAdapter(): MemoryCheckpointAdapter {
   return new MemoryCheckpointAdapter();
 }
 
+export async function advanceTaskCheckpoint(
+  checkpoints: CheckpointAdapter,
+  input: TaskTransitionInput,
+): Promise<TaskCheckpoint> {
+  const checkpoint = transitionTaskCheckpoint(await checkpoints.get(input.taskId), input);
+  await checkpoints.put(checkpoint);
+  return checkpoint;
+}
+
 export function transitionTaskCheckpoint(
   existing: TaskCheckpoint | undefined,
   input: TaskTransitionInput,
@@ -252,7 +261,15 @@ export function transitionTaskCheckpoint(
       to: input.nextState,
     });
   }
-  return createCheckpoint(input);
+  const checkpoint = createCheckpoint(input);
+  if (
+    checkpoint.output === undefined &&
+    existing.output !== undefined &&
+    stateRank(input.nextState) > stateRank(existing.state)
+  ) {
+    checkpoint.output = normalizeOutputEntry(existing.output);
+  }
+  return checkpoint;
 }
 
 export function stableStringify(value: unknown): string {
@@ -330,6 +347,10 @@ function createCheckpoint(input: TaskTransitionInput): TaskCheckpoint {
 
 function transitionAllowed(from: TaskState, to: TaskState, stale: boolean): boolean {
   if (stale && to === "running") return true;
+  return stateRank(to) === stateRank(from) + 1;
+}
+
+function stateRank(state: TaskState): number {
   const order: TaskState[] = [
     "planned",
     "running",
@@ -337,7 +358,7 @@ function transitionAllowed(from: TaskState, to: TaskState, stale: boolean): bool
     "manifest-recorded",
     "complete",
   ];
-  return order.indexOf(to) === order.indexOf(from) + 1;
+  return order.indexOf(state);
 }
 
 function toStableJson(value: unknown): unknown {

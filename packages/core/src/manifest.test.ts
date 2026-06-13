@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { eq, gt, isIn, like } from "./expr.js";
 import {
+  advanceTaskCheckpoint,
   assertBookmarkMatches,
   createBookmark,
   createOutputManifest,
@@ -518,6 +519,63 @@ describe("bookmarks and checkpoints", () => {
     expect(stableStringify([planned, running, requeued, outputWritten])).toBe(
       goldenFixture("manifests/retry-log.golden.json"),
     );
+  });
+
+  it("persists checkpoint transitions and carries output metadata forward", async () => {
+    const checkpoints = memoryCheckpointAdapter();
+    const taskId = "job_7-task-000001-a";
+    await advanceTaskCheckpoint(checkpoints, {
+      taskId,
+      nextState: "planned",
+      idempotencyKey: "idem-1",
+      nowMs: 10,
+    });
+    await advanceTaskCheckpoint(checkpoints, {
+      taskId,
+      nextState: "running",
+      idempotencyKey: "idem-1",
+      nowMs: 20,
+    });
+    await advanceTaskCheckpoint(checkpoints, {
+      taskId,
+      nextState: "output-written",
+      idempotencyKey: "idem-1",
+      nowMs: 30,
+      output: {
+        taskId,
+        outputPath: "out/job-7.parquet",
+        partitionValues: { country: "US" },
+        rowCount: 7,
+        byteSize: 70,
+        contentHash: "sha256:7",
+      },
+    });
+    await advanceTaskCheckpoint(checkpoints, {
+      taskId,
+      nextState: "manifest-recorded",
+      idempotencyKey: "idem-1",
+      nowMs: 40,
+    });
+    const complete = await advanceTaskCheckpoint(checkpoints, {
+      taskId,
+      nextState: "complete",
+      idempotencyKey: "idem-1",
+      nowMs: 50,
+    });
+
+    expect(complete).toMatchObject({
+      state: "complete",
+      output: { outputPath: "out/job-7.parquet", partitionValues: { country: "US" } },
+    });
+    await expect(
+      createOutputManifestFromCheckpoints({
+        jobId: "job_7",
+        planFingerprint: "fp_job_7",
+        checkpoints,
+      }),
+    ).resolves.toMatchObject({
+      entries: [{ taskId, outputPath: "out/job-7.parquet", rowCount: 7 }],
+    });
   });
 
   it("rejects unsafe task checkpoint transitions", () => {
