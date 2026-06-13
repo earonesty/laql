@@ -37,6 +37,67 @@ export function memoryCache<T = Uint8Array>(): CacheAdapter<T> {
   return new MemoryCache<T>();
 }
 
+export interface CacheApiCacheOptions {
+  namespace?: string;
+  now?: () => number;
+}
+
+export class CacheApiCache implements CacheAdapter<Uint8Array> {
+  private readonly cache: Cache;
+  private readonly namespace: string;
+  private readonly now: () => number;
+
+  constructor(cache: Cache, options: CacheApiCacheOptions = {}) {
+    this.cache = cache;
+    this.namespace = options.namespace ?? "laql";
+    this.now = options.now ?? Date.now;
+  }
+
+  async get(key: string): Promise<CacheEntry<Uint8Array> | undefined> {
+    const request = this.request(key);
+    const response = await this.cache.match(request);
+    if (!response) return undefined;
+    const expiresAtHeader = response.headers.get("x-laql-expires-at");
+    const expiresAt = expiresAtHeader === null ? undefined : Number(expiresAtHeader);
+    if (expiresAt !== undefined && expiresAt <= this.now()) {
+      await this.cache.delete(request);
+      return undefined;
+    }
+    const entry: CacheEntry<Uint8Array> = {
+      value: new Uint8Array(await response.arrayBuffer()),
+    };
+    if (expiresAt !== undefined) entry.expiresAt = expiresAt;
+    return entry;
+  }
+
+  async set(key: string, entry: CacheEntry<Uint8Array>): Promise<void> {
+    const headers = new Headers({ "content-type": "application/octet-stream" });
+    if (entry.expiresAt !== undefined) headers.set("x-laql-expires-at", String(entry.expiresAt));
+    await this.cache.put(this.request(key), new Response(toArrayBuffer(entry.value), { headers }));
+  }
+
+  async delete(key: string): Promise<void> {
+    await this.cache.delete(this.request(key));
+  }
+
+  private request(key: string): Request {
+    return new Request(`https://cache.laql.invalid/${this.namespace}/${encodeURIComponent(key)}`);
+  }
+}
+
+export function cacheApiCache(
+  cache: Cache,
+  options: CacheApiCacheOptions = {},
+): CacheAdapter<Uint8Array> {
+  return new CacheApiCache(cache, options);
+}
+
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  return buffer;
+}
+
 export interface CheckpointStore {
   get(jobId: string): Promise<Bookmark | undefined>;
   put(jobId: string, bookmark: Bookmark): Promise<void>;
