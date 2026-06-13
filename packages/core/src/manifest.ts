@@ -76,6 +76,7 @@ export interface BookmarkInit {
   snapshot: string;
   query?: BookmarkQuery;
   position: BookmarkPosition;
+  writeState?: Bookmark["writeState"];
   operatorState?: Bookmark["operatorState"];
 }
 
@@ -153,6 +154,8 @@ export function createBookmark(init: BookmarkInit): Bookmark {
     position,
   };
   if (init.query !== undefined) bookmark.query = normalizeBookmarkQuery(init.query);
+  if (init.writeState !== undefined)
+    bookmark.writeState = normalizeBookmarkWriteState(init.writeState);
   if (init.operatorState !== undefined) {
     bookmark.operatorState = normalizeBookmarkOperatorState(init.operatorState);
   }
@@ -465,10 +468,34 @@ function parseBookmark(value: unknown): Bookmark {
     position: parseBookmarkPosition(position, fileIndex, rowGroup, rowOffset),
   };
   if (value.query !== undefined) bookmark.query = parseBookmarkQuery(value.query);
+  if (value.writeState !== undefined)
+    bookmark.writeState = parseBookmarkWriteState(value.writeState);
   if (value.operatorState !== undefined) {
     bookmark.operatorState = parseBookmarkOperatorState(value.operatorState);
   }
   return bookmark;
+}
+
+function normalizeBookmarkWriteState(
+  state: NonNullable<Bookmark["writeState"]>,
+): NonNullable<Bookmark["writeState"]> {
+  const normalized: NonNullable<Bookmark["writeState"]> = {};
+  if (state.taskState !== undefined) normalized.taskState = state.taskState;
+  if (state.idempotencyKey !== undefined) normalized.idempotencyKey = state.idempotencyKey;
+  if (state.multipart !== undefined) {
+    normalized.multipart = {
+      uploadId: state.multipart.uploadId,
+      path: state.multipart.path,
+      parts: state.multipart.parts
+        .map((part) => ({
+          partNumber: part.partNumber,
+          etag: part.etag,
+          byteSize: part.byteSize,
+        }))
+        .sort((left, right) => left.partNumber - right.partNumber),
+    };
+  }
+  return normalized;
 }
 
 function normalizeBookmarkOperatorState(
@@ -550,6 +577,61 @@ function parseInlineOrSpillState(value: unknown): Uint8Array | { spillRef: strin
     throwInvalidBookmark("Bookmark operator state is invalid");
   }
   return { spillRef: value.spillRef };
+}
+
+function parseBookmarkWriteState(value: unknown): NonNullable<Bookmark["writeState"]> {
+  if (!isRecord(value)) throwInvalidBookmark("Bookmark write state is invalid");
+  const state: NonNullable<Bookmark["writeState"]> = {};
+  if (value.taskState !== undefined) {
+    if (!isTaskState(value.taskState)) throwInvalidBookmark("Bookmark write task state is invalid");
+    state.taskState = value.taskState;
+  }
+  if (value.idempotencyKey !== undefined) {
+    if (typeof value.idempotencyKey !== "string" || value.idempotencyKey.length === 0) {
+      throwInvalidBookmark("Bookmark write idempotency key is invalid");
+    }
+    state.idempotencyKey = value.idempotencyKey;
+  }
+  if (value.multipart !== undefined) state.multipart = parseMultipartWriteState(value.multipart);
+  return normalizeBookmarkWriteState(state);
+}
+
+function parseMultipartWriteState(
+  value: unknown,
+): NonNullable<NonNullable<Bookmark["writeState"]>["multipart"]> {
+  if (!isRecord(value)) throwInvalidBookmark("Bookmark multipart state is invalid");
+  if (typeof value.uploadId !== "string" || value.uploadId.length === 0) {
+    throwInvalidBookmark("Bookmark multipart upload id is invalid");
+  }
+  if (typeof value.path !== "string" || value.path.length === 0) {
+    throwInvalidBookmark("Bookmark multipart path is invalid");
+  }
+  if (!Array.isArray(value.parts)) throwInvalidBookmark("Bookmark multipart parts are invalid");
+  return {
+    uploadId: value.uploadId,
+    path: value.path,
+    parts: value.parts.map(parseMultipartPart),
+  };
+}
+
+function parseMultipartPart(
+  value: unknown,
+): NonNullable<NonNullable<Bookmark["writeState"]>["multipart"]>["parts"][number] {
+  if (!isRecord(value)) throwInvalidBookmark("Bookmark multipart part is invalid");
+  if (!isPositiveInteger(value.partNumber)) {
+    throwInvalidBookmark("Bookmark multipart part number is invalid");
+  }
+  if (typeof value.etag !== "string" || value.etag.length === 0) {
+    throwInvalidBookmark("Bookmark multipart part etag is invalid");
+  }
+  if (!isNonNegativeInteger(value.byteSize)) {
+    throwInvalidBookmark("Bookmark multipart part byte size is invalid");
+  }
+  return {
+    partNumber: value.partNumber,
+    etag: value.etag,
+    byteSize: value.byteSize,
+  };
 }
 
 function parseBase64UrlBytes(value: unknown, message: string): Uint8Array {
@@ -675,4 +757,14 @@ function isNonNegativeInteger(value: unknown): value is number {
 
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+
+function isTaskState(value: unknown): value is NonNullable<Bookmark["writeState"]>["taskState"] {
+  return (
+    value === "planned" ||
+    value === "running" ||
+    value === "output-written" ||
+    value === "manifest-recorded" ||
+    value === "complete"
+  );
 }

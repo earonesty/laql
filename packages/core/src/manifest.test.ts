@@ -232,6 +232,39 @@ describe("bookmarks and checkpoints", () => {
     });
   });
 
+  it("serializes resumable write state in signed bookmarks", async () => {
+    const bookmark = createBookmark({
+      planFingerprint: "fp_write",
+      snapshot: "snapshot_write",
+      position: {
+        fileIndex: 0,
+        rowGroup: 0,
+        rowOffset: 0,
+        taskId: "job-write-task-000001-a",
+        outputManifestCursor: 1,
+      },
+      writeState: {
+        taskState: "running",
+        idempotencyKey: "attempt-1",
+        multipart: {
+          uploadId: "upload-123",
+          path: "out/part.parquet",
+          parts: [
+            { partNumber: 2, etag: "etag-2", byteSize: 20 },
+            { partNumber: 1, etag: "etag-1", byteSize: 10 },
+          ],
+        },
+      },
+    });
+
+    expect(bookmark.writeState?.multipart?.parts.map((part) => part.partNumber)).toEqual([1, 2]);
+    await expect(
+      verifyPaginationToken(await signPaginationToken(bookmark, "secret"), "secret"),
+    ).resolves.toEqual(bookmark);
+    expect(stableStringify(bookmark)).toContain('"multipart"');
+    expect(stableStringify(bookmark)).toContain('"partNumber":1');
+  });
+
   it("rejects signed bookmark payloads with invalid structure", async () => {
     const invalidBookmarks: unknown[] = [
       { version: 2, planFingerprint: "fp", snapshot: "s", position: {} },
@@ -344,6 +377,73 @@ describe("bookmarks and checkpoints", () => {
         planFingerprint: "fp",
         snapshot: "s",
         query: { source: "table", offset: -1 },
+        position: { fileIndex: 0, rowGroup: 0, rowOffset: 0 },
+      },
+      {
+        version: 1,
+        planFingerprint: "fp",
+        snapshot: "s",
+        writeState: "bad",
+        position: { fileIndex: 0, rowGroup: 0, rowOffset: 0 },
+      },
+      {
+        version: 1,
+        planFingerprint: "fp",
+        snapshot: "s",
+        writeState: { taskState: "done" },
+        position: { fileIndex: 0, rowGroup: 0, rowOffset: 0 },
+      },
+      {
+        version: 1,
+        planFingerprint: "fp",
+        snapshot: "s",
+        writeState: { idempotencyKey: "" },
+        position: { fileIndex: 0, rowGroup: 0, rowOffset: 0 },
+      },
+      {
+        version: 1,
+        planFingerprint: "fp",
+        snapshot: "s",
+        writeState: { multipart: { uploadId: "", path: "out", parts: [] } },
+        position: { fileIndex: 0, rowGroup: 0, rowOffset: 0 },
+      },
+      {
+        version: 1,
+        planFingerprint: "fp",
+        snapshot: "s",
+        writeState: {
+          multipart: {
+            uploadId: "upload",
+            path: "out",
+            parts: [{ partNumber: 0, etag: "etag", byteSize: 1 }],
+          },
+        },
+        position: { fileIndex: 0, rowGroup: 0, rowOffset: 0 },
+      },
+      {
+        version: 1,
+        planFingerprint: "fp",
+        snapshot: "s",
+        writeState: {
+          multipart: {
+            uploadId: "upload",
+            path: "out",
+            parts: [{ partNumber: 1, etag: "", byteSize: 1 }],
+          },
+        },
+        position: { fileIndex: 0, rowGroup: 0, rowOffset: 0 },
+      },
+      {
+        version: 1,
+        planFingerprint: "fp",
+        snapshot: "s",
+        writeState: {
+          multipart: {
+            uploadId: "upload",
+            path: "out",
+            parts: [{ partNumber: 1, etag: "etag", byteSize: -1 }],
+          },
+        },
         position: { fileIndex: 0, rowGroup: 0, rowOffset: 0 },
       },
       {

@@ -34,6 +34,19 @@ export interface Bookmark {
     taskId?: string;
     outputManifestCursor?: number;
   };
+  writeState?: {
+    taskState?: "planned" | "running" | "output-written" | "manifest-recorded" | "complete";
+    idempotencyKey?: string;
+    multipart?: {
+      uploadId: string;
+      path: string;
+      parts: {
+        partNumber: number;
+        etag: string;
+        byteSize: number;
+      }[];
+    };
+  };
   operatorState?: {
     limitEmitted?: number;
     groupBy?: Uint8Array | { spillRef: string };
