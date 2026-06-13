@@ -43,6 +43,19 @@ describe("loadIcebergTable", () => {
     expect(plan.files.map((file) => file.path)).toEqual([HIVE.files[0], HIVE.files[2]]);
     expect(plan.files.map((file) => file.sequenceNumber)).toEqual([1, 3]);
     expect(plan.files[0]?.projectedFieldIds).toEqual([1, 3]);
+
+    const deletedPartitionPlan = table.planFiles({
+      where: eq("country", "CA"),
+      readMode: "ignore-unsupported-deletes",
+    });
+    expect(deletedPartitionPlan.files[0]).toMatchObject({
+      path: HIVE.files[1],
+      deleteFiles: [{ content: "equality-delete", path: "deletes/country-ca.eq.parquet" }],
+    });
+    expect(
+      table.planFiles({ where: eq("country", "CA"), readMode: "ignore-deletes" }).files[0]
+        ?.deleteFiles,
+    ).toBeUndefined();
   });
 
   it("selects snapshots by id, ref, and timestamp", async () => {
@@ -113,6 +126,57 @@ describe("loadIcebergTable", () => {
     expect(() => table.planFiles({ select: ["missing"], readMode: "ignore-deletes" })).toThrow(
       /Unknown Iceberg column/u,
     );
+  });
+
+  it("classifies unknown Iceberg delete files conservatively", async () => {
+    const unknownDeleteStore = memoryStore();
+    await unknownDeleteStore.put(
+      "metadata.json",
+      new TextEncoder().encode(
+        JSON.stringify({
+          "format-version": 2,
+          "table-uuid": "table",
+          location: "memory",
+          "current-snapshot-id": 1,
+          schemas: [
+            {
+              "schema-id": 1,
+              fields: [{ id: 1, name: "id", type: "int", required: true }],
+            },
+          ],
+          snapshots: [
+            {
+              "snapshot-id": 1,
+              "timestamp-ms": 1,
+              "schema-id": 1,
+              manifests: [
+                {
+                  path: "manifest-1.json",
+                  files: [
+                    {
+                      path: "data/a.parquet",
+                      sequenceNumber: 1,
+                      recordCount: 1,
+                      deleteFiles: [{ content: "future-delete", path: "deletes/future.bin" }],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    );
+    const table = await loadIcebergTable({
+      store: unknownDeleteStore,
+      metadataPath: "metadata.json",
+    });
+
+    expect(() => table.planFiles()).toThrowError(LaQLError);
+    expect(() => table.planFiles()).toThrow(/delete files/u);
+    expect(
+      table.planFiles({ readMode: "ignore-unsupported-deletes" }).files[0]?.deleteFiles,
+    ).toBeUndefined();
   });
 
   it("appends files by writing a new snapshot and metadata file", async () => {

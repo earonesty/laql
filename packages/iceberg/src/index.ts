@@ -70,6 +70,12 @@ export interface PlannedIcebergFile {
   recordCount: number;
   projectedFieldIds: number[];
   snapshotId: number;
+  deleteFiles?: IcebergDeleteFile[];
+}
+
+export interface IcebergDeleteFile {
+  content: "position-delete" | "equality-delete" | "deletion-vector";
+  path: string;
 }
 
 export interface IcebergPlan {
@@ -113,7 +119,12 @@ export interface ManifestFile {
   partition?: Record<string, string>;
   recordCount: number;
   fileSizeInBytes?: number;
-  deleteFiles?: { content: string; path: string }[];
+  deleteFiles?: ManifestDeleteFile[];
+}
+
+export interface ManifestDeleteFile {
+  content: string;
+  path: string;
 }
 
 export class IcebergTable {
@@ -184,21 +195,31 @@ export class IcebergTable {
           filesSkipped += 1;
           continue;
         }
+        const supportedDeleteFiles = supportedIcebergDeleteFiles(file.deleteFiles);
         if (file.deleteFiles && file.deleteFiles.length > 0 && readMode === "strict") {
           throw new LaQLError(
             "LAQL_UNSUPPORTED_DELETE_FILES",
             "Snapshot contains delete files unsupported by this planner mode",
-            { path: file.path, deleteFiles: file.deleteFiles },
+            {
+              path: file.path,
+              deleteFiles: file.deleteFiles,
+              supportedDeleteFiles,
+              ignoredDeleteFiles: unsupportedIcebergDeleteFiles(file.deleteFiles),
+            },
           );
         }
-        files.push({
+        const planned: PlannedIcebergFile = {
           path: file.path,
           sequenceNumber: file.sequenceNumber,
           partition: file.partition ?? {},
           recordCount: file.recordCount,
           projectedFieldIds,
           snapshotId: snapshot["snapshot-id"],
-        });
+        };
+        if (readMode === "ignore-unsupported-deletes" && supportedDeleteFiles.length > 0) {
+          planned.deleteFiles = supportedDeleteFiles;
+        }
+        files.push(planned);
       }
     }
 
@@ -363,6 +384,29 @@ function maxSequenceNumber(metadata: MetadataFile): number {
     }
   }
   return max;
+}
+
+function supportedIcebergDeleteFiles(
+  deleteFiles: ManifestDeleteFile[] | undefined,
+): IcebergDeleteFile[] {
+  const supported: IcebergDeleteFile[] = [];
+  for (const deleteFile of deleteFiles ?? []) {
+    if (
+      deleteFile.content === "position-delete" ||
+      deleteFile.content === "equality-delete" ||
+      deleteFile.content === "deletion-vector"
+    ) {
+      supported.push({ content: deleteFile.content, path: deleteFile.path });
+    }
+  }
+  return supported;
+}
+
+function unsupportedIcebergDeleteFiles(
+  deleteFiles: ManifestDeleteFile[] | undefined,
+): ManifestDeleteFile[] {
+  const supported = new Set(["position-delete", "equality-delete", "deletion-vector"]);
+  return (deleteFiles ?? []).filter((deleteFile) => !supported.has(deleteFile.content));
 }
 
 function cloneMetadata(metadata: MetadataFile): MetadataFile {
