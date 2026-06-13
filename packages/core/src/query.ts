@@ -172,8 +172,12 @@ export interface SortResult {
 export interface SortOperatorState {
   version: 1;
   orderBy: OrderByTerm[];
-  runs: Record<string, OperatorSnapshotValue>[][];
+  runs: SortRunState[];
 }
+
+export type SortRunState =
+  | { rows: Record<string, OperatorSnapshotValue>[] }
+  | { spillRef: string; rowCount: number; byteSize: number };
 
 export interface TopKOperatorState {
   version: 1;
@@ -597,7 +601,12 @@ export class QueryResult {
       enforceBudget(config.budget, this.stats, config.now, startedAt);
     }
     this.stats.elapsedMs = config.now() - startedAt;
-    const state = sortOperatorState(orderBy, runs);
+    const state = await sortOperatorState(
+      orderBy,
+      runs,
+      options.spill,
+      options.spillId ?? `sort-${this.stats.queryId}`,
+    );
     const operatorState = serializeSortOperatorState(state);
     const result: SortResult = { rows, operatorState };
     if (options.spill !== undefined) {
@@ -1292,6 +1301,18 @@ export function deserializeSortOperatorState(
   return validateSortOperatorState(JSON.parse(new TextDecoder().decode(bytes)));
 }
 
+function serializeSortRunRows(rows: Record<string, OperatorSnapshotValue>[]): Uint8Array {
+  return new TextEncoder().encode(stableStringify(rows));
+}
+
+function deserializeSortRunRows(bytes: Uint8Array): Row[] {
+  const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
+  if (!Array.isArray(parsed) || !parsed.every(isTopKSnapshotRow)) {
+    throw new LaQLError("LAQL_BOOKMARK_INVALID", "Sort run state is invalid");
+  }
+  return parsed.map((row) => ({ ...row }));
+}
+
 async function topKRowsFromState(
   orderBy: OrderByTerm[],
   offset: number,
@@ -1344,7 +1365,24 @@ async function sortRunsFromState(orderBy: OrderByTerm[], options: SortOptions): 
       orderBy,
     });
   }
-  return snapshot.runs.map((run) => run.map((row) => ({ ...row })));
+  const runs: Row[][] = [];
+  for (const run of snapshot.runs) {
+    if ("rows" in run) {
+      runs.push(run.rows.map((row) => ({ ...row })));
+      continue;
+    }
+    if (options.spill === undefined) {
+      throw new LaQLError(
+        "LAQL_BOOKMARK_INVALID",
+        "Sort run spill state requires a spill adapter",
+        {
+          spillRef: run.spillRef,
+        },
+      );
+    }
+    runs.push(deserializeSortRunRows(await options.spill.read(run.spillRef)));
+  }
+  return runs;
 }
 
 function topKOperatorState(
@@ -1362,11 +1400,27 @@ function topKOperatorState(
   };
 }
 
-function sortOperatorState(orderBy: OrderByTerm[], runs: Row[][]): SortOperatorState {
+async function sortOperatorState(
+  orderBy: OrderByTerm[],
+  runs: Row[][],
+  spill: SpillAdapter | undefined,
+  spillId: string,
+): Promise<SortOperatorState> {
+  const runStates: SortRunState[] = [];
+  for (const [index, run] of runs.entries()) {
+    const rows = run.map(snapshotRecord);
+    if (spill === undefined) {
+      runStates.push({ rows });
+      continue;
+    }
+    const bytes = serializeSortRunRows(rows);
+    const ref = await spill.write(`${spillId}-run-${String(index).padStart(6, "0")}`, bytes);
+    runStates.push({ spillRef: ref.id, rowCount: rows.length, byteSize: ref.byteSize });
+  }
   return {
     version: 1,
     orderBy: normalizeOrderBy(orderBy),
-    runs: runs.map((run) => run.map(snapshotRecord)),
+    runs: runStates,
   };
 }
 
@@ -1390,7 +1444,7 @@ function validateSortOperatorState(value: unknown): SortOperatorState {
   return {
     version: 1,
     orderBy: normalizeOrderBy(value.orderBy),
-    runs: value.runs.map((run) => run.map((row) => ({ ...row }))),
+    runs: value.runs.map(cloneSortRunState),
   };
 }
 
@@ -1537,8 +1591,28 @@ function isSortOperatorState(value: unknown): value is SortOperatorState {
     Array.isArray(value.orderBy) &&
     value.orderBy.every(isOrderByTerm) &&
     Array.isArray(value.runs) &&
-    value.runs.every((run) => Array.isArray(run) && run.every((row) => isTopKSnapshotRow(row)))
+    value.runs.every(isSortRunState)
   );
+}
+
+function isSortRunState(value: unknown): value is SortRunState {
+  if (!isRecord(value)) return false;
+  if (Array.isArray(value.rows)) return value.rows.every(isTopKSnapshotRow);
+  return (
+    typeof value.spillRef === "string" &&
+    value.spillRef.length > 0 &&
+    typeof value.rowCount === "number" &&
+    Number.isInteger(value.rowCount) &&
+    value.rowCount >= 0 &&
+    typeof value.byteSize === "number" &&
+    Number.isInteger(value.byteSize) &&
+    value.byteSize >= 0
+  );
+}
+
+function cloneSortRunState(run: SortRunState): SortRunState {
+  if ("rows" in run) return { rows: run.rows.map((row) => ({ ...row })) };
+  return { spillRef: run.spillRef, rowCount: run.rowCount, byteSize: run.byteSize };
 }
 
 function isOrderByTerm(value: unknown): value is OrderByTerm {

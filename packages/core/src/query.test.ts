@@ -868,7 +868,9 @@ describe("Lake query runtime", () => {
 
     const snapshot = deserializeSortOperatorState(partial.operatorState);
     expect(deserializeSortOperatorState(serializeSortOperatorState(snapshot))).toEqual(snapshot);
-    expect(snapshot.runs.map((run) => run.map((row) => row.id))).toEqual([[1, 4, 5]]);
+    expect(
+      snapshot.runs.map((run) => ("rows" in run ? run.rows.map((row) => row.id) : [])),
+    ).toEqual([[1, 4, 5]]);
     const spill = memorySpillAdapter();
     const spilled = await first.lake
       .path("table")
@@ -879,6 +881,11 @@ describe("Lake query runtime", () => {
       byteSize: spilled.operatorState.byteLength,
     });
     await expect(spill.read("sort-state")).resolves.toEqual(spilled.operatorState);
+    const spilledSnapshot = deserializeSortOperatorState(spilled.operatorState);
+    expect(spilledSnapshot.runs).toEqual([
+      { spillRef: "sort-state-run-000000", rowCount: 3, byteSize: expect.any(Number) },
+    ]);
+    await expect(spill.read("sort-state-run-000000")).resolves.toBeInstanceOf(Uint8Array);
 
     const second = await makeLake({
       rowsByPath: { table: [{ id: 2 }, { id: 3 }, { id: 0 }] },
@@ -903,7 +910,9 @@ describe("Lake query runtime", () => {
       .sortWithState();
     expect(chunked.rows).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }, { id: 5 }]);
     expect(
-      deserializeSortOperatorState(chunked.operatorState).runs.map((run) => run.length),
+      deserializeSortOperatorState(chunked.operatorState).runs.map((run) =>
+        "rows" in run ? run.rows.length : run.rowCount,
+      ),
     ).toEqual([2, 2, 1]);
     await expect(
       second.lake
@@ -919,7 +928,7 @@ describe("Lake query runtime", () => {
       second.lake
         .path("table")
         .orderBy([{ column: "id" }])
-        .sortWithState({ operatorState: { spillRef: "sort-state" } }),
+        .sortWithState({ operatorState: spilled.operatorState }),
     ).rejects.toMatchObject({ code: "LAQL_BOOKMARK_INVALID" });
     await expect(
       second.lake
