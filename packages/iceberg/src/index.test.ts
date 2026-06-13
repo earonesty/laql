@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import {
   and,
   between,
+  createOutputManifest,
   eq,
   fn,
   isIn,
@@ -285,6 +286,77 @@ describe("loadIcebergTable", () => {
     });
     await expect(appendStore.head(result.manifestPath)).resolves.toMatchObject({
       contentType: "application/json",
+    });
+  });
+
+  it("appends Iceberg data files from output manifest entries", async () => {
+    const appendStore = memoryStore();
+    await appendStore.put(ICEBERG.metadataFile, readFileSync(fixturePath(ICEBERG.metadataFile)));
+    const table = await loadIcebergTable({
+      store: appendStore,
+      metadataPath: ICEBERG.metadataFile,
+    });
+    const manifest = createOutputManifest({
+      jobId: "job_manifest_append",
+      planFingerprint: "fp_manifest_append",
+      entries: [
+        {
+          taskId: "task-0",
+          outputPath: "appends/date=2026-01-04/country=US/part-000.parquet",
+          partitionValues: { country: "US", date: "2026-01-04" },
+          rowCount: 2,
+          byteSize: 456,
+          iceberg: {
+            recordCount: 2,
+            fileSizeInBytes: 456,
+            partitionValues: { country: "US", date: "2026-01-04" },
+          },
+        },
+      ],
+    });
+
+    const result = await table.appendOutputManifest({ manifest, nowMs: 1_767_484_800_000 });
+
+    expect(result).toMatchObject({
+      snapshotId: 3,
+      manifestPath: "iceberg/warehouse/places/metadata/job_manifest_append-3.manifest.json",
+    });
+    const appended = await loadIcebergTable({
+      store: appendStore,
+      metadataPath: result.metadataPath,
+    });
+    expect(
+      appended.planFiles({ snapshotId: 3, where: eq("date", "2026-01-04") }).files.at(-1),
+    ).toMatchObject({
+      path: "appends/date=2026-01-04/country=US/part-000.parquet",
+      partition: { country: "US", date: "2026-01-04" },
+      recordCount: 2,
+    });
+  });
+
+  it("rejects output manifest append entries without Iceberg metadata", async () => {
+    const appendStore = memoryStore();
+    await appendStore.put(ICEBERG.metadataFile, readFileSync(fixturePath(ICEBERG.metadataFile)));
+    const table = await loadIcebergTable({
+      store: appendStore,
+      metadataPath: ICEBERG.metadataFile,
+    });
+    const manifest = createOutputManifest({
+      jobId: "job_missing_iceberg",
+      planFingerprint: "fp_missing_iceberg",
+      entries: [
+        {
+          taskId: "task-0",
+          outputPath: "appends/missing.parquet",
+          partitionValues: {},
+          rowCount: 1,
+          byteSize: 1,
+        },
+      ],
+    });
+
+    await expect(table.appendOutputManifest({ manifest })).rejects.toMatchObject({
+      code: "LAQL_VALIDATION_ERROR",
     });
   });
 

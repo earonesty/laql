@@ -4,6 +4,7 @@ import {
   LaQLError,
   matches,
   type ObjectStore,
+  type OutputManifest,
   type Row,
   stableStringify,
 } from "@laql/core";
@@ -38,6 +39,11 @@ export interface IcebergAppendOptions {
   jobId?: string;
   nowMs?: number;
   catalog?: IcebergCommitCatalog;
+}
+
+export interface IcebergAppendOutputManifestOptions
+  extends Omit<IcebergAppendOptions, "files" | "jobId"> {
+  manifest: OutputManifest;
 }
 
 export interface IcebergCommitCatalog {
@@ -332,6 +338,35 @@ export class IcebergTable {
         snapshotId: nextSnapshotId,
       })),
     };
+  }
+
+  async appendOutputManifest(
+    options: IcebergAppendOutputManifestOptions,
+  ): Promise<IcebergAppendResult> {
+    const files = options.manifest.entries.map((entry): IcebergAppendFile => {
+      if (entry.iceberg === undefined) {
+        throw new LaQLError(
+          "LAQL_VALIDATION_ERROR",
+          "Output manifest entry is missing Iceberg file metadata",
+          {
+            taskId: entry.taskId,
+            outputPath: entry.outputPath,
+          },
+        );
+      }
+      return {
+        path: entry.outputPath,
+        partition: entry.iceberg.partitionValues,
+        recordCount: entry.iceberg.recordCount,
+        fileSizeInBytes: entry.iceberg.fileSizeInBytes,
+      };
+    });
+    return await this.appendFiles({
+      files,
+      jobId: options.manifest.jobId,
+      ...(options.nowMs !== undefined ? { nowMs: options.nowMs } : {}),
+      ...(options.catalog !== undefined ? { catalog: options.catalog } : {}),
+    });
   }
 
   private snapshotById(snapshotId: number): Snapshot {

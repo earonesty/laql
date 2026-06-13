@@ -16,4 +16,12 @@ const result = await table.appendFiles({
 });
 ```
 
+Output manifests produced by write tasks can be committed directly when their entries include Iceberg metadata:
+
+```ts
+await table.appendOutputManifest({
+  manifest: outputManifest,
+});
+```
+
 The default catalog writes through the configured ObjectStore. Production catalogs should enforce compare-and-swap semantics around the current metadata pointer.
