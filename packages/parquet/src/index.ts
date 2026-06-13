@@ -34,6 +34,14 @@ export interface WriteParquetRowsOptions
   maxBytesPerFile?: number;
   jobId?: string;
   columnTypes?: Record<string, BasicType>;
+  validation?: InsertValidationRules;
+}
+
+export interface InsertValidationRules {
+  required?: string[];
+  unique?: string[][];
+  ranges?: Record<string, { min?: ComparableInsertValue; max?: ComparableInsertValue }>;
+  enums?: Record<string, InsertValue[]>;
 }
 
 export interface WritePartitionedParquetFile {
@@ -134,6 +142,7 @@ export async function writePartitionedParquet(
 
   const normalizedPrefix = prefix.replace(/\/+$/u, "");
   const partitionBy = options.partitionBy ?? [];
+  validateInsertRows(options.rows, options.validation);
   const {
     rows: _rows,
     partitionBy: _partitionBy,
@@ -141,6 +150,7 @@ export async function writePartitionedParquet(
     maxBytesPerFile,
     jobId,
     columnTypes,
+    validation: _validation,
     contentType,
     ...writeOptions
   } = options;
@@ -262,6 +272,8 @@ interface RowPartition {
 }
 
 type ColumnValue = string | number | boolean | bigint | null;
+type InsertValue = string | number | boolean | bigint | null;
+type ComparableInsertValue = string | number | bigint;
 
 interface EncodedRowChunk {
   rows: Row[];
@@ -339,6 +351,128 @@ function partitionOutputPath(
   const safeJobId = jobId ?? "data";
   segments.push(`part-${safeJobId}-${String(ordinal).padStart(5, "0")}.parquet`);
   return segments.join("/");
+}
+
+function validateInsertRows(rows: Row[], validation: InsertValidationRules | undefined): void {
+  if (!validation) return;
+  for (const column of validation.required ?? []) {
+    const missingIndex = rows.findIndex((row) => row[column] === null || row[column] === undefined);
+    if (missingIndex !== -1) {
+      throw new LaQLError("LAQL_VALIDATION_ERROR", "Required column is missing", {
+        column,
+        rowIndex: missingIndex,
+      });
+    }
+  }
+  for (const uniqueColumns of validation.unique ?? []) validateUniqueRows(rows, uniqueColumns);
+  for (const [column, range] of Object.entries(validation.ranges ?? {})) {
+    validateRange(rows, column, range);
+  }
+  for (const [column, values] of Object.entries(validation.enums ?? {})) {
+    validateEnum(rows, column, values);
+  }
+}
+
+function validateUniqueRows(rows: Row[], columns: string[]): void {
+  if (columns.length === 0) {
+    throw new LaQLError("LAQL_VALIDATION_ERROR", "Unique constraints must name columns");
+  }
+  const seen = new Map<string, number>();
+  for (const [rowIndex, row] of rows.entries()) {
+    const key = columns
+      .map((column) => insertValueKey(normalizeInsertValue(row[column], column)))
+      .join("|");
+    const existing = seen.get(key);
+    if (existing !== undefined) {
+      throw new LaQLError("LAQL_VALIDATION_ERROR", "Unique constraint violation", {
+        columns,
+        firstRowIndex: existing,
+        rowIndex,
+      });
+    }
+    seen.set(key, rowIndex);
+  }
+}
+
+function validateRange(
+  rows: Row[],
+  column: string,
+  range: { min?: ComparableInsertValue; max?: ComparableInsertValue },
+): void {
+  for (const [rowIndex, row] of rows.entries()) {
+    const value = row[column];
+    if (value === null || value === undefined) continue;
+    if (!isComparableInsertValue(value)) {
+      throw new LaQLError("LAQL_VALIDATION_ERROR", "Range constraints require comparable values", {
+        column,
+        rowIndex,
+      });
+    }
+    if (
+      (range.min !== undefined && compareInsertValues(value, range.min, column, rowIndex) < 0) ||
+      (range.max !== undefined && compareInsertValues(value, range.max, column, rowIndex) > 0)
+    ) {
+      throw new LaQLError("LAQL_VALIDATION_ERROR", "Range constraint violation", {
+        column,
+        rowIndex,
+      });
+    }
+  }
+}
+
+function validateEnum(rows: Row[], column: string, values: InsertValue[]): void {
+  const allowed = new Set(values.map((value) => insertValueKey(value)));
+  for (const [rowIndex, row] of rows.entries()) {
+    const raw = row[column];
+    if (raw === undefined) continue;
+    const value = normalizeInsertValue(raw, column);
+    if (!allowed.has(insertValueKey(value))) {
+      throw new LaQLError("LAQL_VALIDATION_ERROR", "Enum constraint violation", {
+        column,
+        rowIndex,
+      });
+    }
+  }
+}
+
+function normalizeInsertValue(value: unknown, column: string): InsertValue {
+  if (value === null) return null;
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    typeof value === "bigint"
+  ) {
+    return value;
+  }
+  throw new LaQLError("LAQL_VALIDATION_ERROR", "Insert constraints require scalar values", {
+    column,
+  });
+}
+
+function insertValueKey(value: InsertValue): string {
+  return `${typeof value}:${String(value)}`;
+}
+
+function isComparableInsertValue(value: unknown): value is ComparableInsertValue {
+  return typeof value === "string" || typeof value === "number" || typeof value === "bigint";
+}
+
+function compareInsertValues(
+  left: ComparableInsertValue,
+  right: ComparableInsertValue,
+  column: string,
+  rowIndex: number,
+): number {
+  if (typeof left !== typeof right) {
+    throw new LaQLError("LAQL_VALIDATION_ERROR", "Range constraint types must match row values", {
+      column,
+      rowIndex,
+    });
+  }
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
 }
 
 function sortStringRecord(record: Record<string, string>): Record<string, string> {

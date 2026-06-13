@@ -315,6 +315,26 @@ describe("writePartitionedParquet", () => {
     ]);
   });
 
+  it("validates insert constraints before writing rows", async () => {
+    const outStore = memoryStore();
+    await writePartitionedParquet(outStore, "out/validated", {
+      rows: [
+        { id: 1, category: "a", score: 10 },
+        { id: 2, category: "b", score: 20 },
+      ],
+      validation: {
+        required: ["id", "category"],
+        unique: [["id"]],
+        ranges: { score: { min: 0, max: 100 } },
+        enums: { category: ["a", "b"] },
+      },
+    });
+
+    await expect(
+      readParquetObjects(outStore, "out/validated/part-data-00000.parquet"),
+    ).resolves.toHaveLength(2);
+  });
+
   it("infers row column types and honors explicit type overrides", async () => {
     const outStore = memoryStore();
     const result = await writePartitionedParquet(outStore, "out/types", {
@@ -412,6 +432,42 @@ describe("writePartitionedParquet", () => {
       writePartitionedParquet(outStore, "out/partition-only", {
         rows: [{ date: "2026-01-01" }],
         partitionBy: ["date"],
+      }),
+    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    await expect(
+      writePartitionedParquet(outStore, "out/missing-required", {
+        rows: [{ id: 1 }, { id: null }],
+        validation: { required: ["id"] },
+      }),
+    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    await expect(
+      writePartitionedParquet(outStore, "out/duplicate", {
+        rows: [{ id: 1 }, { id: 1 }],
+        validation: { unique: [["id"]] },
+      }),
+    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    await expect(
+      writePartitionedParquet(outStore, "out/empty-unique", {
+        rows: [{ id: 1 }],
+        validation: { unique: [[]] },
+      }),
+    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    await expect(
+      writePartitionedParquet(outStore, "out/range", {
+        rows: [{ score: 101 }],
+        validation: { ranges: { score: { min: 0, max: 100 } } },
+      }),
+    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    await expect(
+      writePartitionedParquet(outStore, "out/range-type", {
+        rows: [{ score: "101" }],
+        validation: { ranges: { score: { min: 0, max: 100 } } },
+      }),
+    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    await expect(
+      writePartitionedParquet(outStore, "out/enum", {
+        rows: [{ category: "c" }],
+        validation: { enums: { category: ["a", "b"] } },
       }),
     ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
   });
