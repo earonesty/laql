@@ -27,6 +27,13 @@ export interface PlanIcebergFilesOptions {
   readMode?: IcebergReadMode;
 }
 
+export interface ProjectIcebergRowOptions {
+  snapshotId?: number;
+  asOfTimestampMs?: number;
+  ref?: string;
+  select?: string[];
+}
+
 export interface IcebergAppendFile {
   path: string;
   partition?: Record<string, string>;
@@ -226,6 +233,25 @@ export class IcebergTable {
     return schema.fields;
   }
 
+  projectRow(row: Row, options: ProjectIcebergRowOptions = {}): Row {
+    const snapshot = this.snapshot(options);
+    const fields = this.schema(snapshot["schema-id"]);
+    projectedIds(fields, options.select);
+    const selected = options.select === undefined ? undefined : new Set(options.select);
+    const out: Row = {};
+    for (const field of fields) {
+      if (selected !== undefined && !selected.has(field.name)) continue;
+      const sourceName =
+        field.name in row
+          ? field.name
+          : field.sourceId !== undefined
+            ? this.fieldNameById(field.sourceId)
+            : field.name;
+      out[field.name] = sourceName !== undefined && sourceName in row ? row[sourceName] : null;
+    }
+    return out;
+  }
+
   planFiles(options: PlanIcebergFilesOptions = {}): IcebergPlan {
     const snapshot = this.snapshot(options);
     const fields = this.schema(snapshot["schema-id"]);
@@ -412,6 +438,14 @@ export class IcebergTable {
       });
     }
     return snapshot;
+  }
+
+  private fieldNameById(fieldId: number): string | undefined {
+    for (const schema of this.metadata.schemas) {
+      const field = schema.fields.find((candidate) => candidate.id === fieldId);
+      if (field) return field.name;
+    }
+    return undefined;
   }
 }
 

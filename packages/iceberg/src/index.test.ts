@@ -109,6 +109,28 @@ describe("loadIcebergTable", () => {
     expect(table.planFiles({ asOfTimestampMs: 1_767_225_600_000 }).snapshotId).toBe(1);
   });
 
+  it("projects rows through Iceberg schema source-id evolution", async () => {
+    const table = await loadIcebergTable({ store, metadataPath: ICEBERG.metadataFile });
+
+    expect(
+      table.projectRow(
+        { id: 1, amount: 10, country: "US", ignored: true },
+        { select: ["id", "nation"] },
+      ),
+    ).toEqual({ id: 1, nation: "US" });
+    expect(table.projectRow({ id: 1, amount: 10, nation: "USA" }, { select: ["nation"] })).toEqual({
+      nation: "USA",
+    });
+    expect(table.projectRow({ id: 1, country: "US" })).toEqual({
+      id: 1,
+      amount: null,
+      nation: "US",
+    });
+    expect(() => table.projectRow({ id: 1 }, { select: ["missing"] })).toThrow(
+      /Unknown Iceberg column/u,
+    );
+  });
+
   it("prunes partitions for supported predicate shapes and keeps unknowns conservative", async () => {
     const table = await loadIcebergTable({ store, metadataPath: ICEBERG.metadataFile });
 

@@ -20,6 +20,14 @@ const plan = table.planFiles({
 });
 ```
 
+Use `projectRow()` to map decoded physical rows into the selected Iceberg schema.
+For renamed fields, `sourceId` maps old physical column names to the current field
+name:
+
+```ts
+const row = table.projectRow({ id: 1, country: "US" }, { select: ["id", "nation"] });
+```
+
 Strict mode includes known Iceberg delete files in the plan and throws `LAQL_UNSUPPORTED_DELETE_FILES` for unknown delete formats. Use `ignore-deletes` only when raw scans are acceptable; use `ignore-unsupported-deletes` to carry known delete metadata while dropping future formats.
 
 `planFiles()` reports `deleteFilesPlanned` and `deleteFilesIgnored` so callers can audit delete handling without walking every planned file.
