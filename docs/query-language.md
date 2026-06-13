@@ -12,3 +12,19 @@ lake
 ```
 
 Expressions are plain serializable objects. Use helpers from `@laql/core` for comparisons, logical operators, null checks, `like`, `ilike`, `between`, `in`, and scalar function calls.
+
+Constrained joins are available as explicit helpers:
+
+```ts
+await broadcastJoin(events, users, {
+  leftKey: "user_id",
+  rightKey: "user_id",
+  maxRightRows: 100_000,
+});
+
+await lookupJoin(events, lookupUserRows, {
+  leftKey: "user_id",
+  rightKey: "user_id",
+  maxRightRows: 100_000,
+});
+```

@@ -10,4 +10,4 @@ Choose LaQL when you need:
 - queue-safe slices for Workers or serverless jobs
 - a small TypeScript API surface instead of a full SQL database runtime
 
-Choose DuckDB when you need broad SQL, joins over many local tables, or mature analytical execution beyond LaQL's current scope.
+Choose DuckDB when you need broad SQL joins over many local tables or mature analytical execution beyond LaQL's current constrained broadcast and lookup join helpers.
