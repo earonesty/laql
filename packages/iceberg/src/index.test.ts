@@ -16,6 +16,7 @@ import {
 } from "@laql/core";
 import { fixturePath, HIVE, ICEBERG } from "@laql/fixtures";
 import { beforeAll, describe, expect, it } from "vitest";
+import { readIcebergParquetDeletes, readParquetObjects } from "../../parquet/src/index.js";
 import type { IcebergCommitCatalog, IcebergCommitInput } from "./index.js";
 import { applyIcebergDeletes, loadIcebergTable, scanPlannedIcebergRows } from "./index.js";
 
@@ -23,6 +24,13 @@ const store = memoryStore();
 
 beforeAll(async () => {
   await store.put(ICEBERG.metadataFile, readFileSync(fixturePath(ICEBERG.metadataFile)));
+  await store.put(
+    ICEBERG.equalityDeleteFile,
+    readFileSync(fixturePath(ICEBERG.equalityDeleteFile)),
+  );
+  for (const file of HIVE.files) {
+    await store.put(file, readFileSync(fixturePath(file)));
+  }
 });
 
 describe("loadIcebergTable", () => {
@@ -325,6 +333,26 @@ describe("loadIcebergTable", () => {
       [{ id: 1, country: "US", amount: 10 }],
       [{ id: 3, country: "US", amount: 30 }],
     ]);
+  });
+
+  it("applies fixture equality delete files while scanning planned Parquet rows", async () => {
+    const table = await loadIcebergTable({ store, metadataPath: ICEBERG.metadataFile });
+    const plan = table.planFiles({ where: eq("country", "CA") });
+    const rows: Row[] = [];
+
+    for await (const batch of scanPlannedIcebergRows({
+      plan,
+      readDataFile: async (file) => {
+        const dataRows = await readParquetObjects(store, file.path);
+        return dataRows.map((row) => ({ ...file.partition, ...row }));
+      },
+      readDeleteFile: async (deleteFile) => readIcebergParquetDeletes(store, deleteFile),
+    })) {
+      rows.push(...batch);
+    }
+
+    expect(plan).toMatchObject({ deleteFilesPlanned: 1 });
+    expect(rows).toEqual([]);
   });
 
   it("appends files by writing a new snapshot and metadata file", async () => {
