@@ -41,6 +41,7 @@ import type { RowGroup } from "hyparquet";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
   createParquetLake,
+  createParquetTableAs,
   type ParquetMetadata,
   partitionedParquetOutputEntries,
   readIcebergParquetDeletes,
@@ -555,6 +556,65 @@ describe("writePartitionedParquet", () => {
     expect(replay.result.files.map((file) => file.path)).toEqual(
       result.result.files.map((file) => file.path),
     );
+  });
+
+  it("creates partitioned Parquet tables from query results through checkpoints", async () => {
+    const ctasStore = memoryStore();
+    await writePartitionedParquet(ctasStore, "src/events", {
+      rows: [
+        { country: "US", id: 1, amount: 10 },
+        { country: "CA", id: 2, amount: 20 },
+        { country: "US", id: 3, amount: 30 },
+      ],
+      partitionBy: ["country"],
+      jobId: "source",
+    });
+    const lake = createParquetLake({ store: ctasStore });
+    const checkpoints = memoryCheckpointAdapter();
+
+    const created = await createParquetTableAs(ctasStore, "out/ctas", {
+      query: lake.hive("src/events/**/*.parquet").select(["id", "amount", "country"]),
+      checkpoints,
+      jobId: "job_ctas",
+      planFingerprint: "fp_ctas",
+      taskId: "job_ctas-task-000000-a",
+      idempotencyKey: "attempt-1",
+      nowMs: 1000,
+      partitionBy: ["country"],
+      maxRowsPerFile: 2,
+      writeMode: "create",
+      iceberg: true,
+    });
+
+    expect(created.rowsRead).toBe(3);
+    expect(created.manifest).toMatchObject({
+      jobId: "job_ctas",
+      planFingerprint: "fp_ctas",
+      entries: [
+        { taskId: "job_ctas-task-000000-a", partitionValues: { country: "CA" } },
+        { taskId: "job_ctas-task-000000-a", partitionValues: { country: "US" } },
+      ],
+    });
+    await expect(
+      lake.hive("out/ctas/**/*.parquet").select(["id", "amount", "country"]).toArray(),
+    ).resolves.toEqual([
+      { id: 2, amount: 20, country: "CA" },
+      { id: 1, amount: 10, country: "US" },
+      { id: 3, amount: 30, country: "US" },
+    ]);
+
+    const replay = await createParquetTableAs(ctasStore, "out/ctas", {
+      query: { toArray: async () => [{ country: "US", id: 999, amount: 999 }] },
+      checkpoints,
+      jobId: "job_ctas",
+      planFingerprint: "fp_ctas",
+      taskId: "job_ctas-task-000000-a",
+      idempotencyKey: "attempt-1",
+      partitionBy: ["country"],
+      writeMode: "create",
+    });
+    expect(replay.entries).toEqual(created.entries);
+    expect(replay.manifest).toEqual(created.manifest);
   });
 
   it("validates insert constraints before writing rows", async () => {

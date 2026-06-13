@@ -2,11 +2,13 @@ import {
   advanceTaskCheckpoint,
   type CacheAdapter,
   type CheckpointAdapter,
+  createOutputManifest,
   type Expr,
   Lake,
   type LakeConfig,
   LaQLError,
   type ObjectStore,
+  type OutputManifest,
   type OutputManifestEntry,
   type Row,
   type ScanAdapter,
@@ -92,6 +94,24 @@ export interface WritePartitionedParquetTaskOptions extends WriteParquetRowsOpti
 export interface WritePartitionedParquetTaskResult {
   result: WritePartitionedParquetResult;
   entries: OutputManifestEntry[];
+}
+
+export interface CreateParquetTableAsQuery {
+  toArray(): Promise<Row[]>;
+}
+
+export interface CreateParquetTableAsOptions
+  extends Omit<WritePartitionedParquetTaskOptions, "rows" | "jobId" | "taskId" | "idempotencyKey"> {
+  query: CreateParquetTableAsQuery;
+  jobId: string;
+  planFingerprint: string;
+  taskId?: string;
+  idempotencyKey: string;
+}
+
+export interface CreateParquetTableAsResult extends WritePartitionedParquetTaskResult {
+  manifest: OutputManifest;
+  rowsRead: number;
 }
 
 export interface PartitionedParquetOutputEntryOptions {
@@ -353,6 +373,39 @@ export async function writePartitionedParquetTask(
   });
 
   return { result, entries };
+}
+
+export async function createParquetTableAs(
+  store: ObjectStore,
+  prefix: string,
+  options: CreateParquetTableAsOptions,
+): Promise<CreateParquetTableAsResult> {
+  const rows = await options.query.toArray();
+  const taskId = options.taskId ?? `${options.jobId}-ctas-000000`;
+  const {
+    query: _query,
+    planFingerprint,
+    taskId: _taskId,
+    idempotencyKey,
+    jobId,
+    ...writeOptions
+  } = options;
+  const task = await writePartitionedParquetTask(store, prefix, {
+    ...writeOptions,
+    rows,
+    jobId,
+    taskId,
+    idempotencyKey,
+  });
+  return {
+    ...task,
+    rowsRead: rows.length,
+    manifest: createOutputManifest({
+      jobId,
+      planFingerprint,
+      entries: task.entries,
+    }),
+  };
 }
 
 export function partitionedParquetOutputEntries(
