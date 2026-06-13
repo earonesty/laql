@@ -1,4 +1,5 @@
 import {
+  type CacheAdapter,
   type Expr,
   Lake,
   type LakeConfig,
@@ -62,6 +63,15 @@ export interface PartitionedParquetOutputEntryOptions {
 
 export interface ParquetLakeConfig extends Omit<LakeConfig, "scanner"> {
   batchSize?: number;
+  metadataCache?: CacheAdapter<ParquetMetadata>;
+}
+
+export type ParquetMetadata = Awaited<ReturnType<typeof parquetMetadataAsync>>;
+
+interface StoreAsyncBuffer {
+  byteLength: number;
+  etag?: string;
+  slice(start: number, end?: number): Promise<ArrayBuffer>;
 }
 
 /**
@@ -76,7 +86,7 @@ export async function asyncBufferFromStore(
   if (!head) {
     throw new LaQLError("LAQL_OBJECT_NOT_FOUND", `No object at ${path}`, { path });
   }
-  return {
+  const buffer: StoreAsyncBuffer = {
     byteLength: head.size,
     slice: async (start: number, end?: number): Promise<ArrayBuffer> => {
       const length = (end ?? head.size) - start;
@@ -90,6 +100,8 @@ export async function asyncBufferFromStore(
       return out;
     },
   };
+  if (head.etag !== undefined) buffer.etag = head.etag;
+  return buffer;
 }
 
 /**
@@ -213,16 +225,21 @@ export function partitionedParquetOutputEntries(
 export class ParquetScanAdapter implements ScanAdapter {
   private readonly store: ObjectStore;
   private readonly defaultBatchSize: number;
+  private readonly metadataCache: CacheAdapter<ParquetMetadata> | undefined;
 
-  constructor(store: ObjectStore, options: { batchSize?: number } = {}) {
+  constructor(
+    store: ObjectStore,
+    options: { batchSize?: number; metadataCache?: CacheAdapter<ParquetMetadata> } = {},
+  ) {
     this.store = store;
     this.defaultBatchSize = options.batchSize ?? 4096;
+    this.metadataCache = options.metadataCache;
   }
 
   async *scan(path: string, options: ScanOptions): AsyncIterable<Row[]> {
     const batchSize = options.batchSize || this.defaultBatchSize;
     const file = await asyncBufferFromStore(this.store, path, options);
-    const metadata = await parquetMetadataAsync(file);
+    const metadata = await this.metadata(path, file, options);
     const readColumns = options.columns;
     if (readColumns) {
       const known = new Set(options.stats.columnsRead);
@@ -263,6 +280,28 @@ export class ParquetScanAdapter implements ScanAdapter {
       rowGroupStart = rowGroupEnd;
     }
   }
+
+  private async metadata(
+    path: string,
+    file: StoreAsyncBuffer,
+    options: ScanOptions,
+  ): Promise<ParquetMetadata> {
+    if (!this.metadataCache) return parquetMetadataAsync(file);
+    const key = metadataCacheKey(path, file.byteLength, file.etag);
+    const cached = await this.metadataCache.get(key);
+    if (cached) {
+      options.stats.cacheHits += 1;
+      return cached.value;
+    }
+    options.stats.cacheMisses += 1;
+    const metadata = await parquetMetadataAsync(file);
+    await this.metadataCache.set(key, { value: metadata });
+    return metadata;
+  }
+}
+
+function metadataCacheKey(path: string, byteLength: number, etag: string | undefined): string {
+  return `parquet-metadata:${path}:${byteLength}:${etag ?? "no-etag"}`;
 }
 
 interface RowPartition {
@@ -789,14 +828,15 @@ function compareValues(left: StatsValue, right: StatsValue): number {
 
 export function parquetScanner(
   store: ObjectStore,
-  options: { batchSize?: number } = {},
+  options: { batchSize?: number; metadataCache?: CacheAdapter<ParquetMetadata> } = {},
 ): ScanAdapter {
   return new ParquetScanAdapter(store, options);
 }
 
 export function createParquetLake(config: ParquetLakeConfig): Lake {
-  const scannerOptions: { batchSize?: number } = {};
+  const scannerOptions: { batchSize?: number; metadataCache?: CacheAdapter<ParquetMetadata> } = {};
   if (config.batchSize !== undefined) scannerOptions.batchSize = config.batchSize;
+  if (config.metadataCache !== undefined) scannerOptions.metadataCache = config.metadataCache;
   return new Lake({
     ...config,
     scanner: parquetScanner(config.store, scannerOptions),

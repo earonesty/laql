@@ -15,6 +15,7 @@ import {
   lit,
   lt,
   lte,
+  memoryCache,
   memoryStore,
   ne,
   not,
@@ -26,6 +27,7 @@ import type { RowGroup } from "hyparquet";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
   createParquetLake,
+  type ParquetMetadata,
   partitionedParquetOutputEntries,
   readParquetMetadata,
   readParquetObjects,
@@ -552,6 +554,25 @@ describe("createParquetLake", () => {
     expect(rows.map((row) => row.metric)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
     expect(result.stats.rowGroupsRead).toBe(1);
     expect(result.stats.rowGroupsSkipped).toBe(2);
+  });
+
+  it("reuses cached Parquet footer metadata across scans", async () => {
+    const metadataCache = memoryCache<ParquetMetadata>();
+    const lake = createParquetLake({ store, metadataCache });
+
+    const first = lake.path(`data/${STATS.file}`).where(lt("metric", 0)).run();
+    await expect(first.count()).resolves.toBe(0);
+    expect(first.stats.cacheMisses).toBe(1);
+    expect(first.stats.cacheHits).toBe(0);
+    expect(first.stats.rangeRequests).toBeGreaterThan(0);
+    expect(first.stats.rowGroupsSkipped).toBe(3);
+
+    const second = lake.path(`data/${STATS.file}`).where(lt("metric", 0)).run();
+    await expect(second.count()).resolves.toBe(0);
+    expect(second.stats.cacheMisses).toBe(0);
+    expect(second.stats.cacheHits).toBe(1);
+    expect(second.stats.rangeRequests).toBe(0);
+    expect(second.stats.rowGroupsSkipped).toBe(3);
   });
 
   it("prunes row groups for supported min/max predicate shapes", async () => {
