@@ -1,4 +1,21 @@
+import type { Expr } from "./expr.js";
+
 export type Row = Record<string, unknown>;
+
+export interface BookmarkQuery {
+  source: string;
+  select?: string[];
+  where?: Expr;
+  orderBy?: {
+    column: string;
+    direction?: "asc" | "desc";
+    nulls?: "first" | "last";
+  }[];
+  limit?: number;
+  offset?: number;
+  batchSize?: number;
+  hive?: boolean;
+}
 
 /**
  * A serializable position in a running query. Bookmarks are plain values:
@@ -9,6 +26,7 @@ export interface Bookmark {
   version: 1;
   planFingerprint: string;
   snapshot: string;
+  query?: BookmarkQuery;
   position: {
     fileIndex: number;
     rowGroup: number;

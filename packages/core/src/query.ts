@@ -10,7 +10,7 @@ import {
   type TaskManifest,
 } from "./manifest.js";
 import type { ObjectInfo, ObjectStore } from "./store.js";
-import type { Bookmark, QueryStats, Row, SliceResult } from "./types.js";
+import type { Bookmark, BookmarkQuery, QueryStats, Row, SliceResult } from "./types.js";
 
 const textEncoder = new TextEncoder();
 
@@ -249,14 +249,40 @@ export class Lake {
     return new QueryBuilder(this, parseJsonQuery(input));
   }
 
+  resume(bookmark: Bookmark): ResumedQuery {
+    return new ResumedQuery(this, bookmark);
+  }
+
   createResult(init: PathQueryInit): QueryResult {
+    const effective = applyQueryPolicy(init, this.policy);
     return new QueryResult({
-      ...applyQueryPolicy(init, this.policy),
+      ...effective,
       lake: this,
+      bookmarkQuery: cloneBookmarkQuery(init),
       budget: this.budget,
       now: this.now,
       queryId: this.queryId(),
       scanner: this.scanner,
+    });
+  }
+}
+
+export class ResumedQuery {
+  private readonly lake: Lake;
+  private readonly bookmark: Bookmark;
+
+  constructor(lake: Lake, bookmark: Bookmark) {
+    this.lake = lake;
+    this.bookmark = bookmark;
+  }
+
+  run(options: QueryRunOptions): Promise<SliceResult> {
+    if (this.bookmark.query === undefined) {
+      throw new LaQLError("LAQL_BOOKMARK_INVALID", "Bookmark does not contain a resumable query");
+    }
+    return this.lake.createResult(this.bookmark.query).slice({
+      ...options.slice,
+      bookmark: this.bookmark,
     });
   }
 }
@@ -378,6 +404,7 @@ export class AggregationBuilder {
 
 interface QueryResultConfig extends PathQueryInit {
   lake: Lake;
+  bookmarkQuery: BookmarkQuery;
   scanner: ScanAdapter;
   budget: QueryBudget;
   now: () => number;
@@ -555,6 +582,7 @@ export class QueryResult {
       bookmark: createBookmark({
         planFingerprint: manifest.planFingerprint,
         snapshot: manifest.snapshot,
+        query: this.config.bookmarkQuery,
         position,
       }),
     };
@@ -1555,6 +1583,25 @@ function applyQueryPolicy(init: PathQueryInit, policy: QueryPolicy): PathQueryIn
   else delete out.limit;
   if (allowedColumns !== undefined && init.select === undefined) out.select = allowedColumns;
   return out;
+}
+
+function cloneBookmarkQuery(init: PathQueryInit): BookmarkQuery {
+  const query: BookmarkQuery = { source: init.source };
+  if (init.select !== undefined) query.select = [...init.select];
+  if (init.where !== undefined) query.where = init.where;
+  if (init.orderBy !== undefined) {
+    query.orderBy = init.orderBy.map((term) => {
+      const queryTerm: NonNullable<BookmarkQuery["orderBy"]>[number] = { column: term.column };
+      if (term.direction !== undefined) queryTerm.direction = term.direction;
+      if (term.nulls !== undefined) queryTerm.nulls = term.nulls;
+      return queryTerm;
+    });
+  }
+  if (init.limit !== undefined) query.limit = init.limit;
+  if (init.offset !== undefined) query.offset = init.offset;
+  if (init.batchSize !== undefined) query.batchSize = init.batchSize;
+  if (init.hive !== undefined) query.hive = init.hive;
+  return query;
 }
 
 function normalizeAllowedColumns(columns: string[]): string[] {

@@ -1,6 +1,6 @@
 import { LaQLError } from "./errors.js";
 import type { TaskInput } from "./query.js";
-import type { Bookmark } from "./types.js";
+import type { Bookmark, BookmarkQuery } from "./types.js";
 
 export interface TaskManifestTask {
   id: string;
@@ -74,6 +74,7 @@ export interface BookmarkPosition {
 export interface BookmarkInit {
   planFingerprint: string;
   snapshot: string;
+  query?: BookmarkQuery;
   position: BookmarkPosition;
 }
 
@@ -126,12 +127,14 @@ export function createBookmark(init: BookmarkInit): Bookmark {
   if (init.position.outputManifestCursor !== undefined) {
     position.outputManifestCursor = init.position.outputManifestCursor;
   }
-  return {
+  const bookmark: Bookmark = {
     version: 1,
     planFingerprint: init.planFingerprint,
     snapshot: init.snapshot,
     position,
   };
+  if (init.query !== undefined) bookmark.query = normalizeBookmarkQuery(init.query);
+  return bookmark;
 }
 
 export function assertBookmarkMatches(bookmark: Bookmark, planFingerprint: string): void {
@@ -412,12 +415,100 @@ function parseBookmark(value: unknown): Bookmark {
   ) {
     throwInvalidBookmark("Bookmark position is invalid");
   }
-  return {
+  const bookmark: Bookmark = {
     version: 1,
     planFingerprint: value.planFingerprint,
     snapshot: value.snapshot,
     position: parseBookmarkPosition(position, fileIndex, rowGroup, rowOffset),
   };
+  if (value.query !== undefined) bookmark.query = parseBookmarkQuery(value.query);
+  return bookmark;
+}
+
+function normalizeBookmarkQuery(query: BookmarkQuery): BookmarkQuery {
+  const normalized: BookmarkQuery = { source: query.source };
+  if (query.select !== undefined) normalized.select = [...query.select];
+  if (query.where !== undefined) normalized.where = query.where;
+  if (query.orderBy !== undefined) {
+    normalized.orderBy = query.orderBy.map((term) => {
+      const normalizedTerm: NonNullable<BookmarkQuery["orderBy"]>[number] = {
+        column: term.column,
+      };
+      if (term.direction !== undefined) normalizedTerm.direction = term.direction;
+      if (term.nulls !== undefined) normalizedTerm.nulls = term.nulls;
+      return normalizedTerm;
+    });
+  }
+  if (query.limit !== undefined) normalized.limit = query.limit;
+  if (query.offset !== undefined) normalized.offset = query.offset;
+  if (query.batchSize !== undefined) normalized.batchSize = query.batchSize;
+  if (query.hive !== undefined) normalized.hive = query.hive;
+  return normalized;
+}
+
+function parseBookmarkQuery(value: unknown): BookmarkQuery {
+  if (!isRecord(value) || typeof value.source !== "string" || value.source.length === 0) {
+    throwInvalidBookmark("Bookmark query is invalid");
+  }
+  const query: BookmarkQuery = { source: value.source };
+  if (value.select !== undefined) query.select = parseStringArray(value.select, "select");
+  if (value.where !== undefined) query.where = parseBookmarkExpr(value.where);
+  if (value.orderBy !== undefined) query.orderBy = parseBookmarkOrderBy(value.orderBy);
+  if (value.limit !== undefined)
+    query.limit = parseBookmarkNonNegativeInteger(value.limit, "limit");
+  if (value.offset !== undefined)
+    query.offset = parseBookmarkNonNegativeInteger(value.offset, "offset");
+  if (value.batchSize !== undefined) {
+    if (!isPositiveInteger(value.batchSize)) throwInvalidBookmark("Bookmark batch size is invalid");
+    query.batchSize = value.batchSize;
+  }
+  if (value.hive !== undefined) {
+    if (typeof value.hive !== "boolean") throwInvalidBookmark("Bookmark hive flag is invalid");
+    query.hive = value.hive;
+  }
+  return query;
+}
+
+function parseStringArray(value: unknown, field: string): string[] {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throwInvalidBookmark(`Bookmark ${field} is invalid`);
+  }
+  return [...value];
+}
+
+function parseBookmarkOrderBy(value: unknown): NonNullable<BookmarkQuery["orderBy"]> {
+  if (!Array.isArray(value)) throwInvalidBookmark("Bookmark orderBy is invalid");
+  return value.map((term) => {
+    if (!isRecord(term) || typeof term.column !== "string" || term.column.length === 0) {
+      throwInvalidBookmark("Bookmark orderBy is invalid");
+    }
+    const parsed: NonNullable<BookmarkQuery["orderBy"]>[number] = { column: term.column };
+    if (term.direction !== undefined) {
+      if (term.direction !== "asc" && term.direction !== "desc") {
+        throwInvalidBookmark("Bookmark orderBy direction is invalid");
+      }
+      parsed.direction = term.direction;
+    }
+    if (term.nulls !== undefined) {
+      if (term.nulls !== "first" && term.nulls !== "last") {
+        throwInvalidBookmark("Bookmark orderBy nulls is invalid");
+      }
+      parsed.nulls = term.nulls;
+    }
+    return parsed;
+  });
+}
+
+function parseBookmarkExpr(value: unknown): NonNullable<BookmarkQuery["where"]> {
+  if (!isRecord(value) || typeof value.kind !== "string") {
+    throwInvalidBookmark("Bookmark where expression is invalid");
+  }
+  return value as unknown as NonNullable<BookmarkQuery["where"]>;
+}
+
+function parseBookmarkNonNegativeInteger(value: unknown, field: string): number {
+  if (!isNonNegativeInteger(value)) throwInvalidBookmark(`Bookmark ${field} is invalid`);
+  return value;
 }
 
 function parseBookmarkPosition(
@@ -465,4 +556,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0;
 }

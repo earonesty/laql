@@ -142,6 +142,24 @@ describe("bookmarks and checkpoints", () => {
     await expect(verifyPaginationToken(byteSecretToken, byteSecret)).resolves.toEqual(
       compactBookmark,
     );
+    const resumableBookmark = createBookmark({
+      planFingerprint: "fp_query",
+      snapshot: "snapshot_3",
+      query: {
+        source: "data/*.parquet",
+        select: ["id"],
+        where: eq("country", "US"),
+        orderBy: [{ column: "id", direction: "asc" }],
+        limit: 10,
+        offset: 1,
+        batchSize: 2,
+        hive: true,
+      },
+      position: { fileIndex: 0, rowGroup: 0, rowOffset: 2 },
+    });
+    await expect(
+      verifyPaginationToken(await signPaginationToken(resumableBookmark, "secret"), "secret"),
+    ).resolves.toEqual(resumableBookmark);
     await expect(verifyPaginationToken(`${token.slice(0, -1)}x`, "secret")).rejects.toMatchObject({
       code: "LAQL_BOOKMARK_INVALID",
     });
@@ -175,6 +193,83 @@ describe("bookmarks and checkpoints", () => {
         planFingerprint: "fp",
         snapshot: "s",
         position: { fileIndex: 0, rowGroup: 0, rowOffset: 0, outputManifestCursor: -1 },
+      },
+      {
+        version: 1,
+        planFingerprint: "fp",
+        snapshot: "s",
+        query: { source: "" },
+        position: { fileIndex: 0, rowGroup: 0, rowOffset: 0 },
+      },
+      {
+        version: 1,
+        planFingerprint: "fp",
+        snapshot: "s",
+        query: { source: "table", select: [1] },
+        position: { fileIndex: 0, rowGroup: 0, rowOffset: 0 },
+      },
+      {
+        version: 1,
+        planFingerprint: "fp",
+        snapshot: "s",
+        query: { source: "table", where: "bad" },
+        position: { fileIndex: 0, rowGroup: 0, rowOffset: 0 },
+      },
+      {
+        version: 1,
+        planFingerprint: "fp",
+        snapshot: "s",
+        query: { source: "table", orderBy: "bad" },
+        position: { fileIndex: 0, rowGroup: 0, rowOffset: 0 },
+      },
+      {
+        version: 1,
+        planFingerprint: "fp",
+        snapshot: "s",
+        query: { source: "table", orderBy: [{}] },
+        position: { fileIndex: 0, rowGroup: 0, rowOffset: 0 },
+      },
+      {
+        version: 1,
+        planFingerprint: "fp",
+        snapshot: "s",
+        query: { source: "table", orderBy: [{ column: "id", direction: "sideways" }] },
+        position: { fileIndex: 0, rowGroup: 0, rowOffset: 0 },
+      },
+      {
+        version: 1,
+        planFingerprint: "fp",
+        snapshot: "s",
+        query: { source: "table", orderBy: [{ column: "id", nulls: "middle" }] },
+        position: { fileIndex: 0, rowGroup: 0, rowOffset: 0 },
+      },
+      {
+        version: 1,
+        planFingerprint: "fp",
+        snapshot: "s",
+        query: { source: "table", limit: -1 },
+        position: { fileIndex: 0, rowGroup: 0, rowOffset: 0 },
+      },
+      {
+        version: 1,
+        planFingerprint: "fp",
+        snapshot: "s",
+        query: { source: "table", offset: -1 },
+        position: { fileIndex: 0, rowGroup: 0, rowOffset: 0 },
+      },
+      {
+        version: 1,
+        planFingerprint: "fp",
+        snapshot: "s",
+        query: { source: "table", batchSize: 0 },
+        position: { fileIndex: 0, rowGroup: 0, rowOffset: 0 },
+      },
+      {
+        version: 1,
+        planFingerprint: "fp",
+        snapshot: "s",
+        query: { source: "table", hive: "yes" },
+        position: { fileIndex: 0, rowGroup: 0, rowOffset: 0 },
       },
     ];
 

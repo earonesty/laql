@@ -488,11 +488,16 @@ describe("Lake query runtime", () => {
     const first = await query.run({ slice: { maxRows: 2 } });
     expect(first.rows).toEqual([{ id: 1 }, { id: 3 }]);
     expect(first.bookmark).toMatchObject({
+      query: { source: "table", select: ["id"], where: eq("keep", true) },
       position: { rowOffset: 2, fileIndex: 0, rowGroup: 0 },
     });
 
     const second = await query.run({ slice: { maxRows: 2, bookmark: first.bookmark } });
     expect(second).toEqual({ rows: [{ id: 4 }] });
+    if (!first.bookmark) throw new Error("expected bookmark");
+    await expect(lake.resume(first.bookmark).run({ slice: { maxRows: 2 } })).resolves.toEqual({
+      rows: [{ id: 4 }],
+    });
 
     const replayed: Row[] = [];
     for await (const batch of query.resumableBatches({ bookmarkEvery: 1 })) {
@@ -770,6 +775,17 @@ describe("Lake query runtime", () => {
         },
       }),
     ).rejects.toMatchObject({ code: "LAQL_BOOKMARK_STALE" });
+    expect(() =>
+      lake
+        .resume(
+          createBookmark({
+            planFingerprint: "fp_without_query",
+            snapshot: "snapshot",
+            position: { fileIndex: 0, rowGroup: 0, rowOffset: 0 },
+          }),
+        )
+        .run({ slice: { maxRows: 1 } }),
+    ).toThrowError(LaQLError);
   });
 
   it("aggregates grouped rows with bounded group counts", async () => {
