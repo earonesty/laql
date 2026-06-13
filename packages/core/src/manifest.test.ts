@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { eq } from "./expr.js";
+import { eq, gt, isIn, like } from "./expr.js";
 import {
   assertBookmarkMatches,
   createBookmark,
@@ -62,6 +62,47 @@ describe("task and output manifests", () => {
     });
     expect(manifest.tasks[0]?.id).toMatch(/^job_1-task-000000-/u);
     expect(manifest.planFingerprint).toMatch(/^fp_[0-9a-f]{16}$/u);
+  });
+
+  it("keeps task manifests stable across deterministic query variants", async () => {
+    const store = memoryStore();
+    for (const path of [
+      "lake/date=2026-01-02/country=US/c.parquet",
+      "lake/date=2026-01-01/country=CA/a.parquet",
+      "lake/date=2026-01-01/country=US/b.parquet",
+    ]) {
+      await store.put(path, new Uint8Array([1]));
+    }
+    const lake = new Lake({
+      store,
+      scanner: new EmptyScanner(),
+      queryId: () => "q_manifest_property",
+    });
+    const builders = [
+      lake.hive("lake/**/*.parquet").select(["id"]).where(eq("country", "US")),
+      lake
+        .hive("lake/**/*.parquet")
+        .where(isIn("country", ["CA", "US"]))
+        .limit(2),
+      lake.path("lake/**/*.parquet").select(["id", "amount"]).where(gt("amount", 10)),
+      lake
+        .path("lake/**/*.parquet")
+        .where(like("country", "U%"))
+        .orderBy([{ column: "id" }]),
+    ];
+
+    for (let index = 0; index < builders.length; index += 1) {
+      const jobId = `job_variant_${index}`;
+      const manifest = await builders[index]?.taskManifest(jobId);
+      const repeated = await builders[index]?.taskManifest(jobId);
+
+      expect(manifest).toEqual(repeated);
+      expect(manifest?.tasks.map((task) => task.input.path)).toEqual(
+        [...(manifest?.tasks.map((task) => task.input.path) ?? [])].sort(),
+      );
+      expect(stableStringify(manifest)).toBe(stableStringify(repeated));
+      expect(manifest?.planFingerprint).toMatch(/^fp_[0-9a-f]{16}$/u);
+    }
   });
 
   it("normalizes task and output manifest JSON for golden comparisons", () => {
