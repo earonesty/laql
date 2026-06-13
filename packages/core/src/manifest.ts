@@ -76,6 +76,7 @@ export interface BookmarkInit {
   snapshot: string;
   query?: BookmarkQuery;
   position: BookmarkPosition;
+  operatorState?: Bookmark["operatorState"];
 }
 
 export function createTaskManifest(input: {
@@ -152,6 +153,9 @@ export function createBookmark(init: BookmarkInit): Bookmark {
     position,
   };
   if (init.query !== undefined) bookmark.query = normalizeBookmarkQuery(init.query);
+  if (init.operatorState !== undefined) {
+    bookmark.operatorState = normalizeBookmarkOperatorState(init.operatorState);
+  }
   return bookmark;
 }
 
@@ -440,7 +444,40 @@ function parseBookmark(value: unknown): Bookmark {
     position: parseBookmarkPosition(position, fileIndex, rowGroup, rowOffset),
   };
   if (value.query !== undefined) bookmark.query = parseBookmarkQuery(value.query);
+  if (value.operatorState !== undefined) {
+    bookmark.operatorState = parseBookmarkOperatorState(value.operatorState);
+  }
   return bookmark;
+}
+
+function normalizeBookmarkOperatorState(
+  state: NonNullable<Bookmark["operatorState"]>,
+): NonNullable<Bookmark["operatorState"]> {
+  const normalized: NonNullable<Bookmark["operatorState"]> = {};
+  if (state.limitEmitted !== undefined) normalized.limitEmitted = state.limitEmitted;
+  if (state.groupBy !== undefined) normalized.groupBy = cloneInlineOrSpillState(state.groupBy);
+  if (state.topK !== undefined) normalized.topK = cloneInlineOrSpillState(state.topK);
+  if (state.sketches !== undefined) {
+    normalized.sketches = {};
+    for (const [key, value] of Object.entries(state.sketches).sort(([a], [b]) =>
+      a.localeCompare(b),
+    )) {
+      normalized.sketches[key] = cloneBytes(value);
+    }
+  }
+  return normalized;
+}
+
+function cloneInlineOrSpillState(
+  value: Uint8Array | { spillRef: string },
+): Uint8Array | { spillRef: string } {
+  return value instanceof Uint8Array ? cloneBytes(value) : { spillRef: value.spillRef };
+}
+
+function cloneBytes(bytes: Uint8Array): Uint8Array {
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  return copy;
 }
 
 function normalizeBookmarkQuery(query: BookmarkQuery): BookmarkQuery {
@@ -462,6 +499,45 @@ function normalizeBookmarkQuery(query: BookmarkQuery): BookmarkQuery {
   if (query.batchSize !== undefined) normalized.batchSize = query.batchSize;
   if (query.hive !== undefined) normalized.hive = query.hive;
   return normalized;
+}
+
+function parseBookmarkOperatorState(value: unknown): NonNullable<Bookmark["operatorState"]> {
+  if (!isRecord(value)) throwInvalidBookmark("Bookmark operator state is invalid");
+  const state: NonNullable<Bookmark["operatorState"]> = {};
+  if (value.limitEmitted !== undefined) {
+    state.limitEmitted = parseBookmarkNonNegativeInteger(value.limitEmitted, "limitEmitted");
+  }
+  if (value.groupBy !== undefined) state.groupBy = parseInlineOrSpillState(value.groupBy);
+  if (value.topK !== undefined) state.topK = parseInlineOrSpillState(value.topK);
+  if (value.sketches !== undefined) {
+    if (!isRecord(value.sketches)) throwInvalidBookmark("Bookmark sketches state is invalid");
+    state.sketches = {};
+    for (const [key, inner] of Object.entries(value.sketches)) {
+      if (typeof key !== "string" || key.length === 0) {
+        throwInvalidBookmark("Bookmark sketches state is invalid");
+      }
+      state.sketches[key] = parseBase64UrlBytes(inner, "Bookmark sketches state is invalid");
+    }
+  }
+  return state;
+}
+
+function parseInlineOrSpillState(value: unknown): Uint8Array | { spillRef: string } {
+  if (typeof value === "string")
+    return parseBase64UrlBytes(value, "Bookmark operator state is invalid");
+  if (!isRecord(value) || typeof value.spillRef !== "string" || value.spillRef.length === 0) {
+    throwInvalidBookmark("Bookmark operator state is invalid");
+  }
+  return { spillRef: value.spillRef };
+}
+
+function parseBase64UrlBytes(value: unknown, message: string): Uint8Array {
+  if (typeof value !== "string" || !/^[A-Za-z0-9_-]*$/u.test(value)) throwInvalidBookmark(message);
+  try {
+    return base64UrlDecode(value);
+  } catch {
+    throwInvalidBookmark(message);
+  }
 }
 
 function parseBookmarkQuery(value: unknown): BookmarkQuery {

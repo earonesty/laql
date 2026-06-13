@@ -202,6 +202,24 @@ describe("bookmarks and checkpoints", () => {
     await expect(
       verifyPaginationToken(await signPaginationToken(resumableBookmark, "secret"), "secret"),
     ).resolves.toEqual(resumableBookmark);
+    const operatorBookmark = createBookmark({
+      planFingerprint: "fp_operator",
+      snapshot: "snapshot_4",
+      position: { fileIndex: 0, rowGroup: 1, rowOffset: 2 },
+      operatorState: {
+        limitEmitted: 3,
+        groupBy: new Uint8Array([1, 2, 3]),
+        topK: { spillRef: "topk-state" },
+        sketches: { approx: new Uint8Array([4, 5, 6]) },
+      },
+    });
+    const signedOperatorBookmark = await verifyPaginationToken(
+      await signPaginationToken(operatorBookmark, "secret"),
+      "secret",
+    );
+    expect(signedOperatorBookmark).toEqual(operatorBookmark);
+    expect(stableStringify(operatorBookmark)).toContain('"groupBy":"AQID"');
+    expect(stableStringify(operatorBookmark)).toContain('"approx":"BAUG"');
     await expect(verifyPaginationToken(`${token.slice(0, -1)}x`, "secret")).rejects.toMatchObject({
       code: "LAQL_BOOKMARK_INVALID",
     });
@@ -235,6 +253,34 @@ describe("bookmarks and checkpoints", () => {
         planFingerprint: "fp",
         snapshot: "s",
         position: { fileIndex: 0, rowGroup: 0, rowOffset: 0, outputManifestCursor: -1 },
+      },
+      {
+        version: 1,
+        planFingerprint: "fp",
+        snapshot: "s",
+        position: { fileIndex: 0, rowGroup: 0, rowOffset: 0 },
+        operatorState: "bad",
+      },
+      {
+        version: 1,
+        planFingerprint: "fp",
+        snapshot: "s",
+        position: { fileIndex: 0, rowGroup: 0, rowOffset: 0 },
+        operatorState: { limitEmitted: -1 },
+      },
+      {
+        version: 1,
+        planFingerprint: "fp",
+        snapshot: "s",
+        position: { fileIndex: 0, rowGroup: 0, rowOffset: 0 },
+        operatorState: { groupBy: { spillRef: "" } },
+      },
+      {
+        version: 1,
+        planFingerprint: "fp",
+        snapshot: "s",
+        position: { fileIndex: 0, rowGroup: 0, rowOffset: 0 },
+        operatorState: { sketches: { approx: "not base64!" } },
       },
       {
         version: 1,
