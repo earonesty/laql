@@ -15,7 +15,7 @@ import {
   serializeAggregateOperatorState,
   serializeTopKOperatorState,
 } from "./query.js";
-import type { Row } from "./types.js";
+import type { Bookmark, Row } from "./types.js";
 
 class FakeScanner implements ScanAdapter {
   readonly requestedColumns: (string[] | undefined)[] = [];
@@ -537,6 +537,37 @@ describe("Lake query runtime", () => {
       replayed.push(...batch.rows);
     }
     expect(replayed).toEqual(await query.toArray());
+  });
+
+  it("preserves run-to-completion output across deterministic slice boundaries", async () => {
+    for (const rowCount of [0, 1, 2, 5, 9, 17]) {
+      const rows = Array.from({ length: rowCount }, (_, index) => ({
+        id: index,
+        keep: index % 3 !== 1,
+        bucket: `b${index % 4}`,
+      }));
+      const { lake } = await makeLake({
+        rowsByPath: {
+          table: rows,
+        },
+      });
+      const query = lake.path("table").select(["id", "bucket"]).where(eq("keep", true));
+      const expected = await query.toArray();
+
+      for (const maxRows of [1, 2, 3, 5]) {
+        const replayed: Row[] = [];
+        let bookmark: Bookmark | undefined;
+        do {
+          const result = bookmark
+            ? await lake.resume(bookmark).run({ slice: { maxRows } })
+            : await query.run({ slice: { maxRows } });
+          replayed.push(...result.rows);
+          bookmark = result.bookmark;
+        } while (bookmark !== undefined);
+
+        expect(replayed, `rowCount=${rowCount} maxRows=${maxRows}`).toEqual(expected);
+      }
+    }
   });
 
   it("orders rows before offset, limit, and projection", async () => {
