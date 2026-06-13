@@ -1,13 +1,165 @@
+import { readFile } from "node:fs/promises";
+import { LaQLError, type MemoryObjectStore, memoryStore, type QueryBuilder } from "@laql/core";
+import { createParquetLake, readParquetMetadata } from "@laql/parquet";
+import { parseSql } from "@laql/sql";
+
 export const COMMANDS = ["query", "explain", "inspect", "write", "compact", "schema"] as const;
 
 export type Command = (typeof COMMANDS)[number];
+
+export interface CliResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}
+
+interface ParsedArgs {
+  command?: string;
+  path?: string;
+  sql?: string;
+  format?: "json" | "ndjson";
+  help: boolean;
+}
+
+export async function runCli(argv: string[]): Promise<CliResult> {
+  try {
+    const args = parseArgs(argv);
+    if (args.help || !args.command) return ok(`${usage()}\n`);
+    switch (args.command) {
+      case "query":
+        return ok(await query(args));
+      case "explain":
+        return ok(await explain(args));
+      case "schema":
+        return ok(await schema(args));
+      default:
+        return fail(`Command ${args.command} is not implemented yet\n${usage()}\n`, 2);
+    }
+  } catch (error) {
+    if (error instanceof LaQLError) return fail(`${error.code}: ${error.message}\n`, 1);
+    if (error instanceof Error) return fail(`${error.message}\n`, 1);
+    return fail("Unknown CLI error\n", 1);
+  }
+}
 
 export function usage(): string {
   return [
     "usage: laql <command> [options]",
     "",
-    `commands: ${COMMANDS.join(", ")}`,
+    "commands:",
+    "  query   --path <file.parquet> --sql <query> [--format json|ndjson]",
+    "  explain --path <file.parquet> --sql <query>",
+    "  schema  --path <file.parquet>",
     "",
-    "Commands land per BUILD_PLAN.md phases; run `laql <command> --help` once implemented.",
+    `other commands reserved by the build plan: ${COMMANDS.filter(
+      (command) => !["query", "explain", "schema"].includes(command),
+    ).join(", ")}`,
   ].join("\n");
+}
+
+async function query(args: ParsedArgs): Promise<string> {
+  const path = requireOption(args.path, "--path");
+  const sql = requireOption(args.sql, "--sql");
+  const { store, key } = await localStore(path);
+  const ast = parseCliSql(sql, key);
+  const lake = createParquetLake({ store });
+  const builder = lake.path(ast.source);
+  const result = builderFromAst(builder, ast);
+  if (args.format === "json") return `${JSON.stringify(await result.toArray())}\n`;
+  let out = "";
+  for await (const row of result.rows()) out += `${JSON.stringify(row)}\n`;
+  return out;
+}
+
+async function explain(args: ParsedArgs): Promise<string> {
+  const path = requireOption(args.path, "--path");
+  const sql = requireOption(args.sql, "--sql");
+  const { store, key } = await localStore(path);
+  const lake = createParquetLake({ store });
+  return `${(await builderFromAst(lake.path(key), parseCliSql(sql, key)).explain()).text}\n`;
+}
+
+async function schema(args: ParsedArgs): Promise<string> {
+  const path = requireOption(args.path, "--path");
+  const { store, key } = await localStore(path);
+  const metadata = await readParquetMetadata(store, key);
+  const columns = metadata.schema
+    .filter((field) => field.name !== "root")
+    .map((field) => ({ name: field.name, type: field.type ?? field.converted_type ?? "group" }));
+  return `${JSON.stringify({ path, rows: Number(totalRows(metadata.row_groups)), columns })}\n`;
+}
+
+function builderFromAst(builder: QueryBuilder, ast: ReturnType<typeof parseSql>): QueryBuilder {
+  let next = builder;
+  if (ast.select) next = next.select(ast.select);
+  if (ast.where) next = next.where(ast.where);
+  if (ast.orderBy) next = next.orderBy(ast.orderBy);
+  if (ast.offset !== undefined) next = next.offset(ast.offset);
+  if (ast.limit !== undefined) next = next.limit(ast.limit);
+  return next;
+}
+
+function parseCliSql(sql: string, defaultSource: string): ReturnType<typeof parseSql> {
+  const trimmed = sql.trim();
+  if (/^from\s/iu.test(trimmed)) return { ...parseSql(trimmed), source: defaultSource };
+  return { ...parseSql(`from input ${trimmed}`), source: defaultSource };
+}
+
+async function localStore(path: string): Promise<{ store: MemoryObjectStore; key: string }> {
+  const store = memoryStore();
+  const bytes = await readFile(path);
+  await store.put(path, new Uint8Array(bytes));
+  return { store, key: path };
+}
+
+function parseArgs(argv: string[]): ParsedArgs {
+  const args: ParsedArgs = { help: false };
+  const [command, ...rest] = argv;
+  if (command === "--help" || command === "-h") args.help = true;
+  else if (command !== undefined) args.command = command;
+  for (let index = 0; index < rest.length; index += 1) {
+    const arg = rest[index];
+    if (arg === "--help" || arg === "-h") args.help = true;
+    else if (arg === "--path") {
+      index += 1;
+      args.path = requireValue(rest, index, arg);
+    } else if (arg === "--sql") {
+      index += 1;
+      args.sql = requireValue(rest, index, arg);
+    } else if (arg === "--format") {
+      index += 1;
+      args.format = parseFormat(requireValue(rest, index, arg));
+    } else throw new LaQLError("LAQL_PARSE_ERROR", `Unknown argument ${arg}`);
+  }
+  return args;
+}
+
+function parseFormat(value: string): "json" | "ndjson" {
+  if (value === "json" || value === "ndjson") return value;
+  throw new LaQLError("LAQL_PARSE_ERROR", "--format must be json or ndjson");
+}
+
+function requireValue(args: string[], index: number, flag: string): string {
+  const value = args[index];
+  if (value === undefined || value.startsWith("--")) {
+    throw new LaQLError("LAQL_PARSE_ERROR", `${flag} requires a value`);
+  }
+  return value;
+}
+
+function requireOption(value: string | undefined, flag: string): string {
+  if (value === undefined) throw new LaQLError("LAQL_PARSE_ERROR", `${flag} is required`);
+  return value;
+}
+
+function totalRows(rowGroups: { num_rows: bigint | number }[]): number {
+  return rowGroups.reduce((sum, rowGroup) => sum + Number(rowGroup.num_rows), 0);
+}
+
+function ok(stdout: string): CliResult {
+  return { stdout, stderr: "", exitCode: 0 };
+}
+
+function fail(stderr: string, exitCode: number): CliResult {
+  return { stdout: "", stderr, exitCode };
 }

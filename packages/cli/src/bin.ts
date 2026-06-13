@@ -1,4 +1,7 @@
 #!/usr/bin/env node
-import { usage } from "./index.js";
+import { runCli } from "./index.js";
 
-console.log(usage());
+const result = await runCli(process.argv.slice(2));
+if (result.stdout) process.stdout.write(result.stdout);
+if (result.stderr) process.stderr.write(result.stderr);
+process.exitCode = result.exitCode;

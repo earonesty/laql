@@ -30,6 +30,11 @@
     "access": "public"
   },
   "dependencies": {
-    "@laql/core": "workspace:*"
+    "@laql/core": "workspace:*",
+    "@laql/parquet": "workspace:*",
+    "@laql/sql": "workspace:*"
+  },
+  "devDependencies": {
+    "@laql/fixtures": "workspace:*"
   }
 }

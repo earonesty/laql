@@ -35,6 +35,16 @@ importers:
       '@laql/core':
         specifier: workspace:*
         version: link:../core
+      '@laql/parquet':
+        specifier: workspace:*
+        version: link:../parquet
+      '@laql/sql':
+        specifier: workspace:*
+        version: link:../sql
+    devDependencies:
+      '@laql/fixtures':
+        specifier: workspace:*
+        version: link:../../fixtures
 
   packages/core: {}
 
