@@ -28,6 +28,10 @@ beforeAll(async () => {
     ICEBERG.equalityDeleteFile,
     readFileSync(fixturePath(ICEBERG.equalityDeleteFile)),
   );
+  await store.put(
+    ICEBERG.positionDeleteFile,
+    readFileSync(fixturePath(ICEBERG.positionDeleteFile)),
+  );
   for (const file of HIVE.files) {
     await store.put(file, readFileSync(fixturePath(file)));
   }
@@ -49,12 +53,15 @@ describe("loadIcebergTable", () => {
       manifestsSkipped: 0,
       filesPlanned: 2,
       filesSkipped: 1,
-      deleteFilesPlanned: 0,
+      deleteFilesPlanned: 1,
       deleteFilesIgnored: 0,
     });
     expect(plan.files.map((file) => file.path)).toEqual([HIVE.files[0], HIVE.files[2]]);
     expect(plan.files.map((file) => file.sequenceNumber)).toEqual([1, 3]);
     expect(plan.files[0]?.projectedFieldIds).toEqual([1, 3]);
+    expect(plan.files[0]?.deleteFiles).toEqual([
+      { content: "position-delete", path: ICEBERG.positionDeleteFile },
+    ]);
 
     const strictDeletedPartitionPlan = table.planFiles({
       where: eq("country", "CA"),
@@ -353,6 +360,26 @@ describe("loadIcebergTable", () => {
 
     expect(plan).toMatchObject({ deleteFilesPlanned: 1 });
     expect(rows).toEqual([]);
+  });
+
+  it("applies fixture position delete files while scanning planned Parquet rows", async () => {
+    const table = await loadIcebergTable({ store, metadataPath: ICEBERG.metadataFile });
+    const plan = table.planFiles({ where: eq("country", "US") });
+    const rows: Row[] = [];
+
+    for await (const batch of scanPlannedIcebergRows({
+      plan,
+      readDataFile: async (file) => {
+        const dataRows = await readParquetObjects(store, file.path);
+        return dataRows.map((row) => ({ ...file.partition, ...row }));
+      },
+      readDeleteFile: async (deleteFile) => readIcebergParquetDeletes(store, deleteFile),
+    })) {
+      rows.push(...batch);
+    }
+
+    expect(plan).toMatchObject({ deleteFilesPlanned: 1 });
+    expect(rows.map((row) => row.id)).toEqual([0, 2, 3, 200, 201, 202, 203]);
   });
 
   it("appends files by writing a new snapshot and metadata file", async () => {

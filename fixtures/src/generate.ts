@@ -377,6 +377,7 @@ function generateIceberg() {
                 sequenceNumber: 1,
                 partition: { country: "US", date: "2026-01-01" },
                 recordCount: HIVE.rowsPerFile,
+                deleteFiles: [{ content: "position-delete", path: ICEBERG.positionDeleteFile }],
               },
               {
                 path: HIVE.files[1],

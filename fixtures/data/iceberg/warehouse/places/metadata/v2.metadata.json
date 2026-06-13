@@ -108,7 +108,13 @@
                 "country": "US",
                 "date": "2026-01-01"
               },
-              "recordCount": 4
+              "recordCount": 4,
+              "deleteFiles": [
+                {
+                  "content": "position-delete",
+                  "path": "deletes/us-second.pos.parquet"
+                }
+              ]
             },
             {
               "path": "hive/date=2026-01-02/country=CA/part-000.parquet",
