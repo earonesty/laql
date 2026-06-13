@@ -44,6 +44,14 @@ describe("loadIcebergTable", () => {
     expect(plan.files.map((file) => file.sequenceNumber)).toEqual([1, 3]);
     expect(plan.files[0]?.projectedFieldIds).toEqual([1, 3]);
 
+    const strictDeletedPartitionPlan = table.planFiles({
+      where: eq("country", "CA"),
+    });
+    expect(strictDeletedPartitionPlan.files[0]).toMatchObject({
+      path: HIVE.files[1],
+      deleteFiles: [{ content: "equality-delete", path: "deletes/country-ca.eq.parquet" }],
+    });
+
     const deletedPartitionPlan = table.planFiles({
       where: eq("country", "CA"),
       readMode: "ignore-unsupported-deletes",
@@ -115,11 +123,9 @@ describe("loadIcebergTable", () => {
     ).toHaveLength(2);
   });
 
-  it("throws typed errors for strict delete handling and unknown metadata references", async () => {
+  it("throws typed errors for unknown metadata references", async () => {
     const table = await loadIcebergTable({ store, metadataPath: ICEBERG.metadataFile });
 
-    expect(() => table.planFiles()).toThrowError(LaQLError);
-    expect(() => table.planFiles()).toThrow(/delete files/u);
     expect(() => table.planFiles({ ref: "missing" })).toThrow(/Unknown Iceberg ref/u);
     expect(() => table.planFiles({ snapshotId: 999 })).toThrow(/Unknown Iceberg snapshot/u);
     expect(() => table.planFiles({ asOfTimestampMs: 1 })).toThrow(/No Iceberg snapshot/u);

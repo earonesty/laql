@@ -15,8 +15,8 @@ const plan = table.planFiles({
   ref: "main",
   select: ["id", "country"],
   where: eq("country", "US"),
-  readMode: "ignore-deletes",
+  readMode: "strict",
 });
 ```
 
-Strict mode throws `LAQL_UNSUPPORTED_DELETE_FILES` when a planned file has delete files. Use `ignore-deletes` only when raw scans are acceptable.
+Strict mode includes known Iceberg delete files in the plan and throws `LAQL_UNSUPPORTED_DELETE_FILES` for unknown delete formats. Use `ignore-deletes` only when raw scans are acceptable; use `ignore-unsupported-deletes` to carry known delete metadata while dropping future formats.

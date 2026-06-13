@@ -196,15 +196,16 @@ export class IcebergTable {
           continue;
         }
         const supportedDeleteFiles = supportedIcebergDeleteFiles(file.deleteFiles);
-        if (file.deleteFiles && file.deleteFiles.length > 0 && readMode === "strict") {
+        const unsupportedDeleteFiles = unsupportedIcebergDeleteFiles(file.deleteFiles);
+        if (unsupportedDeleteFiles.length > 0 && readMode === "strict") {
           throw new LaQLError(
             "LAQL_UNSUPPORTED_DELETE_FILES",
-            "Snapshot contains delete files unsupported by this planner mode",
+            "Snapshot contains delete files unsupported by strict Iceberg planning",
             {
               path: file.path,
               deleteFiles: file.deleteFiles,
               supportedDeleteFiles,
-              ignoredDeleteFiles: unsupportedIcebergDeleteFiles(file.deleteFiles),
+              unsupportedDeleteFiles,
             },
           );
         }
@@ -216,7 +217,10 @@ export class IcebergTable {
           projectedFieldIds,
           snapshotId: snapshot["snapshot-id"],
         };
-        if (readMode === "ignore-unsupported-deletes" && supportedDeleteFiles.length > 0) {
+        if (
+          (readMode === "strict" || readMode === "ignore-unsupported-deletes") &&
+          supportedDeleteFiles.length > 0
+        ) {
           planned.deleteFiles = supportedDeleteFiles;
         }
         files.push(planned);
