@@ -12,11 +12,16 @@ const result = await writePartitionedParquet(store, "out/sales", {
   partitionBy: ["region"],
   maxRowsPerFile: 1000,
   jobId: "job_2026_01_01",
+  taskId: "task_000",
+  idempotencyKey: "attempt_001",
   writeMode: "create",
 });
 ```
 
-Output paths include partition values and deterministic file ordinals. The returned file list can be converted to output-manifest entries with `partitionedParquetOutputEntries`:
+Output paths include partition values and deterministic file ordinals. `taskId` and
+`idempotencyKey` are optional retry-scoped filename components; omit them to keep the
+default `part-${jobId}-${ordinal}.parquet` shape. The returned file list can be converted
+to output-manifest entries with `partitionedParquetOutputEntries`:
 
 ```ts
 const entries = partitionedParquetOutputEntries(result, {

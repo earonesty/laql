@@ -37,6 +37,8 @@ export interface WriteParquetRowsOptions
   maxRowsPerFile?: number;
   maxBytesPerFile?: number;
   jobId?: string;
+  taskId?: string;
+  idempotencyKey?: string;
   columnTypes?: Record<string, BasicType>;
   validation?: InsertValidationRules;
 }
@@ -174,6 +176,8 @@ export async function writePartitionedParquet(
     maxRowsPerFile: _maxRowsPerFile,
     maxBytesPerFile,
     jobId,
+    taskId,
+    idempotencyKey,
     columnTypes,
     validation: _validation,
     contentType,
@@ -200,6 +204,8 @@ export async function writePartitionedParquet(
           partition.values,
           partitionBy,
           jobId,
+          taskId,
+          idempotencyKey,
           ordinal,
         );
         const written = await writeEncodedParquet(
@@ -391,6 +397,8 @@ function validatePartitionedWriteOptions(
       maxBytesPerFile: options.maxBytesPerFile,
     });
   }
+  validateOptionalOutputPathComponent("taskId", options.taskId);
+  validateOptionalOutputPathComponent("idempotencyKey", options.idempotencyKey);
   const partitionBy = options.partitionBy ?? [];
   const uniquePartitions = new Set(partitionBy);
   if (uniquePartitions.size !== partitionBy.length) {
@@ -429,6 +437,8 @@ function partitionOutputPath(
   partitionValues: Record<string, string>,
   partitionBy: string[],
   jobId: string | undefined,
+  taskId: string | undefined,
+  idempotencyKey: string | undefined,
   ordinal: number,
 ): string {
   const segments = [prefix];
@@ -436,8 +446,19 @@ function partitionOutputPath(
     segments.push(`${column}=${encodeURIComponent(partitionValues[column] ?? "")}`);
   }
   const safeJobId = jobId ?? "data";
-  segments.push(`part-${safeJobId}-${String(ordinal).padStart(5, "0")}.parquet`);
+  const filenameParts = [safeJobId];
+  if (taskId !== undefined) filenameParts.push(encodeURIComponent(taskId));
+  if (idempotencyKey !== undefined) filenameParts.push(encodeURIComponent(idempotencyKey));
+  filenameParts.push(String(ordinal).padStart(5, "0"));
+  segments.push(`part-${filenameParts.join("-")}.parquet`);
   return segments.join("/");
+}
+
+function validateOptionalOutputPathComponent(name: string, value: string | undefined): void {
+  if (value === undefined) return;
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new LaQLError("LAQL_TYPE_ERROR", `${name} must be a non-empty string`, { [name]: value });
+  }
 }
 
 function validateInsertRows(rows: Row[], validation: InsertValidationRules | undefined): void {

@@ -289,6 +289,29 @@ describe("writePartitionedParquet", () => {
     ]);
   });
 
+  it("includes task and idempotency components in deterministic output paths", async () => {
+    const outStore = memoryStore();
+    const result = await writePartitionedParquet(outStore, "out/tasks", {
+      rows: [
+        { date: "2026-01-01", id: 1 },
+        { date: "2026-01-01", id: 2 },
+      ],
+      partitionBy: ["date"],
+      maxRowsPerFile: 1,
+      jobId: "job",
+      taskId: "task/7",
+      idempotencyKey: "attempt 1",
+    });
+
+    expect(result.files.map((file) => file.path)).toEqual([
+      "out/tasks/date=2026-01-01/part-job-task%2F7-attempt%201-00000.parquet",
+      "out/tasks/date=2026-01-01/part-job-task%2F7-attempt%201-00001.parquet",
+    ]);
+    await expect(readParquetObjects(outStore, result.files[0]?.path ?? "")).resolves.toEqual([
+      { id: 1 },
+    ]);
+  });
+
   it("enforces create-only output mode for partitioned writes", async () => {
     const outStore = memoryStore();
     const options = {
@@ -489,6 +512,18 @@ describe("writePartitionedParquet", () => {
       writePartitionedParquet(outStore, "out/bad-byte-limit", {
         rows: [{ id: 1 }],
         maxBytesPerFile: 0,
+      }),
+    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+    await expect(
+      writePartitionedParquet(outStore, "out/bad-task", {
+        rows: [{ id: 1 }],
+        taskId: "",
+      }),
+    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+    await expect(
+      writePartitionedParquet(outStore, "out/bad-idempotency", {
+        rows: [{ id: 1 }],
+        idempotencyKey: " ",
       }),
     ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
     await expect(
