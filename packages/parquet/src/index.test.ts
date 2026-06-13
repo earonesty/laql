@@ -304,6 +304,7 @@ describe("writePartitionedParquet", () => {
 
     const entries = partitionedParquetOutputEntries(result, {
       taskId: (_file, index) => `task-${index}`,
+      iceberg: true,
     });
     const manifest = createOutputManifest({
       jobId: "job_manifest",
@@ -319,6 +320,11 @@ describe("writePartitionedParquet", () => {
         rowCount: 1,
         byteSize: result.files[0]?.byteSize,
         etag: result.files[0]?.etag,
+        iceberg: {
+          recordCount: 1,
+          fileSizeInBytes: result.files[0]?.byteSize,
+          partitionValues: { country: "US", date: "2026-01-01" },
+        },
       },
       {
         taskId: "task-1",
@@ -327,6 +333,11 @@ describe("writePartitionedParquet", () => {
         rowCount: 1,
         byteSize: result.files[1]?.byteSize,
         etag: result.files[1]?.etag,
+        iceberg: {
+          recordCount: 1,
+          fileSizeInBytes: result.files[1]?.byteSize,
+          partitionValues: { country: "CA", date: "2026-01-02" },
+        },
       },
     ]);
   });

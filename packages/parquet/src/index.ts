@@ -61,6 +61,7 @@ export interface WritePartitionedParquetResult {
 
 export interface PartitionedParquetOutputEntryOptions {
   taskId: string | ((file: WritePartitionedParquetFile, index: number) => string);
+  iceberg?: boolean;
 }
 
 export interface ParquetLakeConfig extends Omit<LakeConfig, "scanner"> {
@@ -220,6 +221,13 @@ export function partitionedParquetOutputEntries(
       byteSize: file.byteSize,
     };
     if (file.etag !== undefined) entry.etag = file.etag;
+    if (options.iceberg === true) {
+      entry.iceberg = {
+        recordCount: file.rowCount,
+        fileSizeInBytes: file.byteSize,
+        partitionValues: sortStringRecord(file.partitionValues),
+      };
+    }
     return entry;
   });
 }

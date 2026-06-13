@@ -15,4 +15,13 @@ const result = await writePartitionedParquet(store, "out/sales", {
 });
 ```
 
-Output paths include partition values and deterministic file ordinals. The returned file list can be converted to output-manifest entries with `partitionedParquetOutputEntries`.
+Output paths include partition values and deterministic file ordinals. The returned file list can be converted to output-manifest entries with `partitionedParquetOutputEntries`:
+
+```ts
+const entries = partitionedParquetOutputEntries(result, {
+  taskId: "task_000",
+  iceberg: true,
+});
+```
+
+Set `iceberg: true` when the manifest should carry data-file metadata for a later Iceberg append commit.
