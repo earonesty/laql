@@ -46,6 +46,7 @@ export interface TaskCheckpoint {
   idempotencyKey: string;
   updatedAtMs: number;
   output?: OutputManifestEntry;
+  outputs?: OutputManifestEntry[];
 }
 
 export interface CheckpointAdapter {
@@ -61,6 +62,7 @@ export interface TaskTransitionInput {
   nowMs: number;
   staleTimeoutMs?: number;
   output?: OutputManifestEntry;
+  outputs?: OutputManifestEntry[];
 }
 
 export interface BookmarkPosition {
@@ -126,10 +128,16 @@ export async function createOutputManifestFromCheckpoints(input: {
 }): Promise<OutputManifest> {
   const entries: OutputManifestEntry[] = [];
   for await (const checkpoint of input.checkpoints.list(input.jobId)) {
-    if (!checkpoint.output) continue;
-    entries.push(checkpoint.output);
+    if (checkpoint.outputs !== undefined) {
+      entries.push(...checkpoint.outputs);
+    } else if (checkpoint.output !== undefined) {
+      entries.push(checkpoint.output);
+    }
   }
-  entries.sort((left, right) => left.taskId.localeCompare(right.taskId));
+  entries.sort(
+    (left, right) =>
+      left.taskId.localeCompare(right.taskId) || left.outputPath.localeCompare(right.outputPath),
+  );
   return createOutputManifest({
     jobId: input.jobId,
     planFingerprint: input.planFingerprint,
@@ -267,10 +275,19 @@ export function transitionTaskCheckpoint(
   const checkpoint = createCheckpoint(input);
   if (
     checkpoint.output === undefined &&
+    checkpoint.outputs === undefined &&
     existing.output !== undefined &&
     stateRank(input.nextState) > stateRank(existing.state)
   ) {
     checkpoint.output = normalizeOutputEntry(existing.output);
+  }
+  if (
+    checkpoint.output === undefined &&
+    checkpoint.outputs === undefined &&
+    existing.outputs !== undefined &&
+    stateRank(input.nextState) > stateRank(existing.state)
+  ) {
+    checkpoint.outputs = existing.outputs.map(normalizeOutputEntry);
   }
   return checkpoint;
 }
@@ -345,6 +362,9 @@ function createCheckpoint(input: TaskTransitionInput): TaskCheckpoint {
     updatedAtMs: input.nowMs,
   };
   if (input.output !== undefined) checkpoint.output = normalizeOutputEntry(input.output);
+  if (input.outputs !== undefined) {
+    checkpoint.outputs = input.outputs.map(normalizeOutputEntry);
+  }
   return checkpoint;
 }
 
@@ -740,6 +760,8 @@ function cloneCheckpoint(checkpoint: TaskCheckpoint): TaskCheckpoint {
     updatedAtMs: checkpoint.updatedAtMs,
   };
   if (checkpoint.output !== undefined) clone.output = normalizeOutputEntry(checkpoint.output);
+  if (checkpoint.outputs !== undefined)
+    clone.outputs = checkpoint.outputs.map(normalizeOutputEntry);
   return clone;
 }
 

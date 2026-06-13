@@ -573,6 +573,63 @@ describe("bookmarks and checkpoints", () => {
     expect(repeated.entries[0]?.partitionValues.country).toBe("US");
   });
 
+  it("aggregates multiple output manifest entries from one checkpoint", async () => {
+    const checkpoints = memoryCheckpointAdapter();
+    await checkpoints.put({
+      taskId: "job_8-task-000001-a",
+      state: "complete",
+      idempotencyKey: "idem-1",
+      updatedAtMs: 10,
+      outputs: [
+        {
+          taskId: "job_8-task-000001-a",
+          outputPath: "out/c.parquet",
+          partitionValues: { part: "c" },
+          rowCount: 3,
+          byteSize: 30,
+        },
+        {
+          taskId: "job_8-task-000001-a",
+          outputPath: "out/a.parquet",
+          partitionValues: { part: "a" },
+          rowCount: 1,
+          byteSize: 10,
+        },
+      ],
+    });
+    await checkpoints.put({
+      taskId: "job_8-task-000000-z",
+      state: "complete",
+      idempotencyKey: "idem-0",
+      updatedAtMs: 5,
+      output: {
+        taskId: "job_8-task-000000-z",
+        outputPath: "out/z.parquet",
+        partitionValues: {},
+        rowCount: 1,
+        byteSize: 1,
+      },
+    });
+
+    const manifest = await createOutputManifestFromCheckpoints({
+      jobId: "job_8",
+      planFingerprint: "fp_outputs_multi",
+      checkpoints,
+    });
+    expect(manifest.entries.map((entry) => entry.outputPath)).toEqual([
+      "out/z.parquet",
+      "out/a.parquet",
+      "out/c.parquet",
+    ]);
+
+    const outputCheckpoint = await checkpoints.get("job_8-task-000001-a");
+    const firstOutput = outputCheckpoint?.outputs?.[0];
+    if (firstOutput) firstOutput.partitionValues.part = "mutated";
+    const repeated = await checkpoints.get("job_8-task-000001-a");
+    expect(repeated?.outputs?.[0]?.partitionValues.part).toBe("c");
+    expect(repeated?.outputs?.[1]?.partitionValues.part).toBe("a");
+  });
+
   it("advances task checkpoints idempotently and permits stale requeue", () => {
     const planned = transitionTaskCheckpoint(undefined, {
       taskId: "job_4-task-000001-a",
