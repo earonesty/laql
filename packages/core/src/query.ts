@@ -42,6 +42,29 @@ export interface PathQueryInit {
   limit?: number;
   offset?: number;
   batchSize?: number;
+  hive?: boolean;
+}
+
+export interface TaskInput {
+  path: string;
+  etag?: string;
+  rowGroupRanges: { start: number; end: number }[];
+  projectedColumns?: string[];
+  residualPredicate?: Expr;
+  partitionValues: Record<string, string>;
+}
+
+export interface ExplainJson {
+  queryId: string;
+  filesPlanned: number;
+  filesSkipped: number;
+  projectedColumns: string[];
+  tasks: TaskInput[];
+}
+
+export interface ExplainResult {
+  text: string;
+  json: ExplainJson;
 }
 
 export interface JsonQueryV1 {
@@ -90,6 +113,10 @@ export class Lake {
     return new QueryBuilder(this, { source });
   }
 
+  hive(source: string): QueryBuilder {
+    return new QueryBuilder(this, { source, hive: true });
+  }
+
   query(input: JsonQueryV1): QueryBuilder {
     return new QueryBuilder(this, parseJsonQuery(input));
   }
@@ -133,6 +160,14 @@ export class QueryBuilder {
 
   batchSize(batchSize: number): QueryBuilder {
     return new QueryBuilder(this.lake, { ...this.init, batchSize });
+  }
+
+  explain(): Promise<ExplainResult> {
+    return this.run().explain();
+  }
+
+  planTasks(): Promise<TaskInput[]> {
+    return this.run().planTasks();
   }
 
   run(): QueryResult {
@@ -196,9 +231,10 @@ export class QueryResult {
     const config = this.config;
     const { stats } = this;
     const startedAt = config.now();
-    let skipped = 0;
+    let offsetSkipped = 0;
     let returned = 0;
-    const paths = await expandPaths(config.lake.store, config.source);
+    const { planned: paths, skipped: skippedFiles } = await this.planObjects();
+    stats.filesSkipped = skippedFiles;
     const columns = projectedReadColumns(config.select, config.where);
     for (const object of paths) {
       stats.filesPlanned += 1;
@@ -213,19 +249,21 @@ export class QueryResult {
         startedAt,
       };
       if (columns !== undefined) scanOptions.columns = columns;
+      const partitionValues = config.hive ? parseHivePartitions(object.path) : {};
       for await (const rawBatch of config.scanner.scan(object.path, scanOptions)) {
         const out: Row[] = [];
         for (const rawRow of rawBatch) {
+          const row = config.hive ? { ...partitionValues, ...rawRow } : rawRow;
           stats.rowsDecoded += 1;
           enforceBudget(config.budget, stats, config.now, startedAt);
-          if (!matches(config.where, rawRow)) continue;
+          if (!matches(config.where, row)) continue;
           stats.rowsMatched += 1;
-          if (skipped < (config.offset ?? 0)) {
-            skipped += 1;
+          if (offsetSkipped < (config.offset ?? 0)) {
+            offsetSkipped += 1;
             continue;
           }
           if (config.limit !== undefined && returned >= config.limit) break;
-          out.push(project(rawRow, config.select));
+          out.push(project(row, config.select));
           returned += 1;
           stats.rowsReturned += 1;
           enforceBudget(config.budget, stats, config.now, startedAt);
@@ -253,6 +291,62 @@ export class QueryResult {
     let count = 0;
     for await (const _row of this.rows()) count += 1;
     return count;
+  }
+
+  async planTasks(): Promise<TaskInput[]> {
+    const { planned: objects } = await this.planObjects();
+    return this.tasksFromObjects(objects);
+  }
+
+  async explain(): Promise<ExplainResult> {
+    const { planned, skipped } = await this.planObjects();
+    const tasks = this.tasksFromObjects(planned);
+    const projectedColumns = projectedReadColumns(this.config.select, this.config.where) ?? [];
+    const json: ExplainJson = {
+      queryId: this.stats.queryId,
+      filesPlanned: tasks.length,
+      filesSkipped: skipped,
+      projectedColumns,
+      tasks,
+    };
+    return {
+      json,
+      text: [
+        `files planned: ${json.filesPlanned}`,
+        `files skipped: ${json.filesSkipped}`,
+        `projected columns: ${json.projectedColumns.join(", ") || "*"}`,
+      ].join("\n"),
+    };
+  }
+
+  private tasksFromObjects(objects: ObjectInfo[]): TaskInput[] {
+    const config = this.config;
+    const projectedColumns = projectedReadColumns(config.select, config.where);
+    return objects.map((object) => {
+      const task: TaskInput = {
+        path: object.path,
+        rowGroupRanges: [{ start: 0, end: Number.POSITIVE_INFINITY }],
+        partitionValues: config.hive ? parseHivePartitions(object.path) : {},
+      };
+      if (object.etag !== undefined) task.etag = object.etag;
+      if (projectedColumns !== undefined) task.projectedColumns = projectedColumns;
+      if (config.where !== undefined) task.residualPredicate = config.where;
+      return task;
+    });
+  }
+
+  private async planObjects(): Promise<{ planned: ObjectInfo[]; skipped: number }> {
+    const config = this.config;
+    const objects = await expandPaths(config.lake.store, config.source);
+    if (!config.hive || !config.where) return { planned: objects, skipped: 0 };
+    const planned: ObjectInfo[] = [];
+    let skipped = 0;
+    for (const object of objects) {
+      const partitions = parseHivePartitions(object.path);
+      if (partitionMayMatch(config.where, partitions)) planned.push(object);
+      else skipped += 1;
+    }
+    return { planned, skipped };
   }
 
   streamNdjson(): ReadableStream<Uint8Array> {
@@ -545,6 +639,62 @@ function project(row: Row, select: string[] | undefined): Row {
     out[column] = row[column];
   }
   return out;
+}
+
+export function parseHivePartitions(path: string): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const segment of path.split("/")) {
+    const equals = segment.indexOf("=");
+    if (equals <= 0) continue;
+    const key = segment.slice(0, equals);
+    const value = segment.slice(equals + 1);
+    if (key && value) values[key] = decodeURIComponent(value);
+  }
+  return values;
+}
+
+function partitionMayMatch(expr: Expr, partitions: Record<string, string>): boolean {
+  const state = partitionEval(expr, partitions);
+  return state !== false;
+}
+
+type PartitionEval = boolean | "unknown";
+
+function partitionEval(expr: Expr, partitions: Record<string, string>): PartitionEval {
+  switch (expr.kind) {
+    case "literal":
+      return "unknown";
+    case "column":
+      return "unknown";
+    case "compare":
+    case "in":
+    case "between":
+    case "null-check":
+    case "like":
+    case "call":
+      return expressionIsPartitionOnly(expr, partitions) ? matches(expr, partitions) : "unknown";
+    case "not": {
+      const value = partitionEval(expr.operand, partitions);
+      return value === "unknown" ? "unknown" : !value;
+    }
+    case "logical": {
+      const values = expr.operands.map((operand) => partitionEval(operand, partitions));
+      if (expr.op === "and") {
+        if (values.some((value) => value === false)) return false;
+        if (values.every((value) => value === true)) return true;
+        return "unknown";
+      }
+      if (values.some((value) => value === true)) return true;
+      if (values.every((value) => value === false)) return false;
+      return "unknown";
+    }
+  }
+}
+
+function expressionIsPartitionOnly(expr: Expr, partitions: Record<string, string>): boolean {
+  const columns = new Set<string>();
+  collectExprColumns(expr, columns);
+  return columns.size > 0 && [...columns].every((column) => column in partitions);
 }
 
 function enforceBudget(

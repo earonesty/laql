@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { LaQLError } from "./errors.js";
-import { between, col, eq, fn, gt, isIn, isNull, like, not } from "./expr.js";
+import { and, between, col, eq, fn, gt, isIn, isNull, like, lit, not, or } from "./expr.js";
 import { memoryStore } from "./memory-store.js";
-import { Lake, parseJsonQuery, type ScanAdapter, type ScanOptions } from "./query.js";
+import {
+  Lake,
+  parseHivePartitions,
+  parseJsonQuery,
+  type ScanAdapter,
+  type ScanOptions,
+} from "./query.js";
 import type { Row } from "./types.js";
 
 class FakeScanner implements ScanAdapter {
@@ -93,6 +99,7 @@ describe("Lake query runtime", () => {
 
     expect(await lake.path("data/types.parquet").first()).toEqual({ id: 1, big: 12n });
     expect(await lake.path("data/types.parquet").count()).toBe(2);
+    expect(await lake.path("missing*.parquet").first()).toBeUndefined();
 
     const batches: Row[][] = [];
     for await (const batch of lake.path("data/types.parquet").batchSize(1).batches()) {
@@ -161,10 +168,125 @@ describe("Lake query runtime", () => {
     expect(scanner.requestedColumns).toEqual([["c", "d", "id"], ["a", "b"], ["c"]]);
   });
 
+  it("plans hive partition tasks, prunes files, and explains the plan", async () => {
+    const { lake, scanner } = await makeLake({
+      rowsByPath: {
+        "lake/date=2026-01-01/country=US/a.parquet": [{ id: 1, amount: 10 }],
+        "lake/date=2026-01-02/country=CA/b.parquet": [{ id: 2, amount: 20 }],
+        "lake/date=2026-01-02/country=US/c.parquet": [{ id: 3, amount: 30 }],
+      },
+    });
+
+    const query = lake
+      .hive("lake/**/*.parquet")
+      .select(["id"])
+      .where(and(eq("country", "US"), gt("amount", 15)));
+
+    expect(await query.toArray()).toEqual([{ id: 3 }]);
+    expect(scanner.requestedColumns).toEqual([
+      ["amount", "country", "id"],
+      ["amount", "country", "id"],
+    ]);
+
+    const result = query.run();
+    const tasks = await result.planTasks();
+    expect(tasks.map((task) => task.path)).toEqual([
+      "lake/date=2026-01-01/country=US/a.parquet",
+      "lake/date=2026-01-02/country=US/c.parquet",
+    ]);
+    expect(tasks[0]?.partitionValues).toEqual({ country: "US", date: "2026-01-01" });
+    expect(tasks[0]?.projectedColumns).toEqual(["amount", "country", "id"]);
+    expect(tasks[0]?.residualPredicate).toMatchObject({ kind: "logical" });
+
+    const explain = await result.explain();
+    expect(explain.json).toMatchObject({
+      filesPlanned: 2,
+      filesSkipped: 1,
+      projectedColumns: ["amount", "country", "id"],
+    });
+    expect(explain.text).toContain("files skipped: 1");
+  });
+
+  it("parses hive partition segments and preserves non-hive path pieces", () => {
+    expect(
+      parseHivePartitions("lake/date=2026-01-01/country=United%20States/file.parquet"),
+    ).toEqual({
+      country: "United States",
+      date: "2026-01-01",
+    });
+    expect(parseHivePartitions("lake/=bad/empty=/plain/file.parquet")).toEqual({});
+  });
+
+  it("keeps hive pruning conservative for not/or/unknown partition expressions", async () => {
+    const rowsByPath = {
+      "lake/country=US/a.parquet": [{ id: 1, amount: 10 }],
+      "lake/country=CA/b.parquet": [{ id: 2, amount: 20 }],
+    };
+
+    expect(
+      (
+        await (
+          await makeLake({ rowsByPath })
+        ).lake
+          .hive("lake/**/*.parquet")
+          .where(not(eq("country", "CA")))
+          .planTasks()
+      ).map((task) => task.path),
+    ).toEqual(["lake/country=US/a.parquet"]);
+
+    expect(
+      (
+        await (
+          await makeLake({ rowsByPath })
+        ).lake
+          .hive("lake/**/*.parquet")
+          .where(or(eq("country", "CA"), eq("country", "MX")))
+          .planTasks()
+      ).map((task) => task.path),
+    ).toEqual(["lake/country=CA/b.parquet"]);
+
+    expect(
+      (
+        await (
+          await makeLake({ rowsByPath })
+        ).lake
+          .hive("lake/**/*.parquet")
+          .where(or(eq("country", "CA"), gt("amount", 0)))
+          .planTasks()
+      ).map((task) => task.path),
+    ).toEqual(["lake/country=CA/b.parquet", "lake/country=US/a.parquet"]);
+
+    expect(
+      (
+        await (
+          await makeLake({ rowsByPath })
+        ).lake
+          .hive("lake/**/*.parquet")
+          .where(lit(true))
+          .planTasks()
+      ).map((task) => task.path),
+    ).toEqual(["lake/country=CA/b.parquet", "lake/country=US/a.parquet"]);
+
+    expect(
+      (
+        await (
+          await makeLake({ rowsByPath })
+        ).lake
+          .hive("lake/**/*.parquet")
+          .where(col("country"))
+          .planTasks()
+      ).map((task) => task.path),
+    ).toEqual(["lake/country=CA/b.parquet", "lake/country=US/a.parquet"]);
+  });
+
   it("supports all simple JSON comparison forms", async () => {
     expect(parseJsonQuery({ version: 1, from: "t", where: { ne: ["a", 1] } }).where).toMatchObject({
       kind: "compare",
       op: "ne",
+    });
+    expect(parseJsonQuery({ version: 1, from: "t", limit: 0, offset: 0 })).toMatchObject({
+      limit: 0,
+      offset: 0,
     });
     expect(parseJsonQuery({ version: 1, from: "t", where: { lte: ["a", 1] } }).where).toMatchObject(
       {
