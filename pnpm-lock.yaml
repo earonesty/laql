@@ -89,6 +89,9 @@ importers:
       hyparquet:
         specifier: ^1.26.0
         version: 1.26.0
+      hyparquet-writer:
+        specifier: ^0.15.6
+        version: 0.15.6
     devDependencies:
       '@laql/fixtures':
         specifier: workspace:*

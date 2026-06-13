@@ -10,12 +10,19 @@ import {
 } from "@laql/core";
 import type { RowGroup } from "hyparquet";
 import { parquetMetadataAsync, parquetReadObjects } from "hyparquet";
+import type { ColumnSource, ParquetWriteOptions } from "hyparquet-writer";
+import { parquetWriteBuffer } from "hyparquet-writer";
 
 export interface ReadParquetOptions {
   /** Columns to project; all columns when omitted. */
   columns?: string[];
   rowStart?: number;
   rowEnd?: number;
+}
+
+export interface WriteParquetOptions extends Omit<ParquetWriteOptions, "writer" | "columnData"> {
+  columnData: ColumnSource[];
+  contentType?: string;
 }
 
 export interface ParquetLakeConfig extends Omit<LakeConfig, "scanner"> {
@@ -75,6 +82,29 @@ export async function readParquetObjects(
 export async function readParquetMetadata(store: ObjectStore, path: string) {
   const file = await asyncBufferFromStore(store, path);
   return parquetMetadataAsync(file);
+}
+
+export async function writeParquet(
+  store: ObjectStore,
+  path: string,
+  options: WriteParquetOptions,
+): Promise<{ path: string; byteSize: number; etag?: string }> {
+  try {
+    const { contentType, ...writeOptions } = options;
+    const bytes = new Uint8Array(parquetWriteBuffer(writeOptions));
+    await store.put(path, bytes, {
+      contentType: contentType ?? "application/vnd.apache.parquet",
+    });
+    const head = await store.head(path);
+    const result: { path: string; byteSize: number; etag?: string } = {
+      path,
+      byteSize: head?.size ?? bytes.byteLength,
+    };
+    if (head?.etag !== undefined) result.etag = head.etag;
+    return result;
+  } catch (cause) {
+    throw new LaQLError("LAQL_PARQUET_WRITE_ERROR", `Failed to write ${path}`, { path, cause });
+  }
 }
 
 export class ParquetScanAdapter implements ScanAdapter {

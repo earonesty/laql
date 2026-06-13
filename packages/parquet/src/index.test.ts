@@ -28,6 +28,7 @@ import {
   readParquetMetadata,
   readParquetObjects,
   rowGroupMayMatch,
+  writeParquet,
 } from "./index.js";
 
 const store = memoryStore();
@@ -121,6 +122,42 @@ describe("readParquetObjects", () => {
     await expect(readParquetObjects(store, "data/garbage.parquet")).rejects.toMatchObject({
       code: "LAQL_PARQUET_READ_ERROR",
     });
+  });
+});
+
+describe("writeParquet", () => {
+  it("writes Parquet bytes to an ObjectStore and round-trips through the reader", async () => {
+    const outStore = memoryStore();
+    const result = await writeParquet(outStore, "out/roundtrip.parquet", {
+      rowGroupSize: [2],
+      columnData: [
+        { name: "id", data: [1, 2, 3], type: "INT32" },
+        { name: "name", data: ["a", "b", "c"], type: "STRING" },
+        { name: "score", data: [1.5, 2.5, 3.5], type: "DOUBLE" },
+      ],
+    });
+
+    expect(result).toMatchObject({ path: "out/roundtrip.parquet", byteSize: expect.any(Number) });
+    expect(result.byteSize).toBeGreaterThan(0);
+    await expect(readParquetObjects(outStore, "out/roundtrip.parquet")).resolves.toEqual([
+      { id: 1, name: "a", score: 1.5 },
+      { id: 2, name: "b", score: 2.5 },
+      { id: 3, name: "c", score: 3.5 },
+    ]);
+    await expect(outStore.head("out/roundtrip.parquet")).resolves.toMatchObject({
+      contentType: "application/vnd.apache.parquet",
+    });
+  });
+
+  it("wraps writer failures in LAQL_PARQUET_WRITE_ERROR", async () => {
+    await expect(
+      writeParquet(memoryStore(), "out/bad.parquet", {
+        columnData: [
+          { name: "id", data: [1, 2, 3], type: "INT32" },
+          { name: "name", data: ["a"], type: "STRING" },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "LAQL_PARQUET_WRITE_ERROR" });
   });
 });
 

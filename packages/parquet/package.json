@@ -28,7 +28,8 @@
   },
   "dependencies": {
     "@laql/core": "workspace:*",
-    "hyparquet": "^1.26.0"
+    "hyparquet": "^1.26.0",
+    "hyparquet-writer": "^0.15.6"
   },
   "devDependencies": {
     "@laql/fixtures": "workspace:*"
