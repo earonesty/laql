@@ -15,7 +15,7 @@
     "lint:fix": "biome check --write .",
     "typecheck": "tsc -b --noEmit",
     "fixtures": "pnpm --filter @laql/fixtures generate",
-    "check": "pnpm lint && pnpm build && pnpm test && pnpm test:workerd && pnpm coverage"
+    "check": "pnpm lint && pnpm build && pnpm test && pnpm test:workerd && pnpm coverage && pnpm fixtures && git diff --exit-code -- fixtures/data"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.0",
