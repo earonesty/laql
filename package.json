@@ -16,6 +16,7 @@
     "lint:fix": "biome check --write .",
     "typecheck": "tsc -b --noEmit",
     "fixtures": "pnpm --filter @laql/fixtures generate",
+    "fixtures:external": "pnpm --filter @laql/fixtures fetch:external",
     "check": "pnpm lint && pnpm build && pnpm test && pnpm test:workerd && pnpm coverage && pnpm fixtures && git diff --exit-code -- fixtures/data"
   },
   "devDependencies": {
