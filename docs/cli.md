@@ -15,5 +15,6 @@ node packages/cli/dist/bin.js explain --path fixtures/data/sales.parquet --sql "
 node packages/cli/dist/bin.js query --path fixtures/data/sales.parquet --sql "select store_id, amount limit 2"
 node packages/cli/dist/bin.js query --path fixtures/data/sales.parquet --sql "select store_id, amount limit 2" --format csv
 node packages/cli/dist/bin.js write --path fixtures/data/sales.parquet --sql "select store_id, region, amount limit 2" --output /tmp/laql-out
+node packages/cli/dist/bin.js write --path fixtures/data/sales.parquet --sql "select store_id, region, amount limit 2" --output /tmp/laql-out --manifest /tmp/laql-out-manifest.json --job-id job_cli
 node packages/cli/dist/bin.js compact --path fixtures/data/sales.parquet --output /tmp/laql-compact --max-rows-per-file 75
 ```
