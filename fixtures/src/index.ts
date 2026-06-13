@@ -18,3 +18,9 @@ export const TYPES = {
   file: "types.parquet",
   rows: 10,
 } as const;
+
+export const WIDE = {
+  file: "wide.parquet",
+  rows: 24,
+  columns: 32,
+} as const;

@@ -1,6 +1,6 @@
 # LaQL build plan
 
-Companion to [README.md](README.md) (the product spec). The spec says *what*; this says *in
+Companion to [VISION.md](VISION.md) (the product spec). The spec says *what*; this says *in
 what order, with what tests, against what fixtures*. This plan turns the responsibility
 boundary in the spec into buildable milestones: caller intent and infrastructure go in;
 bounded deterministic lake work comes out.
@@ -38,7 +38,7 @@ Definition of done for any feature:
 3. coverage gate still green
 4. biome clean, tsc -b clean
 5. error paths throw typed LaQLError codes, each with a test
-6. spec (README.md) updated if behavior diverged
+6. spec (VISION.md) updated if behavior diverged
 ```
 
 ---
@@ -59,7 +59,7 @@ packages/laql      umbrella: batteries-included entry + runtime driver subpaths
 fixtures/          @laql/fixtures: deterministic generators + committed data
 ```
 
-`@lakeql/react` from the spec is deferred until the HTTP server mode exists; it is not
+`@laql/react` from the spec is deferred until the HTTP server mode exists; it is not
 scaffolded.
 
 ---
@@ -401,7 +401,7 @@ Additive tracks, parallelizable, each gated the same way:
 ```txt
 geo/h3    h3_* + st_* functions; h3_within -> partition pruning rewrite;
           bbox-column pushdown (geo.parquet, h3.parquet fixtures)
-sql       dialect -> AST; every README SQL example becomes a parser test;
+sql       dialect -> AST; every VISION SQL example becomes a parser test;
           property: AST -> SQL -> AST round-trip
 indexes   sidecar formats (minmax/bloom/h3/bbox) + planner integration
 cli       wire commands to real engine; snapshot-test CLI output

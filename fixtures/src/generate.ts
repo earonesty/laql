@@ -2,7 +2,7 @@
 // Run via `pnpm fixtures` (root) or `pnpm generate` (this package).
 import { mkdirSync } from "node:fs";
 import { parquetWriteFile } from "hyparquet-writer";
-import { fixtureDataDir, fixturePath, SALES, TYPES } from "./index.ts";
+import { fixtureDataDir, fixturePath, SALES, TYPES, WIDE } from "./index.ts";
 
 mkdirSync(fixtureDataDir, { recursive: true });
 
@@ -60,6 +60,21 @@ function generateTypes() {
   });
 }
 
+function generateWide() {
+  const columnData: { name: string; data: number[]; type: "INT32" }[] = [];
+  for (let c = 0; c < WIDE.columns; c++) {
+    const data: number[] = [];
+    for (let row = 0; row < WIDE.rows; row++) data.push(c * 1000 + row);
+    columnData.push({ name: `c${String(c).padStart(2, "0")}`, data, type: "INT32" });
+  }
+
+  parquetWriteFile({
+    filename: fixturePath(WIDE.file),
+    columnData,
+  });
+}
+
 generateSales();
 generateTypes();
+generateWide();
 console.log(`fixtures written to ${fixtureDataDir}`);

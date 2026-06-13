@@ -2702,7 +2702,7 @@ conformance tests
 
 ---
 
-# What the README says
+# What the VISION says
 
 ````md
 # LaQL
