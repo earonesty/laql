@@ -558,6 +558,7 @@ export class QueryResult {
     stats.filesSkipped = skippedFiles;
     const columns = projectedReadColumns(config.select, config.where, config.orderBy);
     const matched: Row[] = [];
+    const topK = config.limit === undefined ? undefined : (config.offset ?? 0) + config.limit;
     for (const object of paths) {
       stats.filesPlanned += 1;
       stats.filesRead += 1;
@@ -584,7 +585,7 @@ export class QueryResult {
           if (!matches(config.where, row)) continue;
           stats.rowsMatched += 1;
           validateSortRow(row, config.orderBy ?? []);
-          matched.push(row);
+          addOrderedMatch(matched, row, config.orderBy ?? [], topK);
           enforceBufferedRowsBudget(config.budget, matched.length);
         }
       }
@@ -1552,6 +1553,37 @@ function compareRows(left: Row, right: Row, orderBy: OrderByTerm[]): number {
     if (comparison !== 0) return comparison;
   }
   return 0;
+}
+
+function addOrderedMatch(
+  matched: Row[],
+  row: Row,
+  orderBy: OrderByTerm[],
+  topK: number | undefined,
+): void {
+  if (topK === undefined) {
+    matched.push(row);
+    return;
+  }
+  if (topK === 0) return;
+  if (matched.length < topK) {
+    matched.push(row);
+    return;
+  }
+  let worstIndex = 0;
+  for (let index = 1; index < matched.length; index += 1) {
+    const candidate = matched[index];
+    const worst = matched[worstIndex];
+    if (
+      candidate !== undefined &&
+      worst !== undefined &&
+      compareRows(candidate, worst, orderBy) > 0
+    ) {
+      worstIndex = index;
+    }
+  }
+  const worst = matched[worstIndex];
+  if (worst !== undefined && compareRows(row, worst, orderBy) < 0) matched[worstIndex] = row;
 }
 
 function validateSortRow(row: Row, orderBy: OrderByTerm[]): void {

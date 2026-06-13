@@ -583,6 +583,36 @@ describe("Lake query runtime", () => {
         .orderBy([{ column: "id" }])
         .toArray(),
     ).resolves.toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
+
+    await expect(
+      (
+        await makeLake({
+          rowsByPath: { table: [{ id: 5 }, { id: 3 }, { id: 1 }, { id: 4 }, { id: 2 }] },
+          budget: { maxBufferedRows: 2 },
+        })
+      ).lake
+        .path("table")
+        .orderBy([{ column: "id" }])
+        .limit(2)
+        .toArray(),
+    ).resolves.toEqual([{ id: 1 }, { id: 2 }]);
+
+    await expect(
+      (
+        await makeLake({
+          rowsByPath: { table: [{ id: 5 }, { id: 3 }, { id: 1 }, { id: 4 }, { id: 2 }] },
+          budget: { maxBufferedRows: 2 },
+        })
+      ).lake
+        .path("table")
+        .orderBy([{ column: "id" }])
+        .offset(1)
+        .limit(2)
+        .toArray(),
+    ).rejects.toMatchObject({
+      code: "LAQL_BUDGET_EXCEEDED",
+      details: { metric: "buffered rows", limit: 2, actual: 3 },
+    });
   });
 
   it("parses JSON orderBy and rejects invalid order terms", async () => {
