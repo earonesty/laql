@@ -1,0 +1,14 @@
+# Query Language
+
+The fluent query API builds a logical plan:
+
+```ts
+lake
+  .path("sales.parquet")
+  .select(["store_id", "amount"])
+  .where(and(eq("region", "west"), gt("amount", 100)))
+  .orderBy([{ column: "amount", direction: "desc" }])
+  .limit(10);
+```
+
+Expressions are plain serializable objects. Use helpers from `@laql/core` for comparisons, logical operators, null checks, `like`, `ilike`, `between`, `in`, and scalar function calls.
