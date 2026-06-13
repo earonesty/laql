@@ -30,6 +30,8 @@ export async function runCli(argv: string[]): Promise<CliResult> {
         return ok(await query(args));
       case "explain":
         return ok(await explain(args));
+      case "inspect":
+        return ok(await inspect(args));
       case "schema":
         return ok(await schema(args));
       default:
@@ -49,6 +51,7 @@ export function usage(): string {
     "commands:",
     "  query   --path <file.parquet> --sql <query> [--format json|ndjson]",
     "  explain --path <file.parquet> --sql <query>",
+    "  inspect --path <file.parquet>",
     "  schema  --path <file.parquet>",
     "",
     `other commands reserved by the build plan: ${COMMANDS.filter(
@@ -87,6 +90,18 @@ async function schema(args: ParsedArgs): Promise<string> {
     .filter((field) => field.name !== "root")
     .map((field) => ({ name: field.name, type: field.type ?? field.converted_type ?? "group" }));
   return `${JSON.stringify({ path, rows: Number(totalRows(metadata.row_groups)), columns })}\n`;
+}
+
+async function inspect(args: ParsedArgs): Promise<string> {
+  const path = requireOption(args.path, "--path");
+  const { store, key } = await localStore(path);
+  const metadata = await readParquetMetadata(store, key);
+  return `${JSON.stringify({
+    path,
+    rows: Number(totalRows(metadata.row_groups)),
+    rowGroups: metadata.row_groups.length,
+    columns: metadata.schema.filter((field) => field.name !== "root").length,
+  })}\n`;
 }
 
 function builderFromAst(builder: QueryBuilder, ast: ReturnType<typeof parseSql>): QueryBuilder {

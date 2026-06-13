@@ -42,7 +42,7 @@ describe("runCli", () => {
     expect(JSON.parse(result.stdout)).toEqual([{ region: "east" }]);
   });
 
-  it("explains and inspects schema for a local Parquet path", async () => {
+  it("explains, inspects, and reads schema for a local Parquet path", async () => {
     const explain = await runCli([
       "explain",
       "--path",
@@ -50,9 +50,15 @@ describe("runCli", () => {
       "--sql",
       "select store_id where amount > 900 limit 1",
     ]);
+    const inspect = await runCli(["inspect", "--path", fixturePath(SALES.file)]);
     const schema = await runCli(["schema", "--path", fixturePath(SALES.file)]);
 
     expect(explain.stdout).toContain("files planned: 1");
+    expect(JSON.parse(inspect.stdout)).toMatchObject({
+      rows: SALES.rows,
+      rowGroups: 3,
+      columns: 4,
+    });
     expect(schema.exitCode).toBe(0);
     expect(JSON.parse(schema.stdout)).toMatchObject({
       rows: SALES.rows,
