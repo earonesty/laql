@@ -6,6 +6,7 @@ import {
   assertBookmarkMatches,
   createBookmark,
   createTaskManifest,
+  stableStringify,
   type TaskManifest,
 } from "./manifest.js";
 import type { ObjectInfo, ObjectStore } from "./store.js";
@@ -64,6 +65,28 @@ export interface QueryRunOptions {
 export interface ResumableBatchOptions {
   bookmarkEvery: number;
   bookmark?: Bookmark;
+}
+
+export type AggregateOp =
+  | "count"
+  | "sum"
+  | "avg"
+  | "min"
+  | "max"
+  | "count_distinct"
+  | "first"
+  | "last"
+  | "any";
+
+export interface AggregateExpr {
+  op: AggregateOp;
+  column?: string;
+}
+
+export type AggregateSpec = Record<string, AggregateExpr>;
+
+export interface AggregateOptions {
+  maxGroups?: number;
 }
 
 export interface TaskInput {
@@ -234,6 +257,24 @@ export class QueryBuilder {
   resumableBatches(options: ResumableBatchOptions): AsyncIterable<SliceResult> {
     return this.run().resumableBatches(options);
   }
+
+  groupBy(columns: string[]): AggregationBuilder {
+    return new AggregationBuilder(this.run(), columns);
+  }
+}
+
+export class AggregationBuilder {
+  private readonly result: QueryResult;
+  private readonly columns: string[];
+
+  constructor(result: QueryResult, columns: string[]) {
+    this.result = result;
+    this.columns = columns;
+  }
+
+  aggregate(spec: AggregateSpec, options: AggregateOptions = {}): Promise<Row[]> {
+    return this.result.aggregate(this.columns, spec, options);
+  }
 }
 
 interface QueryResultConfig extends PathQueryInit {
@@ -395,6 +436,33 @@ export class QueryResult {
     }
   }
 
+  async aggregate(
+    groupColumns: string[],
+    spec: AggregateSpec,
+    options: AggregateOptions = {},
+  ): Promise<Row[]> {
+    validateAggregateRequest(groupColumns, spec, options);
+    const groups = new Map<string, AggregateGroup>();
+    for await (const row of this.rows()) {
+      const keyValues = groupColumns.map((column) => valueForColumn(row, column));
+      const key = stableStringify(keyValues);
+      let group = groups.get(key);
+      if (!group) {
+        if (options.maxGroups !== undefined && groups.size >= options.maxGroups) {
+          throw new LaQLError(
+            "LAQL_GROUP_LIMIT_EXCEEDED",
+            `Query exceeded group budget (${groups.size + 1} > ${options.maxGroups})`,
+            { limit: options.maxGroups, actual: groups.size + 1 },
+          );
+        }
+        group = createAggregateGroup(groupColumns, keyValues, spec);
+        groups.set(key, group);
+      }
+      group.add(row);
+    }
+    return [...groups.values()].map((group) => group.finish());
+  }
+
   async explain(): Promise<ExplainResult> {
     const { planned, skipped } = await this.planObjects();
     const tasks = this.tasksFromObjects(planned);
@@ -488,6 +556,246 @@ export class QueryResult {
       },
     });
   }
+}
+
+interface AggregateState {
+  add(value: unknown): void;
+  finish(): unknown;
+}
+
+class AggregateGroup {
+  private readonly keys: Record<string, unknown>;
+  private readonly states: Record<string, AggregateState>;
+
+  constructor(keys: Record<string, unknown>, states: Record<string, AggregateState>) {
+    this.keys = keys;
+    this.states = states;
+  }
+
+  add(row: Row): void {
+    for (const [alias, state] of Object.entries(this.states)) {
+      state.add(aggregateValue(row, alias, stateSpecs.get(state)));
+    }
+  }
+
+  finish(): Row {
+    const out: Row = { ...this.keys };
+    for (const [alias, state] of Object.entries(this.states)) out[alias] = state.finish();
+    return out;
+  }
+}
+
+const stateSpecs = new WeakMap<AggregateState, AggregateExpr>();
+
+function createAggregateGroup(
+  groupColumns: string[],
+  keyValues: unknown[],
+  spec: AggregateSpec,
+): AggregateGroup {
+  const keys: Record<string, unknown> = {};
+  for (let index = 0; index < groupColumns.length; index += 1) {
+    const column = groupColumns[index];
+    if (column !== undefined) keys[column] = keyValues[index];
+  }
+  const states: Record<string, AggregateState> = {};
+  for (const [alias, aggregate] of Object.entries(spec)) {
+    const state = createAggregateState(aggregate);
+    stateSpecs.set(state, aggregate);
+    states[alias] = state;
+  }
+  return new AggregateGroup(keys, states);
+}
+
+function createAggregateState(aggregate: AggregateExpr): AggregateState {
+  switch (aggregate.op) {
+    case "count":
+      return new CountState();
+    case "sum":
+      return new SumState();
+    case "avg":
+      return new AvgState();
+    case "min":
+      return new MinMaxState("min");
+    case "max":
+      return new MinMaxState("max");
+    case "count_distinct":
+      return new CountDistinctState();
+    case "first":
+      return new FirstState();
+    case "last":
+      return new LastState();
+    case "any":
+      return new AnyState();
+  }
+}
+
+class CountState implements AggregateState {
+  private count = 0;
+
+  add(_value: unknown): void {
+    this.count += 1;
+  }
+
+  finish(): number {
+    return this.count;
+  }
+}
+
+class SumState implements AggregateState {
+  private sum = 0;
+
+  add(value: unknown): void {
+    if (value === null || value === undefined) return;
+    if (typeof value !== "number") throwAggregateType("sum");
+    this.sum += value;
+  }
+
+  finish(): number {
+    return this.sum;
+  }
+}
+
+class AvgState implements AggregateState {
+  private sum = 0;
+  private count = 0;
+
+  add(value: unknown): void {
+    if (value === null || value === undefined) return;
+    if (typeof value !== "number") throwAggregateType("avg");
+    this.sum += value;
+    this.count += 1;
+  }
+
+  finish(): number | null {
+    return this.count === 0 ? null : this.sum / this.count;
+  }
+}
+
+class MinMaxState implements AggregateState {
+  private value: string | number | boolean | null = null;
+
+  constructor(private readonly op: "min" | "max") {}
+
+  add(value: unknown): void {
+    if (value === null || value === undefined) return;
+    if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") {
+      throwAggregateType(this.op);
+    }
+    if (this.value === null) {
+      this.value = value;
+      return;
+    }
+    if (typeof this.value !== typeof value) throwAggregateType(this.op);
+    if (this.op === "min" ? value < this.value : value > this.value) this.value = value;
+  }
+
+  finish(): string | number | boolean | null {
+    return this.value;
+  }
+}
+
+class CountDistinctState implements AggregateState {
+  private readonly values = new Set<string>();
+
+  add(value: unknown): void {
+    if (value === null || value === undefined) return;
+    this.values.add(stableStringify(value));
+  }
+
+  finish(): number {
+    return this.values.size;
+  }
+}
+
+class FirstState implements AggregateState {
+  private value: unknown;
+  private seen = false;
+
+  add(value: unknown): void {
+    if (this.seen) return;
+    this.value = value;
+    this.seen = true;
+  }
+
+  finish(): unknown {
+    return this.seen ? this.value : null;
+  }
+}
+
+class LastState implements AggregateState {
+  private value: unknown;
+  private seen = false;
+
+  add(value: unknown): void {
+    this.value = value;
+    this.seen = true;
+  }
+
+  finish(): unknown {
+    return this.seen ? this.value : null;
+  }
+}
+
+class AnyState extends FirstState {}
+
+function aggregateValue(row: Row, alias: string, aggregate: AggregateExpr | undefined): unknown {
+  if (!aggregate) throw new LaQLError("LAQL_VALIDATION_ERROR", `Missing aggregate ${alias}`);
+  if (aggregate.op === "count" && aggregate.column === undefined) return true;
+  if (aggregate.column === undefined) {
+    throw new LaQLError("LAQL_TYPE_ERROR", `${aggregate.op} requires a column`, { aggregate });
+  }
+  return valueForColumn(row, aggregate.column);
+}
+
+function valueForColumn(row: Row, column: string): unknown {
+  if (!(column in row)) {
+    throw new LaQLError("LAQL_UNKNOWN_COLUMN", `Unknown column ${column}`, { column });
+  }
+  return row[column];
+}
+
+function validateAggregateRequest(
+  groupColumns: string[],
+  spec: AggregateSpec,
+  options: AggregateOptions,
+): void {
+  if (groupColumns.some((column) => typeof column !== "string" || column.length === 0)) {
+    throw new LaQLError("LAQL_TYPE_ERROR", "groupBy columns must be non-empty strings");
+  }
+  if (Object.keys(spec).length === 0) {
+    throw new LaQLError("LAQL_TYPE_ERROR", "aggregate spec must contain at least one aggregate");
+  }
+  if (
+    options.maxGroups !== undefined &&
+    (!Number.isInteger(options.maxGroups) || options.maxGroups < 1)
+  ) {
+    throw new LaQLError("LAQL_TYPE_ERROR", "maxGroups must be a positive integer");
+  }
+  for (const aggregate of Object.values(spec)) validateAggregateExpr(aggregate);
+}
+
+function validateAggregateExpr(aggregate: AggregateExpr): void {
+  const ops: AggregateOp[] = [
+    "count",
+    "sum",
+    "avg",
+    "min",
+    "max",
+    "count_distinct",
+    "first",
+    "last",
+    "any",
+  ];
+  if (!ops.includes(aggregate.op)) {
+    throw new LaQLError("LAQL_TYPE_ERROR", `Unsupported aggregate ${aggregate.op}`, { aggregate });
+  }
+  if (aggregate.op !== "count" && aggregate.column === undefined) {
+    throw new LaQLError("LAQL_TYPE_ERROR", `${aggregate.op} requires a column`, { aggregate });
+  }
+}
+
+function throwAggregateType(op: string): never {
+  throw new LaQLError("LAQL_TYPE_ERROR", `${op} aggregate received an incompatible value`, { op });
 }
 
 export function parseJsonQuery(input: unknown): PathQueryInit {

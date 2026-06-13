@@ -473,4 +473,98 @@ describe("Lake query runtime", () => {
       }),
     ).rejects.toMatchObject({ code: "LAQL_BOOKMARK_STALE" });
   });
+
+  it("aggregates grouped rows with bounded group counts", async () => {
+    const { lake } = await makeLake({
+      rowsByPath: {
+        table: [
+          { region: "west", amount: 10, id: 1, label: "a" },
+          { region: "west", amount: 20, id: 2, label: "b" },
+          { region: "east", amount: 7, id: 2, label: "c" },
+        ],
+      },
+    });
+
+    await expect(
+      lake
+        .path("table")
+        .groupBy(["region"])
+        .aggregate(
+          {
+            rows: { op: "count" },
+            total: { op: "sum", column: "amount" },
+            average: { op: "avg", column: "amount" },
+            minId: { op: "min", column: "id" },
+            maxId: { op: "max", column: "id" },
+            distinctIds: { op: "count_distinct", column: "id" },
+            firstLabel: { op: "first", column: "label" },
+            lastLabel: { op: "last", column: "label" },
+            anyLabel: { op: "any", column: "label" },
+          },
+          { maxGroups: 2 },
+        ),
+    ).resolves.toEqual([
+      {
+        region: "west",
+        rows: 2,
+        total: 30,
+        average: 15,
+        minId: 1,
+        maxId: 2,
+        distinctIds: 2,
+        firstLabel: "a",
+        lastLabel: "b",
+        anyLabel: "a",
+      },
+      {
+        region: "east",
+        rows: 1,
+        total: 7,
+        average: 7,
+        minId: 2,
+        maxId: 2,
+        distinctIds: 1,
+        firstLabel: "c",
+        lastLabel: "c",
+        anyLabel: "c",
+      },
+    ]);
+
+    await expect(
+      lake
+        .path("table")
+        .groupBy(["region"])
+        .aggregate({ rows: { op: "count" } }, { maxGroups: 1 }),
+    ).rejects.toMatchObject({ code: "LAQL_GROUP_LIMIT_EXCEEDED" });
+  });
+
+  it("validates aggregate requests and value types", async () => {
+    const { lake } = await makeLake({
+      rowsByPath: {
+        table: [{ region: "west", amount: "not numeric" }],
+      },
+    });
+
+    await expect(
+      lake
+        .path("table")
+        .groupBy([""])
+        .aggregate({ rows: { op: "count" } }),
+    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+    await expect(lake.path("table").groupBy(["region"]).aggregate({})).rejects.toMatchObject({
+      code: "LAQL_TYPE_ERROR",
+    });
+    await expect(
+      lake
+        .path("table")
+        .groupBy(["region"])
+        .aggregate({ total: { op: "sum", column: "amount" } }),
+    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+    await expect(
+      lake
+        .path("table")
+        .groupBy(["missing"])
+        .aggregate({ rows: { op: "count" } }),
+    ).rejects.toMatchObject({ code: "LAQL_UNKNOWN_COLUMN" });
+  });
 });
