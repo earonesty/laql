@@ -1,0 +1,269 @@
+import { describe, expect, it } from "vitest";
+import { and, between, col, eq, fn, gt, gte, isIn, lit, lt, lte, ne, not, or } from "./expr.js";
+import {
+  bboxMayIntersect,
+  buildBBoxIndex,
+  buildMinMaxIndex,
+  pruneFilesWithIndex,
+  type SidecarFileIndex,
+} from "./sidecar-index.js";
+
+const files: SidecarFileIndex[] = [
+  {
+    path: "lake/b.parquet",
+    columns: { amount: { min: 100, max: 199 }, region: { min: "east", max: "west" } },
+  },
+  {
+    path: "lake/a.parquet",
+    columns: { amount: { min: 0, max: 99 }, region: { min: "north", max: "south" } },
+  },
+  {
+    path: "lake/c.parquet",
+    columns: { amount: { min: 200, max: 299 }, region: { min: "west", max: "west" } },
+  },
+];
+
+describe("sidecar min/max indexes", () => {
+  it("builds deterministic min/max entries from rows", () => {
+    expect(
+      buildMinMaxIndex(
+        [
+          { amount: 3, region: "west" },
+          { amount: 1, region: "east" },
+          { amount: null, region: "north" },
+        ],
+        ["amount", "region"],
+      ),
+    ).toEqual({
+      amount: { min: 1, max: 3, nullCount: 1 },
+      region: { min: "east", max: "west" },
+    });
+    expect(
+      buildMinMaxIndex(
+        [
+          { id: 2n, flag: true },
+          { id: 1n, flag: false },
+        ],
+        ["id", "flag"],
+      ),
+    ).toEqual({
+      id: { min: 1n, max: 2n },
+      flag: { min: false, max: true },
+    });
+  });
+
+  it("prunes files for comparison, between, and in predicates", () => {
+    expect(pruneFilesWithIndex(files, gt("amount", 150)).planned.map((file) => file.path)).toEqual([
+      "lake/b.parquet",
+      "lake/c.parquet",
+    ]);
+    expect(pruneFilesWithIndex(files, lt("amount", 50)).planned.map((file) => file.path)).toEqual([
+      "lake/a.parquet",
+    ]);
+    expect(
+      pruneFilesWithIndex(files, between("amount", 90, 110)).planned.map((file) => file.path),
+    ).toEqual(["lake/a.parquet", "lake/b.parquet"]);
+    expect(
+      pruneFilesWithIndex(files, isIn("amount", [25, 225])).planned.map((file) => file.path),
+    ).toEqual(["lake/a.parquet", "lake/c.parquet"]);
+    expect(
+      pruneFilesWithIndex(files, eq("region", "west")).planned.map((file) => file.path),
+    ).toEqual(["lake/b.parquet", "lake/c.parquet"]);
+    expect(pruneFilesWithIndex(files, lte("amount", 99)).planned.map((file) => file.path)).toEqual([
+      "lake/a.parquet",
+    ]);
+    expect(pruneFilesWithIndex(files, gte("amount", 200)).planned.map((file) => file.path)).toEqual(
+      ["lake/c.parquet"],
+    );
+    expect(
+      pruneFilesWithIndex(files, ne("region", "west")).planned.map((file) => file.path),
+    ).toEqual(["lake/a.parquet", "lake/b.parquet"]);
+    expect(
+      pruneFilesWithIndex(files, {
+        kind: "compare",
+        op: "eq",
+        left: lit(250),
+        right: col("amount"),
+      }).planned.map((file) => file.path),
+    ).toEqual(["lake/c.parquet"]);
+    expect(
+      pruneFilesWithIndex(
+        [{ path: "big.parquet", columns: { id: { min: 1n, max: 3n } } }],
+        eq("id", 2),
+      ).planned,
+    ).toHaveLength(1);
+  });
+
+  it("keeps planning conservative for unsupported predicates", () => {
+    expect(pruneFilesWithIndex(files, not(eq("amount", 1))).planned).toHaveLength(3);
+    expect(
+      pruneFilesWithIndex(files, and(gt("amount", 150), lt("amount", 250))).planned.map(
+        (file) => file.path,
+      ),
+    ).toEqual(["lake/b.parquet", "lake/c.parquet"]);
+    expect(
+      pruneFilesWithIndex(files, or(eq("amount", 1), eq("amount", 250))).planned.map(
+        (file) => file.path,
+      ),
+    ).toEqual(["lake/a.parquet", "lake/c.parquet"]);
+    expect(pruneFilesWithIndex(files, fn("lower", col("region"))).planned).toHaveLength(3);
+    expect(
+      pruneFilesWithIndex(files, { kind: "compare", op: "eq", left: col("missing"), right: lit(1) })
+        .planned,
+    ).toHaveLength(3);
+    expect(
+      pruneFilesWithIndex(files, {
+        kind: "between",
+        target: fn("lower", col("region")),
+        low: lit("a"),
+        high: lit("z"),
+      }).planned,
+    ).toHaveLength(3);
+    expect(
+      pruneFilesWithIndex(files, isIn("amount", [fn("abs", col("amount"))])).planned,
+    ).toHaveLength(3);
+    expect(
+      pruneFilesWithIndex(
+        [{ path: "typed.parquet", columns: { amount: { min: "a", max: "z" } } }],
+        eq("amount", 1),
+      ).planned,
+    ).toHaveLength(1);
+    expect(
+      pruneFilesWithIndex(
+        [{ path: "typed.parquet", columns: { amount: { min: "a", max: "z" } } }],
+        between("amount", 1, 2),
+      ).planned,
+    ).toHaveLength(1);
+    expect(
+      pruneFilesWithIndex(
+        [{ path: "typed.parquet", columns: { amount: { min: "a", max: "z" } } }],
+        isIn("amount", [1]),
+      ).planned,
+    ).toHaveLength(1);
+  });
+
+  it("throws typed errors for invalid index inputs", () => {
+    expect(() => buildMinMaxIndex([{ value: { nested: true } }], ["value"])).toThrow(/scalar/u);
+    expect(() =>
+      buildBBoxIndex([], { minx: "minx", miny: "miny", maxx: "maxx", maxy: "maxy" }),
+    ).toThrow(/empty/u);
+    expect(() =>
+      bboxMayIntersect(
+        { minx: 2, miny: 0, maxx: 1, maxy: 1 },
+        { minx: 0, miny: 0, maxx: 1, maxy: 1 },
+      ),
+    ).toThrow(/ordered/u);
+    expect(() =>
+      buildBBoxIndex([{ minx: "bad", miny: 0, maxx: 1, maxy: 1 }], {
+        minx: "minx",
+        miny: "miny",
+        maxx: "maxx",
+        maxy: "maxy",
+      }),
+    ).toThrow(/finite/u);
+  });
+});
+
+describe("sidecar bbox and h3 indexes", () => {
+  it("builds bbox sidecars and prunes st_intersects calls", () => {
+    const bbox = buildBBoxIndex(
+      [
+        { minx: -119, miny: 33, maxx: -118, maxy: 34 },
+        { minx: -118.5, miny: 34, maxx: -117, maxy: 35 },
+      ],
+      { minx: "minx", miny: "miny", maxx: "maxx", maxy: "maxy" },
+    );
+    expect(bbox).toEqual({ minx: -119, miny: 33, maxx: -117, maxy: 35 });
+    expect(bboxMayIntersect(bbox, { minx: -118.2, miny: 34.1, maxx: -118, maxy: 34.3 })).toBe(true);
+
+    const result = pruneFilesWithIndex(
+      [
+        { path: "la.parquet", bbox: { geom: bbox } },
+        { path: "ny.parquet", bbox: { geom: { minx: -74.1, miny: 40, maxx: -73.8, maxy: 41 } } },
+      ],
+      {
+        kind: "call",
+        fn: "st_intersects",
+        args: [
+          { kind: "column", name: "geom" },
+          {
+            kind: "literal",
+            value: '{"type":"BBox","minx":-118.2,"miny":34.1,"maxx":-118,"maxy":34.3}',
+          },
+        ],
+      },
+    );
+    expect(result.planned.map((file) => file.path)).toEqual(["la.parquet"]);
+    expect(
+      pruneFilesWithIndex([{ path: "bad.parquet", bbox: { geom: bbox } }], {
+        kind: "call",
+        fn: "st_intersects",
+        args: [
+          { kind: "column", name: "geom" },
+          { kind: "literal", value: "{}" },
+        ],
+      }).planned,
+    ).toHaveLength(1);
+    expect(
+      pruneFilesWithIndex([{ path: "bad.parquet", bbox: { geom: bbox } }], {
+        kind: "call",
+        fn: "st_intersects",
+        args: [
+          { kind: "literal", value: "geom" },
+          { kind: "literal", value: "{}" },
+        ],
+      }).planned,
+    ).toHaveLength(1);
+  });
+
+  it("prunes h3_in calls against h3 sidecars", () => {
+    const result = pruneFilesWithIndex(
+      [
+        { path: "a.parquet", h3: { h3_8: ["8829a1d757fffff"] } },
+        { path: "b.parquet", h3: { h3_8: ["8829a1d75bfffff"] } },
+      ],
+      {
+        kind: "call",
+        fn: "h3_in",
+        args: [
+          { kind: "column", name: "h3_8" },
+          { kind: "literal", value: '["8829a1d757fffff","8829a1d758fffff"]' },
+        ],
+      },
+    );
+    expect(result).toMatchObject({
+      planned: [{ path: "a.parquet" }],
+      skipped: [{ path: "b.parquet" }],
+    });
+    expect(
+      pruneFilesWithIndex([{ path: "bad.parquet", h3: { h3_8: ["a"] } }], {
+        kind: "call",
+        fn: "h3_in",
+        args: [
+          { kind: "column", name: "h3_8" },
+          { kind: "literal", value: "[1]" },
+        ],
+      }).planned,
+    ).toHaveLength(1);
+    expect(
+      pruneFilesWithIndex([{ path: "missing-index.parquet" }], {
+        kind: "call",
+        fn: "h3_in",
+        args: [
+          { kind: "column", name: "h3_8" },
+          { kind: "literal", value: '["a"]' },
+        ],
+      }).planned,
+    ).toHaveLength(1);
+    expect(
+      pruneFilesWithIndex([{ path: "bad-args.parquet", h3: { h3_8: ["a"] } }], {
+        kind: "call",
+        fn: "h3_in",
+        args: [
+          { kind: "literal", value: "h3_8" },
+          { kind: "literal", value: '["a"]' },
+        ],
+      }).planned,
+    ).toHaveLength(1);
+  });
+});

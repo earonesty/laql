@@ -6,5 +6,6 @@ export * from "./manifest.js";
 export * from "./memory-store.js";
 export * from "./query.js";
 export * from "./runtime.js";
+export * from "./sidecar-index.js";
 export * from "./store.js";
 export * from "./types.js";
