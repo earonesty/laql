@@ -10,6 +10,7 @@ import {
   type TaskManifest,
 } from "./manifest.js";
 import { classifyPredicate, type PredicatePlan } from "./predicate-plan.js";
+import type { SpillAdapter, SpillRef } from "./runtime.js";
 import type { ObjectInfo, ObjectStore } from "./store.js";
 import type { Bookmark, BookmarkQuery, QueryStats, Row, SliceResult } from "./types.js";
 
@@ -133,12 +134,15 @@ export type AggregateSpec = Record<string, AggregateExpr>;
 
 export interface AggregateOptions {
   maxGroups?: number;
-  operatorState?: Uint8Array | AggregateOperatorState;
+  operatorState?: Uint8Array | AggregateOperatorState | { spillRef: string };
+  spill?: SpillAdapter;
+  spillId?: string;
 }
 
 export interface AggregateResult {
   rows: Row[];
   operatorState: Uint8Array;
+  operatorSpill?: SpillRef;
 }
 
 export interface TopKOptions {
@@ -638,7 +642,7 @@ export class QueryResult {
     options: AggregateOptions = {},
   ): Promise<AggregateResult> {
     validateAggregateRequest(groupColumns, spec, options);
-    const groups = aggregateGroupsFromState(groupColumns, spec, options.operatorState);
+    const groups = await aggregateGroupsFromState(groupColumns, spec, options);
     for await (const row of this.rows()) {
       const keyValues = groupColumns.map((column) => valueForColumn(row, column));
       const key = stableStringify(keyValues);
@@ -661,9 +665,19 @@ export class QueryResult {
       );
     }
     const state = aggregateOperatorState(groupColumns, spec, groups);
-    return {
+    const operatorState = serializeAggregateOperatorState(state);
+    const result: AggregateResult = {
       rows: [...groups.values()].map((group) => group.finish()),
-      operatorState: serializeAggregateOperatorState(state),
+      operatorState,
+    };
+    if (options.spill !== undefined) {
+      result.operatorSpill = await options.spill.write(
+        options.spillId ?? `aggregate-${this.stats.queryId}`,
+        operatorState,
+      );
+    }
+    return {
+      ...result,
     };
   }
 
@@ -1213,12 +1227,21 @@ function validateTopKOperatorState(value: unknown): TopKOperatorState {
   };
 }
 
-function aggregateGroupsFromState(
+async function aggregateGroupsFromState(
   groupColumns: string[],
   spec: AggregateSpec,
-  state: Uint8Array | AggregateOperatorState | undefined,
-): Map<string, AggregateGroup> {
-  if (state === undefined) return new Map();
+  options: AggregateOptions,
+): Promise<Map<string, AggregateGroup>> {
+  if (options.operatorState === undefined) return new Map();
+  const state =
+    isSpilledOperatorState(options.operatorState) && options.spill !== undefined
+      ? await options.spill.read(options.operatorState.spillRef)
+      : options.operatorState;
+  if (isSpilledOperatorState(state)) {
+    throw new LaQLError("LAQL_BOOKMARK_INVALID", "Aggregate spill state requires a spill adapter", {
+      spillRef: state.spillRef,
+    });
+  }
   const snapshot = deserializeAggregateOperatorState(state);
   if (
     stableStringify(snapshot.groupColumns) !== stableStringify(groupColumns) ||
@@ -1233,6 +1256,10 @@ function aggregateGroupsFromState(
   for (const group of snapshot.groups)
     groups.set(group.key, aggregateGroupFromSnapshot(spec, group));
   return groups;
+}
+
+function isSpilledOperatorState(value: unknown): value is { spillRef: string } {
+  return isRecord(value) && typeof value.spillRef === "string";
 }
 
 function aggregateGroupFromSnapshot(

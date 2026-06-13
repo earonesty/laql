@@ -15,6 +15,7 @@ import {
   serializeAggregateOperatorState,
   serializeTopKOperatorState,
 } from "./query.js";
+import { memorySpillAdapter } from "./runtime.js";
 import type { Bookmark, Row } from "./types.js";
 
 class FakeScanner implements ScanAdapter {
@@ -962,6 +963,16 @@ describe("Lake query runtime", () => {
     expect(deserializeAggregateOperatorState(serializeAggregateOperatorState(snapshot))).toEqual(
       snapshot,
     );
+    const spill = memorySpillAdapter();
+    const spilled = await first.lake
+      .path("table")
+      .groupBy(["region"])
+      .aggregateWithState(spec, { spill, spillId: "agg-state" });
+    expect(spilled.operatorSpill).toEqual({
+      id: "agg-state",
+      byteSize: spilled.operatorState.byteLength,
+    });
+    await expect(spill.read("agg-state")).resolves.toEqual(spilled.operatorState);
 
     const second = await makeLake({
       rowsByPath: {
@@ -1006,6 +1017,31 @@ describe("Lake query runtime", () => {
         },
       ],
     });
+    await expect(
+      second.lake
+        .path("table")
+        .groupBy(["region"])
+        .aggregateWithState(spec, { operatorState: { spillRef: "agg-state" }, spill }),
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          region: "west",
+          rows: 3,
+          total: 35,
+        },
+        {
+          region: "east",
+          rows: 1,
+          total: 7,
+        },
+      ],
+    });
+    await expect(
+      second.lake
+        .path("table")
+        .groupBy(["region"])
+        .aggregateWithState(spec, { operatorState: { spillRef: "agg-state" } }),
+    ).rejects.toMatchObject({ code: "LAQL_BOOKMARK_INVALID" });
 
     await expect(
       second.lake
