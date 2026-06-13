@@ -525,6 +525,7 @@ function normalizeBookmarkOperatorState(
   if (state.limitEmitted !== undefined) normalized.limitEmitted = state.limitEmitted;
   if (state.groupBy !== undefined) normalized.groupBy = cloneInlineOrSpillState(state.groupBy);
   if (state.topK !== undefined) normalized.topK = cloneInlineOrSpillState(state.topK);
+  if (state.sort !== undefined) normalized.sort = cloneInlineOrSpillState(state.sort);
   if (state.sketches !== undefined) {
     normalized.sketches = {};
     for (const [key, value] of Object.entries(state.sketches).sort(([a], [b]) =>
@@ -577,6 +578,7 @@ function parseBookmarkOperatorState(value: unknown): NonNullable<Bookmark["opera
   }
   if (value.groupBy !== undefined) state.groupBy = parseInlineOrSpillState(value.groupBy);
   if (value.topK !== undefined) state.topK = parseInlineOrSpillState(value.topK);
+  if (value.sort !== undefined) state.sort = parseInlineOrSpillState(value.sort);
   if (value.sketches !== undefined) {
     if (!isRecord(value.sketches)) throwInvalidBookmark("Bookmark sketches state is invalid");
     state.sketches = {};

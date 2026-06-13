@@ -51,6 +51,7 @@ export interface Bookmark {
     limitEmitted?: number;
     groupBy?: Uint8Array | { spillRef: string };
     topK?: Uint8Array | { spillRef: string };
+    sort?: Uint8Array | { spillRef: string };
     sketches?: Record<string, Uint8Array>;
   };
 }

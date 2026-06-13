@@ -211,6 +211,7 @@ describe("bookmarks and checkpoints", () => {
         limitEmitted: 3,
         groupBy: new Uint8Array([1, 2, 3]),
         topK: { spillRef: "topk-state" },
+        sort: { spillRef: "sort-state" },
         sketches: { approx: new Uint8Array([4, 5, 6]) },
       },
     });
@@ -220,7 +221,20 @@ describe("bookmarks and checkpoints", () => {
     );
     expect(signedOperatorBookmark).toEqual(operatorBookmark);
     expect(stableStringify(operatorBookmark)).toContain('"groupBy":"AQID"');
+    expect(stableStringify(operatorBookmark)).toContain('"sort":{"spillRef":"sort-state"}');
     expect(stableStringify(operatorBookmark)).toContain('"approx":"BAUG"');
+    const inlineSortBookmark = createBookmark({
+      planFingerprint: "fp_sort_operator",
+      snapshot: "snapshot_5",
+      position: { fileIndex: 0, rowGroup: 0, rowOffset: 0 },
+      operatorState: {
+        sort: new Uint8Array([7, 8, 9]),
+      },
+    });
+    await expect(
+      verifyPaginationToken(await signPaginationToken(inlineSortBookmark, "secret"), "secret"),
+    ).resolves.toEqual(inlineSortBookmark);
+    expect(stableStringify(inlineSortBookmark)).toContain('"sort":"BwgJ"');
     await expect(verifyPaginationToken(`${token.slice(0, -1)}x`, "secret")).rejects.toMatchObject({
       code: "LAQL_BOOKMARK_INVALID",
     });
@@ -308,6 +322,13 @@ describe("bookmarks and checkpoints", () => {
         snapshot: "s",
         position: { fileIndex: 0, rowGroup: 0, rowOffset: 0 },
         operatorState: { groupBy: { spillRef: "" } },
+      },
+      {
+        version: 1,
+        planFingerprint: "fp",
+        snapshot: "s",
+        position: { fileIndex: 0, rowGroup: 0, rowOffset: 0 },
+        operatorState: { sort: { spillRef: "" } },
       },
       {
         version: 1,
