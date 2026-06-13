@@ -17,3 +17,17 @@ does not expose a public dictionary-filter API; dictionary pruning should be add
 when that surface becomes available without breaking row-group skip accounting.
 
 Budgets can cap files, bytes, decoded rows, returned rows, range requests, elapsed time, buffered rows, and serialized operator memory.
+
+For bounded top-k sorts, use `orderBy(...).limit(...).topKWithState()` to
+serialize or spill the retained heap state between slices. For full global sorts,
+`sortWithState()` builds sorted runs capped by `maxBufferedRows`, merges those runs
+for output, and can persist the run state through a `SpillAdapter`:
+
+```ts
+const result = await lake
+  .path("events.parquet")
+  .orderBy([{ column: "created_at" }])
+  .sortWithState({ spill, spillId: "sort-events" });
+```
+
+Plain `orderBy().toArray()` remains available for small direct reads.
