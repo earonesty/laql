@@ -1,5 +1,7 @@
 import {
+  advanceTaskCheckpoint,
   type CacheAdapter,
+  type CheckpointAdapter,
   type Expr,
   Lake,
   type LakeConfig,
@@ -76,6 +78,20 @@ export interface WritePartitionedParquetFile {
 
 export interface WritePartitionedParquetResult {
   files: WritePartitionedParquetFile[];
+}
+
+export interface WritePartitionedParquetTaskOptions extends WriteParquetRowsOptions {
+  checkpoints: CheckpointAdapter;
+  taskId: string;
+  idempotencyKey: string;
+  nowMs?: number;
+  staleTimeoutMs?: number;
+  iceberg?: boolean;
+}
+
+export interface WritePartitionedParquetTaskResult {
+  result: WritePartitionedParquetResult;
+  entries: OutputManifestEntry[];
 }
 
 export interface PartitionedParquetOutputEntryOptions {
@@ -270,6 +286,75 @@ export async function writePartitionedParquet(
   return { files };
 }
 
+export async function writePartitionedParquetTask(
+  store: ObjectStore,
+  prefix: string,
+  options: WritePartitionedParquetTaskOptions,
+): Promise<WritePartitionedParquetTaskResult> {
+  const existing = await options.checkpoints.get(options.taskId);
+  if (
+    existing?.state === "complete" &&
+    existing.idempotencyKey === options.idempotencyKey &&
+    existing.outputs !== undefined
+  ) {
+    return {
+      result: outputEntriesToPartitionedResult(existing.outputs),
+      entries: existing.outputs,
+    };
+  }
+
+  const nowMs = options.nowMs ?? Date.now();
+  await advanceTaskCheckpoint(options.checkpoints, {
+    taskId: options.taskId,
+    nextState: "planned",
+    idempotencyKey: options.idempotencyKey,
+    nowMs,
+    ...(options.staleTimeoutMs !== undefined ? { staleTimeoutMs: options.staleTimeoutMs } : {}),
+  });
+  await advanceTaskCheckpoint(options.checkpoints, {
+    taskId: options.taskId,
+    nextState: "running",
+    idempotencyKey: options.idempotencyKey,
+    nowMs: nowMs + 1,
+    ...(options.staleTimeoutMs !== undefined ? { staleTimeoutMs: options.staleTimeoutMs } : {}),
+  });
+
+  const {
+    checkpoints: _checkpoints,
+    nowMs: _nowMs,
+    staleTimeoutMs: _staleTimeoutMs,
+    iceberg,
+    ...writeOptions
+  } = options;
+  const result = await writePartitionedParquet(store, prefix, writeOptions);
+  const entries = partitionedParquetOutputEntries(result, {
+    taskId: options.taskId,
+    ...(iceberg !== undefined ? { iceberg } : {}),
+  });
+
+  await advanceTaskCheckpoint(options.checkpoints, {
+    taskId: options.taskId,
+    nextState: "output-written",
+    idempotencyKey: options.idempotencyKey,
+    nowMs: nowMs + 2,
+    outputs: entries,
+  });
+  await advanceTaskCheckpoint(options.checkpoints, {
+    taskId: options.taskId,
+    nextState: "manifest-recorded",
+    idempotencyKey: options.idempotencyKey,
+    nowMs: nowMs + 3,
+  });
+  await advanceTaskCheckpoint(options.checkpoints, {
+    taskId: options.taskId,
+    nextState: "complete",
+    idempotencyKey: options.idempotencyKey,
+    nowMs: nowMs + 4,
+  });
+
+  return { result, entries };
+}
+
 export function partitionedParquetOutputEntries(
   result: WritePartitionedParquetResult,
   options: PartitionedParquetOutputEntryOptions,
@@ -293,6 +378,24 @@ export function partitionedParquetOutputEntries(
     }
     return entry;
   });
+}
+
+function outputEntriesToPartitionedResult(
+  entries: OutputManifestEntry[],
+): WritePartitionedParquetResult {
+  return {
+    files: entries.map((entry) => {
+      const file: WritePartitionedParquetFile = {
+        path: entry.outputPath,
+        byteSize: entry.byteSize,
+        contentHash: entry.contentHash ?? "",
+        rowCount: entry.rowCount,
+        partitionValues: sortStringRecord(entry.partitionValues),
+      };
+      if (entry.etag !== undefined) file.etag = entry.etag;
+      return file;
+    }),
+  };
 }
 
 export class ParquetScanAdapter implements ScanAdapter {

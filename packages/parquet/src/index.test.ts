@@ -16,6 +16,7 @@ import {
   lt,
   lte,
   memoryCache,
+  memoryCheckpointAdapter,
   memoryStore,
   ne,
   not,
@@ -48,6 +49,7 @@ import {
   rowGroupMayMatch,
   writeParquet,
   writePartitionedParquet,
+  writePartitionedParquetTask,
 } from "./index.js";
 
 const store = memoryStore();
@@ -500,6 +502,59 @@ describe("writePartitionedParquet", () => {
         },
       },
     ]);
+  });
+
+  it("runs partitioned writes through task checkpoints", async () => {
+    const outStore = memoryStore();
+    const checkpoints = memoryCheckpointAdapter();
+    const result = await writePartitionedParquetTask(outStore, "out/checkpointed", {
+      checkpoints,
+      taskId: "job_9-task-000001-a",
+      idempotencyKey: "attempt-1",
+      nowMs: 100,
+      rows: [
+        { country: "US", id: 1 },
+        { country: "CA", id: 2 },
+      ],
+      partitionBy: ["country"],
+      maxRowsPerFile: 1,
+      jobId: "job_9",
+      writeMode: "create",
+      iceberg: true,
+    });
+
+    expect(result.entries.map((entry) => entry.outputPath)).toEqual([
+      "out/checkpointed/country=CA/part-job_9-job_9-task-000001-a-attempt-1-00000.parquet",
+      "out/checkpointed/country=US/part-job_9-job_9-task-000001-a-attempt-1-00001.parquet",
+    ]);
+    await expect(checkpoints.get("job_9-task-000001-a")).resolves.toMatchObject({
+      state: "complete",
+      outputs: [
+        {
+          taskId: "job_9-task-000001-a",
+          iceberg: { recordCount: 1, partitionValues: { country: "CA" } },
+        },
+        {
+          taskId: "job_9-task-000001-a",
+          iceberg: { recordCount: 1, partitionValues: { country: "US" } },
+        },
+      ],
+    });
+
+    const replay = await writePartitionedParquetTask(outStore, "out/checkpointed", {
+      checkpoints,
+      taskId: "job_9-task-000001-a",
+      idempotencyKey: "attempt-1",
+      nowMs: 200,
+      rows: [{ country: "US", id: 999 }],
+      partitionBy: ["country"],
+      jobId: "job_9",
+      writeMode: "create",
+    });
+    expect(replay.entries).toEqual(result.entries);
+    expect(replay.result.files.map((file) => file.path)).toEqual(
+      result.result.files.map((file) => file.path),
+    );
   });
 
   it("validates insert constraints before writing rows", async () => {
