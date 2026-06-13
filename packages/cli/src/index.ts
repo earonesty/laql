@@ -1,14 +1,18 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import {
+  createOutputManifest,
+  fingerprint,
   LaQLError,
   type MemoryObjectStore,
   memoryStore,
   type QueryBuilder,
   type Row,
+  writeOutputManifest,
 } from "@laql/core";
 import {
   createParquetLake,
+  partitionedParquetOutputEntries,
   readParquetMetadata,
   type WriteParquetRowsOptions,
   writePartitionedParquet,
@@ -33,6 +37,8 @@ interface ParsedArgs {
   format?: "csv" | "json" | "ndjson";
   partitionBy?: string[];
   maxRowsPerFile?: number;
+  manifest?: string;
+  jobId?: string;
   help: boolean;
 }
 
@@ -75,7 +81,7 @@ export function usage(): string {
     "  query   --path <file.parquet> --sql <query> [--format csv|json|ndjson]",
     "  explain --path <file.parquet> --sql <query>",
     "  inspect --path <file.parquet>",
-    "  write   --path <file.parquet> --sql <query> --output <prefix> [--partition-by a,b] [--max-rows-per-file n]",
+    "  write   --path <file.parquet> --sql <query> --output <prefix> [--partition-by a,b] [--max-rows-per-file n] [--manifest <path>] [--job-id id]",
     "  schema  --path <file.parquet>",
   ];
   if (reserved.length > 0) {
@@ -169,7 +175,36 @@ async function writeRows(outputPrefix: string, rows: Row[], args: ParsedArgs): P
     await writeFile(file.path, bytes);
   }
 
-  return `${JSON.stringify({ files: result.files })}\n`;
+  const body: { files: typeof result.files; manifest?: string } = { files: result.files };
+  if (args.manifest !== undefined) {
+    const jobId = args.jobId ?? "cli";
+    const manifest = createOutputManifest({
+      jobId,
+      planFingerprint: fingerprint({
+        command: args.command,
+        path: args.path,
+        sql: args.sql,
+        outputPrefix,
+        partitionBy: args.partitionBy ?? [],
+        maxRowsPerFile: args.maxRowsPerFile ?? null,
+      }),
+      entries: partitionedParquetOutputEntries(result, {
+        taskId: `${jobId}-task-000000`,
+      }),
+    });
+    await writeOutputManifest(outStore, args.manifest, manifest);
+    const bytes = await outStore.get(args.manifest);
+    if (bytes === null) {
+      throw new LaQLError("LAQL_OBJECT_NOT_FOUND", `No generated output at ${args.manifest}`, {
+        path: args.manifest,
+      });
+    }
+    await mkdir(dirname(args.manifest), { recursive: true });
+    await writeFile(args.manifest, bytes);
+    body.manifest = args.manifest;
+  }
+
+  return `${JSON.stringify(body)}\n`;
 }
 
 function builderFromAst(builder: QueryBuilder, ast: ReturnType<typeof parseSql>): QueryBuilder {
@@ -221,6 +256,12 @@ function parseArgs(argv: string[]): ParsedArgs {
     } else if (arg === "--max-rows-per-file") {
       index += 1;
       args.maxRowsPerFile = parsePositiveInt(requireValue(rest, index, arg), arg);
+    } else if (arg === "--manifest") {
+      index += 1;
+      args.manifest = requireValue(rest, index, arg);
+    } else if (arg === "--job-id") {
+      index += 1;
+      args.jobId = requireValue(rest, index, arg);
     } else throw new LaQLError("LAQL_PARSE_ERROR", `Unknown argument ${arg}`);
   }
   return args;

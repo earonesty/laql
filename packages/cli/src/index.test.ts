@@ -1,7 +1,7 @@
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { memoryStore } from "@laql/core";
+import { memoryStore, readOutputManifest } from "@laql/core";
 import { fixturePath, SALES } from "@laql/fixtures";
 import { createParquetLake } from "@laql/parquet";
 import { describe, expect, it } from "vitest";
@@ -128,6 +128,54 @@ describe("runCli", () => {
       { amount: 0, region: "west", store_id: "store-000" },
       { amount: 36.28, region: "west", store_id: "store-000" },
     ]);
+  });
+
+  it("writes output manifests for local write commands", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "laql-cli-manifest-"));
+    const output = join(dir, "west");
+    const manifestPath = join(dir, "manifest.json");
+    const result = await runCli([
+      "write",
+      "--path",
+      fixturePath(SALES.file),
+      "--sql",
+      "select store_id, region, amount where region = 'west' order by amount asc limit 2",
+      "--output",
+      output,
+      "--max-rows-per-file",
+      "1",
+      "--manifest",
+      manifestPath,
+      "--job-id",
+      "job_cli_write",
+    ]);
+
+    expect(result).toMatchObject({ exitCode: 0, stderr: "" });
+    const body = JSON.parse(result.stdout) as {
+      files: { path: string; rowCount: number }[];
+      manifest: string;
+    };
+    expect(body.manifest).toBe(manifestPath);
+
+    const store = memoryStore();
+    await store.put(manifestPath, await readFile(manifestPath));
+    const manifest = await readOutputManifest(store, manifestPath);
+    expect(manifest).toMatchObject({
+      jobId: "job_cli_write",
+      entries: [
+        {
+          taskId: "job_cli_write-task-000000",
+          outputPath: body.files[0]?.path,
+          rowCount: 1,
+        },
+        {
+          taskId: "job_cli_write-task-000000",
+          outputPath: body.files[1]?.path,
+          rowCount: 1,
+        },
+      ],
+    });
+    expect(manifest.planFingerprint).toMatch(/^fp_[0-9a-f]{16}$/u);
   });
 
   it("compacts a local Parquet file into rewritten output files", async () => {
