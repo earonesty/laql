@@ -30,6 +30,7 @@ export interface WriteParquetRowsOptions
   rows: Row[];
   partitionBy?: string[];
   maxRowsPerFile?: number;
+  maxBytesPerFile?: number;
   jobId?: string;
   columnTypes?: Record<string, BasicType>;
 }
@@ -112,17 +113,7 @@ export async function writeParquet(
 ): Promise<{ path: string; byteSize: number; etag?: string }> {
   try {
     const { contentType, ...writeOptions } = options;
-    const bytes = new Uint8Array(parquetWriteBuffer(writeOptions));
-    await store.put(path, bytes, {
-      contentType: contentType ?? "application/vnd.apache.parquet",
-    });
-    const head = await store.head(path);
-    const result: { path: string; byteSize: number; etag?: string } = {
-      path,
-      byteSize: head?.size ?? bytes.byteLength,
-    };
-    if (head?.etag !== undefined) result.etag = head.etag;
-    return result;
+    return await putParquetBytes(store, path, encodeParquetBytes(writeOptions), contentType);
   } catch (cause) {
     throw new LaQLError("LAQL_PARQUET_WRITE_ERROR", `Failed to write ${path}`, { path, cause });
   }
@@ -138,6 +129,16 @@ export async function writePartitionedParquet(
 
   const normalizedPrefix = prefix.replace(/\/+$/u, "");
   const partitionBy = options.partitionBy ?? [];
+  const {
+    rows: _rows,
+    partitionBy: _partitionBy,
+    maxRowsPerFile: _maxRowsPerFile,
+    maxBytesPerFile,
+    jobId,
+    columnTypes,
+    contentType,
+    ...writeOptions
+  } = options;
   const partitions = partitionRows(options.rows, partitionBy);
   const files: WritePartitionedParquetFile[] = [];
   let ordinal = 0;
@@ -145,27 +146,32 @@ export async function writePartitionedParquet(
   for (const partition of partitions) {
     for (let start = 0; start < partition.rows.length; start += maxRowsPerFile) {
       const chunk = partition.rows.slice(start, start + maxRowsPerFile);
-      const path = partitionOutputPath(
-        normalizedPrefix,
-        partition.values,
+      const encodedChunks = splitRowsForFileSize(
+        chunk,
         partitionBy,
-        options.jobId,
-        ordinal,
+        columnTypes ?? {},
+        writeOptions,
+        maxBytesPerFile,
       );
-      const columnData = rowsToColumnData(chunk, partitionBy, options.columnTypes ?? {});
-      const written = await writeParquet(store, path, {
-        ...options,
-        columnData,
-      });
-      const result: WritePartitionedParquetFile = {
-        path: written.path,
-        byteSize: written.byteSize,
-        rowCount: chunk.length,
-        partitionValues: partition.values,
-      };
-      if (written.etag !== undefined) result.etag = written.etag;
-      files.push(result);
-      ordinal += 1;
+      for (const encodedChunk of encodedChunks) {
+        const path = partitionOutputPath(
+          normalizedPrefix,
+          partition.values,
+          partitionBy,
+          jobId,
+          ordinal,
+        );
+        const written = await writeEncodedParquet(store, path, encodedChunk.bytes, contentType);
+        const result: WritePartitionedParquetFile = {
+          path: written.path,
+          byteSize: written.byteSize,
+          rowCount: encodedChunk.rows.length,
+          partitionValues: partition.values,
+        };
+        if (written.etag !== undefined) result.etag = written.etag;
+        files.push(result);
+        ordinal += 1;
+      }
     }
   }
 
@@ -235,6 +241,11 @@ interface RowPartition {
 
 type ColumnValue = string | number | boolean | bigint | null;
 
+interface EncodedRowChunk {
+  rows: Row[];
+  bytes: Uint8Array;
+}
+
 function validatePartitionedWriteOptions(
   prefix: string,
   options: WriteParquetRowsOptions,
@@ -249,6 +260,14 @@ function validatePartitionedWriteOptions(
   if (!Number.isInteger(maxRowsPerFile) || maxRowsPerFile < 1) {
     throw new LaQLError("LAQL_TYPE_ERROR", "maxRowsPerFile must be a positive integer", {
       maxRowsPerFile,
+    });
+  }
+  if (
+    options.maxBytesPerFile !== undefined &&
+    (!Number.isInteger(options.maxBytesPerFile) || options.maxBytesPerFile < 1)
+  ) {
+    throw new LaQLError("LAQL_TYPE_ERROR", "maxBytesPerFile must be a positive integer", {
+      maxBytesPerFile: options.maxBytesPerFile,
     });
   }
   const partitionBy = options.partitionBy ?? [];
@@ -298,6 +317,48 @@ function partitionOutputPath(
   const safeJobId = jobId ?? "data";
   segments.push(`part-${safeJobId}-${String(ordinal).padStart(5, "0")}.parquet`);
   return segments.join("/");
+}
+
+function splitRowsForFileSize(
+  rows: Row[],
+  partitionBy: string[],
+  columnTypes: Record<string, BasicType>,
+  writeOptions: Omit<WriteParquetOptions, "columnData" | "contentType">,
+  maxBytesPerFile: number | undefined,
+): EncodedRowChunk[] {
+  const bytes = encodeRows(rows, partitionBy, columnTypes, writeOptions);
+  if (maxBytesPerFile === undefined || bytes.byteLength <= maxBytesPerFile || rows.length === 1) {
+    return [{ rows, bytes }];
+  }
+  const mid = Math.ceil(rows.length / 2);
+  return [
+    ...splitRowsForFileSize(
+      rows.slice(0, mid),
+      partitionBy,
+      columnTypes,
+      writeOptions,
+      maxBytesPerFile,
+    ),
+    ...splitRowsForFileSize(
+      rows.slice(mid),
+      partitionBy,
+      columnTypes,
+      writeOptions,
+      maxBytesPerFile,
+    ),
+  ];
+}
+
+function encodeRows(
+  rows: Row[],
+  partitionBy: string[],
+  columnTypes: Record<string, BasicType>,
+  writeOptions: Omit<WriteParquetOptions, "columnData" | "contentType">,
+): Uint8Array {
+  return encodeParquetBytes({
+    ...writeOptions,
+    columnData: rowsToColumnData(rows, partitionBy, columnTypes),
+  });
 }
 
 function rowsToColumnData(
@@ -384,6 +445,41 @@ function isPartitionValue(value: unknown): value is string | number | boolean | 
     typeof value === "boolean" ||
     typeof value === "bigint"
   );
+}
+
+function encodeParquetBytes(options: Omit<WriteParquetOptions, "contentType">): Uint8Array {
+  return new Uint8Array(parquetWriteBuffer(options));
+}
+
+async function writeEncodedParquet(
+  store: ObjectStore,
+  path: string,
+  bytes: Uint8Array,
+  contentType: string | undefined,
+): Promise<{ path: string; byteSize: number; etag?: string }> {
+  try {
+    return await putParquetBytes(store, path, bytes, contentType);
+  } catch (cause) {
+    throw new LaQLError("LAQL_PARQUET_WRITE_ERROR", `Failed to write ${path}`, { path, cause });
+  }
+}
+
+async function putParquetBytes(
+  store: ObjectStore,
+  path: string,
+  bytes: Uint8Array,
+  contentType: string | undefined,
+): Promise<{ path: string; byteSize: number; etag?: string }> {
+  await store.put(path, bytes, {
+    contentType: contentType ?? "application/vnd.apache.parquet",
+  });
+  const head = await store.head(path);
+  const result: { path: string; byteSize: number; etag?: string } = {
+    path,
+    byteSize: head?.size ?? bytes.byteLength,
+  };
+  if (head?.etag !== undefined) result.etag = head.etag;
+  return result;
 }
 
 type StatsValue = string | number | bigint | boolean;

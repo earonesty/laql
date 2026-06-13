@@ -226,6 +226,37 @@ describe("writePartitionedParquet", () => {
     ]);
   });
 
+  it("splits chunks that exceed maxBytesPerFile", async () => {
+    const outStore = memoryStore();
+    const rows = [
+      { id: 1, payload: "a".repeat(64) },
+      { id: 2, payload: "b".repeat(64) },
+      { id: 3, payload: "c".repeat(64) },
+    ];
+    const twoRows = await writePartitionedParquet(outStore, "out/size-baseline-two", {
+      rows: rows.slice(0, 2),
+    });
+    const threeRows = await writePartitionedParquet(outStore, "out/size-baseline-three", {
+      rows,
+    });
+    const maxBytesPerFile = Math.floor(
+      ((twoRows.files[0]?.byteSize ?? 0) + (threeRows.files[0]?.byteSize ?? 0)) / 2,
+    );
+
+    const result = await writePartitionedParquet(outStore, "out/size-limited", {
+      rows,
+      maxRowsPerFile: 3,
+      maxBytesPerFile,
+    });
+
+    expect(result.files.map((file) => file.path)).toEqual([
+      "out/size-limited/part-data-00000.parquet",
+      "out/size-limited/part-data-00001.parquet",
+    ]);
+    expect(result.files.map((file) => file.rowCount)).toEqual([2, 1]);
+    expect(result.files.every((file) => file.byteSize <= maxBytesPerFile)).toBe(true);
+  });
+
   it("infers row column types and honors explicit type overrides", async () => {
     const outStore = memoryStore();
     const result = await writePartitionedParquet(outStore, "out/types", {
@@ -293,6 +324,12 @@ describe("writePartitionedParquet", () => {
       writePartitionedParquet(outStore, "out/bad-limit", {
         rows: [{ id: 1 }],
         maxRowsPerFile: 0,
+      }),
+    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+    await expect(
+      writePartitionedParquet(outStore, "out/bad-byte-limit", {
+        rows: [{ id: 1 }],
+        maxBytesPerFile: 0,
       }),
     ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
     await expect(
