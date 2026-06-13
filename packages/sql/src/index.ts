@@ -49,7 +49,16 @@ const KEYWORDS = new Set([
   "where",
 ]);
 
-const CLAUSE_KEYWORDS = new Set(["select", "where", "group", "having", "order", "limit", "offset"]);
+const CLAUSE_KEYWORDS = new Set([
+  "from",
+  "select",
+  "where",
+  "group",
+  "having",
+  "order",
+  "limit",
+  "offset",
+]);
 
 export function parseSql(sql: string): SqlQueryAst {
   const parser = new Parser(tokenize(sql));
@@ -83,12 +92,13 @@ class Parser {
   constructor(private readonly tokens: Token[]) {}
 
   parseQuery(): SqlQueryAst {
-    this.expectKeyword("from");
-    const source = this.expectIdentifierLike("source");
-    const query: SqlQueryAst = { source };
+    const query: Partial<SqlQueryAst> = {};
 
     while (!this.peek("eof")) {
-      if (this.matchKeyword("select")) {
+      if (this.matchKeyword("from")) {
+        if (query.source !== undefined) throwParse("FROM may only appear once");
+        query.source = this.expectIdentifierLike("source");
+      } else if (this.matchKeyword("select")) {
         const selected = this.parseSelectList();
         if (selected.select.length > 0) query.select = selected.select;
         if (Object.keys(selected.aggregates).length > 0) query.aggregates = selected.aggregates;
@@ -111,7 +121,8 @@ class Parser {
       }
     }
 
-    return query;
+    if (query.source === undefined) throwParse("Expected FROM");
+    return query as SqlQueryAst;
   }
 
   private parseSelectList(): { select: string[]; aggregates: AggregateSpec } {

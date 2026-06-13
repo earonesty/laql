@@ -2,6 +2,24 @@ import { describe, expect, it } from "vitest";
 import { formatSql, parseSql } from "./index.js";
 
 describe("parseSql", () => {
+  it("accepts select-first SQL with a later FROM clause", () => {
+    expect(
+      parseSql(`
+        select store_id, amount
+        from sales
+        where amount > 100
+        order by amount desc
+        limit 10
+      `),
+    ).toMatchObject({
+      source: "sales",
+      select: ["store_id", "amount"],
+      where: { kind: "compare", op: "gt" },
+      orderBy: [{ column: "amount", direction: "desc" }],
+      limit: 10,
+    });
+  });
+
   it("compiles the core VISION read-query shape", () => {
     expect(
       parseSql(`
@@ -83,6 +101,13 @@ describe("parseSql", () => {
 
   it("round-trips parsed ASTs through SQL text", () => {
     const queries = [
+      `
+        select store_id, amount
+        from sales
+        where amount > 100
+        order by amount desc
+        limit 10
+      `,
       `
         from sales
         select store_id, date, amount
@@ -208,7 +233,8 @@ describe("parseSql", () => {
   });
 
   it("throws typed parse errors", () => {
-    expect(() => parseSql("select id from t")).toThrow(/Expected FROM/u);
+    expect(() => parseSql("select id")).toThrow(/Expected FROM/u);
+    expect(() => parseSql("from a select id from b")).toThrow(/FROM may only appear once/u);
     expect(() => parseSql("from t select id where a between 1")).toThrow(/AND/u);
     expect(() => parseSql("from t select nope() as x")).toThrow(/Unsupported aggregate/u);
     expect(() => parseSql("from t limit -1")).toThrow(/non-negative integer/u);

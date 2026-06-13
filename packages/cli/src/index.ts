@@ -184,7 +184,7 @@ function builderFromAst(builder: QueryBuilder, ast: ReturnType<typeof parseSql>)
 
 function parseCliSql(sql: string, defaultSource: string): ReturnType<typeof parseSql> {
   const trimmed = sql.trim();
-  if (/^from\s/iu.test(trimmed)) return { ...parseSql(trimmed), source: defaultSource };
+  if (/\bfrom\b/iu.test(trimmed)) return { ...parseSql(trimmed), source: defaultSource };
   return { ...parseSql(`from input ${trimmed}`), source: defaultSource };
 }
 

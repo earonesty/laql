@@ -47,6 +47,21 @@ describe("runCli", () => {
     expect(JSON.parse(result.stdout)).toEqual([{ region: "east" }]);
   });
 
+  it("accepts select-first SQL with FROM while still using the --path source", async () => {
+    const result = await runCli([
+      "query",
+      "--path",
+      fixturePath(SALES.file),
+      "--sql",
+      "select store_id, amount from ignored_source where region = 'west' order by amount asc limit 1",
+      "--format",
+      "json",
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual([{ store_id: "store-000", amount: 0 }]);
+  });
+
   it("queries a local Parquet path as CSV", async () => {
     const result = await runCli([
       "query",
