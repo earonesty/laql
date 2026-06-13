@@ -6,7 +6,7 @@ export interface BroadcastJoinOptions {
   leftKey: string;
   rightKey: string;
   maxRightRows: number;
-  type?: "inner" | "left";
+  type?: "inner" | "left" | "semi" | "anti";
   rightPrefix?: string;
 }
 
@@ -28,6 +28,14 @@ export async function broadcastJoin(
   const out: Row[] = [];
   for await (const leftRow of left) {
     const matches = index.get(joinKey(leftRow, options.leftKey));
+    if (options.type === "semi") {
+      if (matches && matches.length > 0) out.push({ ...leftRow });
+      continue;
+    }
+    if (options.type === "anti") {
+      if (!matches || matches.length === 0) out.push({ ...leftRow });
+      continue;
+    }
     if (!matches || matches.length === 0) {
       if (options.type === "left") out.push({ ...leftRow });
       continue;
@@ -64,6 +72,17 @@ function validateJoinOptions(options: BroadcastJoinOptions): void {
       "LAQL_TYPE_ERROR",
       "Broadcast join maxRightRows must be a positive integer",
     );
+  }
+  if (
+    options.type !== undefined &&
+    options.type !== "inner" &&
+    options.type !== "left" &&
+    options.type !== "semi" &&
+    options.type !== "anti"
+  ) {
+    throw new LaQLError("LAQL_TYPE_ERROR", "Broadcast join type is not supported", {
+      type: options.type,
+    });
   }
 }
 

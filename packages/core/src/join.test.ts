@@ -48,6 +48,35 @@ describe("broadcastJoin", () => {
     ]);
   });
 
+  it("supports bounded semi and anti joins", async () => {
+    const left = [
+      { id: 1, name: "a" },
+      { id: 2, name: "b" },
+      { id: 3, name: "c" },
+    ];
+    const right = [{ id: 1 }, { id: 3 }];
+
+    await expect(
+      broadcastJoin(left, right, {
+        leftKey: "id",
+        rightKey: "id",
+        maxRightRows: 2,
+        type: "semi",
+      }),
+    ).resolves.toEqual([
+      { id: 1, name: "a" },
+      { id: 3, name: "c" },
+    ]);
+    await expect(
+      broadcastJoin(left, right, {
+        leftKey: "id",
+        rightKey: "id",
+        maxRightRows: 2,
+        type: "anti",
+      }),
+    ).resolves.toEqual([{ id: 2, name: "b" }]);
+  });
+
   it("rejects unbounded or unsafe joins with typed errors", async () => {
     await expect(
       broadcastJoin([{ id: 1 }], [{ id: 1 }, { id: 2 }], {
@@ -75,6 +104,14 @@ describe("broadcastJoin", () => {
         leftKey: "id",
         rightKey: "id",
         maxRightRows: 1,
+      }),
+    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+    await expect(
+      broadcastJoin([{ id: 1 }], [{ id: 1 }], {
+        leftKey: "id",
+        rightKey: "id",
+        maxRightRows: 1,
+        type: "outer" as never,
       }),
     ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
   });
