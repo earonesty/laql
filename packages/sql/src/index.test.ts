@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseSql } from "./index.js";
+import { formatSql, parseSql } from "./index.js";
 
 describe("parseSql", () => {
   it("compiles the core VISION read-query shape", () => {
@@ -79,6 +79,70 @@ describe("parseSql", () => {
     });
   });
 
+  it("round-trips parsed ASTs through SQL text", () => {
+    const queries = [
+      `
+        from sales
+        select store_id, date, amount
+        where region = 'west'
+          and date between '2026-01-01' and '2026-06-01'
+          and amount > 100
+        order by amount desc
+        limit 500
+      `,
+      `
+        from places
+        select id, name, lat, lon
+        where country = 'US'
+          and state = 'CA'
+          and h3_within(h3_8, '8829a1d757fffff', 2)
+          and st_intersects(geom, st_bbox(-118.35, 33.95, -118.15, 34.15))
+        order by name asc nulls first
+        limit 100
+        offset 10
+      `,
+      `
+        from events
+        select event, count() as n, count_distinct(user_id) as users
+        where date = '2026-06-10'
+        group by event
+        having n > 100
+        order by n desc
+      `,
+    ];
+
+    for (const query of queries) {
+      const ast = parseSql(query);
+      expect(parseSql(formatSql(ast))).toEqual(ast);
+    }
+  });
+
+  it("formats expression variants and comparison operators", () => {
+    const ast = parseSql(`
+      from t
+      select id
+      where a != 1
+        and b < 2
+        and c <= 3
+        and d >= 4
+        and region not in ('US', 'CA')
+        and deleted is not null
+        and not (name ilike 'test%')
+        and note like 'ok%'
+    `);
+
+    const formatted = formatSql(ast);
+    expect(formatted).toContain("a != 1");
+    expect(formatted).toContain("b < 2");
+    expect(formatted).toContain("c <= 3");
+    expect(formatted).toContain("d >= 4");
+    expect(formatted).toContain("region not in ('US', 'CA')");
+    expect(formatted).toContain("deleted is not null");
+    expect(formatted).toContain("not (name ilike 'test%')");
+    expect(formatted).toContain("note like 'ok%'");
+    expect(parseSql(formatted)).toEqual(ast);
+  });
+
   it("supports boolean, null, in, like, not, and parenthesized expressions", () => {
     const ast = parseSql(`
       from t
@@ -147,9 +211,11 @@ describe("parseSql", () => {
     expect(() => parseSql("from t where name like 1")).toThrow(/LIKE pattern/u);
     expect(() => parseSql("from t where name not between 1 and 2")).toThrow(/Expected IN/u);
     expect(() => parseSql("from t where = 1")).toThrow(/Expected expression/u);
+    expect(() => parseSql("from t select id nope")).toThrow(/Unexpected token/u);
     expect(() => parseSql("from t group by ,")).toThrow(/Expected column/u);
     expect(() => parseSql("from t order by a nulls middle")).toThrow(/Expected FIRST/u);
     expect(() => parseSql("from t where name = 'unterminated")).toThrow(/Unterminated/u);
     expect(() => parseSql("from t where name = @bad")).toThrow(/Unexpected character/u);
+    expect(() => formatSql({ source: "bad source" })).toThrow(/cannot be represented/u);
   });
 });

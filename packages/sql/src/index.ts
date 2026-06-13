@@ -56,6 +56,27 @@ export function parseSql(sql: string): SqlQueryAst {
   return parser.parseQuery();
 }
 
+export function formatSql(ast: SqlQueryAst): string {
+  const clauses = [`from ${formatIdentifier(ast.source)}`];
+  const select = [...(ast.select ?? [])];
+  for (const [alias, aggregate] of Object.entries(ast.aggregates ?? {})) {
+    const args = aggregate.column === undefined ? "" : formatIdentifier(aggregate.column);
+    select.push(`${aggregate.op}(${args}) as ${formatIdentifier(alias)}`);
+  }
+  if (select.length > 0) clauses.push(`select ${select.join(", ")}`);
+  if (ast.where) clauses.push(`where ${formatExpr(ast.where)}`);
+  if (ast.groupBy && ast.groupBy.length > 0) {
+    clauses.push(`group by ${ast.groupBy.map(formatIdentifier).join(", ")}`);
+  }
+  if (ast.having) clauses.push(`having ${formatExpr(ast.having)}`);
+  if (ast.orderBy && ast.orderBy.length > 0) {
+    clauses.push(`order by ${ast.orderBy.map(formatOrderByTerm).join(", ")}`);
+  }
+  if (ast.limit !== undefined) clauses.push(`limit ${ast.limit}`);
+  if (ast.offset !== undefined) clauses.push(`offset ${ast.offset}`);
+  return clauses.join("\n");
+}
+
 class Parser {
   private index = 0;
 
@@ -417,6 +438,69 @@ function aggregateOp(op: string): AggregateOp {
 
 function literal(value: string | number | boolean | null): Expr {
   return { kind: "literal", value };
+}
+
+function formatExpr(expr: Expr): string {
+  switch (expr.kind) {
+    case "literal":
+      return formatLiteral(expr.value);
+    case "column":
+      return formatIdentifier(expr.name);
+    case "compare":
+      return `${formatExpr(expr.left)} ${formatCompareOp(expr.op)} ${formatExpr(expr.right)}`;
+    case "between":
+      return `${formatExpr(expr.target)} between ${formatExpr(expr.low)} and ${formatExpr(expr.high)}`;
+    case "in":
+      return `${formatExpr(expr.target)}${expr.negated ? " not" : ""} in (${expr.values.map(formatExpr).join(", ")})`;
+    case "null-check":
+      return `${formatExpr(expr.target)} is${expr.negated ? " not" : ""} null`;
+    case "logical":
+      return expr.operands.map((operand) => `(${formatExpr(operand)})`).join(` ${expr.op} `);
+    case "not":
+      return `not (${formatExpr(expr.operand)})`;
+    case "like":
+      return `${formatExpr(expr.target)} ${expr.caseInsensitive ? "ilike" : "like"} ${formatLiteral(expr.pattern)}`;
+    case "call":
+      return `${formatIdentifier(expr.fn)}(${expr.args.map(formatExpr).join(", ")})`;
+  }
+}
+
+function formatOrderByTerm(term: OrderByTerm): string {
+  const parts = [formatIdentifier(term.column)];
+  if (term.direction) parts.push(term.direction);
+  if (term.nulls) parts.push("nulls", term.nulls);
+  return parts.join(" ");
+}
+
+function formatCompareOp(op: "eq" | "ne" | "lt" | "lte" | "gt" | "gte"): string {
+  switch (op) {
+    case "eq":
+      return "=";
+    case "ne":
+      return "!=";
+    case "lt":
+      return "<";
+    case "lte":
+      return "<=";
+    case "gt":
+      return ">";
+    case "gte":
+      return ">=";
+  }
+}
+
+function formatLiteral(value: string | number | boolean | bigint | null): string {
+  if (value === null) return "null";
+  if (typeof value === "string") return `'${value.replaceAll("'", "''")}'`;
+  if (typeof value === "bigint") return value.toString();
+  return String(value);
+}
+
+function formatIdentifier(value: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_.*:/=-]*$/u.test(value)) {
+    throwParse(`Identifier ${value} cannot be represented in the small SQL dialect`);
+  }
+  return value;
 }
 
 function throwParse(message: string): never {
