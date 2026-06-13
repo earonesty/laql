@@ -37,6 +37,16 @@ export const GROUPBY = {
   groups: 4,
 } as const;
 
+export const GEO = {
+  file: "geo.parquet",
+  rows: 3,
+} as const;
+
+export const H3 = {
+  file: "h3.parquet",
+  rows: 4,
+} as const;
+
 export const WRITE = {
   file: "write-golden/plain.parquet",
   rows: 3,

@@ -22,7 +22,18 @@ import {
   notIn,
   or,
 } from "@laql/core";
-import { fixturePath, GROUPBY, HIVE, SALES, STATS, TYPES, WIDE, WRITE } from "@laql/fixtures";
+import {
+  fixturePath,
+  GEO,
+  GROUPBY,
+  H3,
+  HIVE,
+  SALES,
+  STATS,
+  TYPES,
+  WIDE,
+  WRITE,
+} from "@laql/fixtures";
 import type { RowGroup } from "hyparquet";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
@@ -77,6 +88,8 @@ beforeAll(async () => {
   await store.put(`data/${WIDE.file}`, readFileSync(fixturePath(WIDE.file)));
   await store.put(`data/${STATS.file}`, readFileSync(fixturePath(STATS.file)));
   await store.put(`data/${GROUPBY.file}`, readFileSync(fixturePath(GROUPBY.file)));
+  await store.put(`data/${GEO.file}`, readFileSync(fixturePath(GEO.file)));
+  await store.put(`data/${H3.file}`, readFileSync(fixturePath(H3.file)));
   for (const file of HIVE.files) {
     await store.put(`data/${file}`, readFileSync(fixturePath(file)));
   }
@@ -581,6 +594,36 @@ describe("createParquetLake", () => {
           { maxGroups: GROUPBY.groups - 1 },
         ),
     ).rejects.toMatchObject({ code: "LAQL_GROUP_LIMIT_EXCEEDED" });
+  });
+
+  it("queries geo and h3 fixtures with function predicates", async () => {
+    const lake = createParquetLake({ store });
+    await expect(
+      lake
+        .path(`data/${GEO.file}`)
+        .select(["id", "name"])
+        .where(
+          fn(
+            "st_intersects",
+            col("geom"),
+            fn("st_bbox", lit(-118.5), lit(34), lit(-118), lit(34.3)),
+          ),
+        )
+        .toArray(),
+    ).resolves.toEqual([
+      { id: 1, name: "downtown" },
+      { id: 2, name: "valley" },
+    ]);
+
+    await expect(
+      lake
+        .path(`data/${H3.file}`)
+        .select(["id"])
+        .where(
+          fn("h3_in", col("h3_8"), lit(JSON.stringify(["8829a1d757fffff", "8829a1d74bfffff"]))),
+        )
+        .toArray(),
+    ).resolves.toEqual([{ id: 1 }, { id: 3 }]);
   });
 
   it("prunes Parquet row groups using min/max statistics", async () => {

@@ -6,7 +6,9 @@ import { parquetWriteFile } from "hyparquet-writer";
 import {
   fixtureDataDir,
   fixturePath,
+  GEO,
   GROUPBY,
+  H3,
   HIVE,
   ICEBERG,
   MANIFESTS,
@@ -125,6 +127,48 @@ function generateGroupby() {
       { name: "amount", data: [10, 20, 7, 13, 5, 15, 2, 8], type: "INT32" },
       { name: "id", data: [1, 2, 3, 4, 5, 6, 7, 8], type: "INT32" },
       { name: "label", data: ["w1", "w2", "e1", "e2", "n1", "n2", "s1", "s2"], type: "STRING" },
+    ],
+  });
+}
+
+function generateGeo() {
+  parquetWriteFile({
+    filename: fixturePath(GEO.file),
+    columnData: [
+      { name: "id", data: [1, 2, 3], type: "INT32" },
+      { name: "name", data: ["downtown", "valley", "harbor"], type: "STRING" },
+      {
+        name: "geom",
+        data: [
+          JSON.stringify({ type: "Point", coordinates: [-118.24, 34.05] }),
+          JSON.stringify({ type: "Point", coordinates: [-118.45, 34.18] }),
+          JSON.stringify({ type: "Point", coordinates: [-117.16, 32.72] }),
+        ],
+        type: "STRING",
+      },
+      { name: "minx", data: [-118.24, -118.45, -117.16], type: "DOUBLE" },
+      { name: "miny", data: [34.05, 34.18, 32.72], type: "DOUBLE" },
+      { name: "maxx", data: [-118.24, -118.45, -117.16], type: "DOUBLE" },
+      { name: "maxy", data: [34.05, 34.18, 32.72], type: "DOUBLE" },
+    ],
+  });
+}
+
+function generateH3() {
+  parquetWriteFile({
+    filename: fixturePath(H3.file),
+    columnData: [
+      { name: "id", data: [1, 2, 3, 4], type: "INT32" },
+      {
+        name: "h3_7",
+        data: ["8729a1d75ffffff", "8729a1d75ffffff", "8729a1d74ffffff", "8729a1d76ffffff"],
+        type: "STRING",
+      },
+      {
+        name: "h3_8",
+        data: ["8829a1d757fffff", "8829a1d753fffff", "8829a1d74bfffff", "8829a1d765fffff"],
+        type: "STRING",
+      },
     ],
   });
 }
@@ -363,6 +407,8 @@ generateTypes();
 generateWide();
 generateStats();
 generateGroupby();
+generateGeo();
+generateH3();
 generateWriteGolden();
 generateManifestGoldens();
 generateHive();

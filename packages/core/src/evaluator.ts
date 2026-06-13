@@ -6,6 +6,13 @@ export type SqlBoolean = boolean | null;
 
 type EvalValue = Scalar;
 
+interface BBox {
+  minx: number;
+  miny: number;
+  maxx: number;
+  maxy: number;
+}
+
 const textEncoder = new TextEncoder();
 
 export function evaluate(expr: Expr, row: Row): EvalValue {
@@ -227,6 +234,16 @@ function callFunction(name: string, args: EvalValue[]): EvalValue {
       return leastGreatest(fn, args, "least");
     case "greatest":
       return leastGreatest(fn, args, "greatest");
+    case "st_bbox":
+      return stBBox(args);
+    case "st_intersects":
+      return spatialPredicate(fn, args, bboxIntersects);
+    case "st_contains":
+      return spatialPredicate(fn, args, bboxContains);
+    case "st_within":
+      return spatialPredicate(fn, args, (left, right) => bboxContains(right, left));
+    case "h3_in":
+      return h3In(args);
     default:
       throw new LaQLError("LAQL_UNSUPPORTED_PUSHDOWN", `Unsupported scalar function ${name}`, {
         function: name,
@@ -283,6 +300,154 @@ function replace(args: EvalValue[]): EvalValue {
     throw new LaQLError("LAQL_TYPE_ERROR", "replace() search and replacement must be strings");
   }
   return value.replaceAll(search, replacement);
+}
+
+function stBBox(args: EvalValue[]): EvalValue {
+  requireArgCount("st_bbox", args, 4);
+  const [minx, miny, maxx, maxy] = args;
+  if (
+    typeof minx !== "number" ||
+    typeof miny !== "number" ||
+    typeof maxx !== "number" ||
+    typeof maxy !== "number" ||
+    !Number.isFinite(minx) ||
+    !Number.isFinite(miny) ||
+    !Number.isFinite(maxx) ||
+    !Number.isFinite(maxy)
+  ) {
+    throw new LaQLError("LAQL_TYPE_ERROR", "st_bbox() expects finite number bounds");
+  }
+  if (minx > maxx || miny > maxy) {
+    throw new LaQLError("LAQL_TYPE_ERROR", "st_bbox() bounds must be ordered min <= max");
+  }
+  return JSON.stringify({ type: "BBox", minx, miny, maxx, maxy });
+}
+
+function spatialPredicate(
+  name: string,
+  args: EvalValue[],
+  predicate: (left: BBox, right: BBox) => boolean,
+): EvalValue {
+  requireArgCount(name, args, 2);
+  const left = args[0] ?? null;
+  const right = args[1] ?? null;
+  if (left === null || right === null) return null;
+  return predicate(envelope(left, name), envelope(right, name));
+}
+
+function h3In(args: EvalValue[]): EvalValue {
+  requireArgCount("h3_in", args, 2);
+  const cell = args[0] ?? null;
+  const cells = args[1] ?? null;
+  if (cell === null || cells === null) return null;
+  if (typeof cell !== "string" || typeof cells !== "string") {
+    throw new LaQLError("LAQL_TYPE_ERROR", "h3_in() expects a string cell and JSON cell list");
+  }
+  const parsed: unknown = JSON.parse(cells);
+  if (!Array.isArray(parsed) || !parsed.every((value) => typeof value === "string")) {
+    throw new LaQLError("LAQL_TYPE_ERROR", "h3_in() cell list must be a JSON string array");
+  }
+  return parsed.includes(cell);
+}
+
+function envelope(value: EvalValue, name: string): BBox {
+  if (typeof value !== "string") throwType(name, "GeoJSON or BBox JSON string", value);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch (cause) {
+    throw new LaQLError("LAQL_TYPE_ERROR", `${name}() received invalid geometry JSON`, {
+      cause,
+    });
+  }
+  if (!isRecord(parsed) || typeof parsed.type !== "string") {
+    throw new LaQLError("LAQL_TYPE_ERROR", `${name}() expects GeoJSON or BBox JSON`);
+  }
+  if (parsed.type === "BBox") return bboxFromRecord(parsed, name);
+  if (parsed.type === "Point") return pointEnvelope(parsed, name);
+  if (parsed.type === "Polygon") return polygonEnvelope(parsed, name);
+  throw new LaQLError("LAQL_TYPE_ERROR", `${name}() supports Point, Polygon, or BBox geometry`);
+}
+
+function bboxFromRecord(record: Record<string, unknown>, name: string): BBox {
+  const { minx, miny, maxx, maxy } = record;
+  if (
+    typeof minx !== "number" ||
+    typeof miny !== "number" ||
+    typeof maxx !== "number" ||
+    typeof maxy !== "number" ||
+    !Number.isFinite(minx) ||
+    !Number.isFinite(miny) ||
+    !Number.isFinite(maxx) ||
+    !Number.isFinite(maxy)
+  ) {
+    throw new LaQLError("LAQL_TYPE_ERROR", `${name}() BBox values must be finite numbers`);
+  }
+  return { minx, miny, maxx, maxy };
+}
+
+function pointEnvelope(record: Record<string, unknown>, name: string): BBox {
+  const point = record.coordinates;
+  if (!isPosition(point)) {
+    throw new LaQLError("LAQL_TYPE_ERROR", `${name}() Point coordinates are invalid`);
+  }
+  const [x, y] = point;
+  return { minx: x, miny: y, maxx: x, maxy: y };
+}
+
+function polygonEnvelope(record: Record<string, unknown>, name: string): BBox {
+  const rings = record.coordinates;
+  if (!Array.isArray(rings)) {
+    throw new LaQLError("LAQL_TYPE_ERROR", `${name}() Polygon coordinates are invalid`);
+  }
+  const points = rings.flat();
+  if (points.length === 0 || !points.every(isPosition)) {
+    throw new LaQLError("LAQL_TYPE_ERROR", `${name}() Polygon coordinates are invalid`);
+  }
+  let minx = Number.POSITIVE_INFINITY;
+  let miny = Number.POSITIVE_INFINITY;
+  let maxx = Number.NEGATIVE_INFINITY;
+  let maxy = Number.NEGATIVE_INFINITY;
+  for (const [x, y] of points) {
+    minx = Math.min(minx, x);
+    miny = Math.min(miny, y);
+    maxx = Math.max(maxx, x);
+    maxy = Math.max(maxy, y);
+  }
+  return { minx, miny, maxx, maxy };
+}
+
+function bboxIntersects(left: BBox, right: BBox): boolean {
+  return (
+    left.maxx >= right.minx &&
+    left.minx <= right.maxx &&
+    left.maxy >= right.miny &&
+    left.miny <= right.maxy
+  );
+}
+
+function bboxContains(left: BBox, right: BBox): boolean {
+  return (
+    left.minx <= right.minx &&
+    left.miny <= right.miny &&
+    left.maxx >= right.maxx &&
+    left.maxy >= right.maxy
+  );
+}
+
+function isPosition(value: unknown): value is [number, number] {
+  return (
+    Array.isArray(value) &&
+    value.length === 2 &&
+    typeof value[0] === "number" &&
+    typeof value[1] === "number" &&
+    Number.isFinite(value[0]) &&
+    Number.isFinite(value[1])
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function cast(args: EvalValue[]): EvalValue {

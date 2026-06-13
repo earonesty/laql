@@ -30,6 +30,20 @@ const row = {
   date: "2026-06-13T15:30:00Z",
   maybe: null,
   big: 9007199254740993n,
+  geom: JSON.stringify({ type: "Point", coordinates: [-118.24, 34.05] }),
+  polygon: JSON.stringify({
+    type: "Polygon",
+    coordinates: [
+      [
+        [-119, 33],
+        [-117, 33],
+        [-117, 35],
+        [-119, 35],
+        [-119, 33],
+      ],
+    ],
+  }),
+  h3_8: "8829a1d757fffff",
 };
 
 describe("evaluate", () => {
@@ -81,6 +95,21 @@ describe("evaluate", () => {
     expect(evaluate(fn("cast", 1, "boolean"), row)).toBe(true);
   });
 
+  it("supports spatial and h3 scalar predicates", () => {
+    const bbox = fn("st_bbox", -118.5, 34, -118, 34.3);
+    expect(evaluate(bbox, row)).toBe(
+      '{"type":"BBox","minx":-118.5,"miny":34,"maxx":-118,"maxy":34.3}',
+    );
+    expect(evaluate(fn("st_intersects", col("geom"), bbox), row)).toBe(true);
+    expect(evaluate(fn("st_contains", col("polygon"), col("geom")), row)).toBe(true);
+    expect(evaluate(fn("st_within", col("geom"), col("polygon")), row)).toBe(true);
+    expect(evaluate(fn("st_intersects", col("geom"), fn("st_bbox", 0, 0, 1, 1)), row)).toBe(false);
+    expect(evaluate(fn("h3_in", col("h3_8"), JSON.stringify(["8829a1d757fffff"])), row)).toBe(true);
+    expect(evaluate(fn("h3_in", col("h3_8"), JSON.stringify(["8829a1d753fffff"])), row)).toBe(
+      false,
+    );
+  });
+
   it("returns null from null-propagating functions", () => {
     expect(evaluate(fn("lower", lit(null)), row)).toBeNull();
     expect(evaluate(fn("substr", lit(null), 0, 1), row)).toBeNull();
@@ -89,6 +118,8 @@ describe("evaluate", () => {
     expect(evaluate(fn("date_trunc", "day", lit(null)), row)).toBeNull();
     expect(evaluate(fn("round", lit(null)), row)).toBeNull();
     expect(evaluate(fn("least", 1, lit(null)), row)).toBeNull();
+    expect(evaluate(fn("st_intersects", lit(null), col("geom")), row)).toBeNull();
+    expect(evaluate(fn("h3_in", lit(null), JSON.stringify(["8829a1d757fffff"])), row)).toBeNull();
   });
 
   it("throws typed errors for unknown columns and functions", () => {
@@ -107,6 +138,23 @@ describe("evaluate", () => {
     expect(() => evaluate(fn("round"), row)).toThrowError(LaQLError);
     expect(() => evaluate(fn("round", col("city")), row)).toThrowError(LaQLError);
     expect(() => evaluate(fn("least"), row)).toThrowError(LaQLError);
+    expect(() => evaluate(fn("st_bbox", -118, 34, -119, 35), row)).toThrowError(LaQLError);
+    expect(() => evaluate(fn("st_bbox", "x", 34, -118, 35), row)).toThrowError(LaQLError);
+    expect(() => evaluate(fn("st_intersects", "not-json", col("geom")), row)).toThrowError(
+      LaQLError,
+    );
+    expect(() => evaluate(fn("st_intersects", "{}", col("geom")), row)).toThrowError(LaQLError);
+    expect(() =>
+      evaluate(fn("st_intersects", '{"type":"LineString","coordinates":[]}', col("geom")), row),
+    ).toThrowError(LaQLError);
+    expect(() =>
+      evaluate(fn("st_intersects", '{"type":"Point","coordinates":["x",1]}', col("geom")), row),
+    ).toThrowError(LaQLError);
+    expect(() =>
+      evaluate(fn("st_intersects", '{"type":"Polygon","coordinates":[]}', col("geom")), row),
+    ).toThrowError(LaQLError);
+    expect(() => evaluate(fn("h3_in", col("h3_8"), "{}"), row)).toThrowError(LaQLError);
+    expect(() => evaluate(fn("h3_in", 1, "[]"), row)).toThrowError(LaQLError);
     expect(() => evaluate(like("amount", "%"), row)).toThrowError(LaQLError);
     expect(() => matches(lit(1), row)).toThrowError(LaQLError);
   });
