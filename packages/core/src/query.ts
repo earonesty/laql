@@ -2,9 +2,14 @@ import { LaQLError } from "./errors.js";
 import { encodeJsonLine, jsonSafeValue, matches } from "./evaluator.js";
 import type { Expr } from "./expr.js";
 import { col, eq, gt, gte, isIn, isNotNull, isNull, lt, lte, ne, notIn } from "./expr.js";
-import { createTaskManifest, type TaskManifest } from "./manifest.js";
+import {
+  assertBookmarkMatches,
+  createBookmark,
+  createTaskManifest,
+  type TaskManifest,
+} from "./manifest.js";
 import type { ObjectInfo, ObjectStore } from "./store.js";
-import type { QueryStats, Row } from "./types.js";
+import type { Bookmark, QueryStats, Row, SliceResult } from "./types.js";
 
 export interface QueryBudget {
   maxFiles?: number;
@@ -45,6 +50,20 @@ export interface PathQueryInit {
   offset?: number;
   batchSize?: number;
   hive?: boolean;
+}
+
+export interface SliceOptions {
+  maxRows: number;
+  bookmark?: Bookmark;
+}
+
+export interface QueryRunOptions {
+  slice: SliceOptions;
+}
+
+export interface ResumableBatchOptions {
+  bookmarkEvery: number;
+  bookmark?: Bookmark;
 }
 
 export interface TaskInput {
@@ -176,8 +195,12 @@ export class QueryBuilder {
     return this.run().taskManifest(jobId);
   }
 
-  run(): QueryResult {
-    return this.lake.createResult(this.init);
+  run(): QueryResult;
+  run(options: QueryRunOptions): Promise<SliceResult>;
+  run(options?: QueryRunOptions): QueryResult | Promise<SliceResult> {
+    const result = this.lake.createResult(this.init);
+    if (options) return result.slice(options.slice);
+    return result;
   }
 
   rows(): AsyncIterable<Row> {
@@ -206,6 +229,10 @@ export class QueryBuilder {
 
   streamJson(): ReadableStream<Uint8Array> {
     return this.run().streamJson();
+  }
+
+  resumableBatches(options: ResumableBatchOptions): AsyncIterable<SliceResult> {
+    return this.run().resumableBatches(options);
   }
 }
 
@@ -310,6 +337,62 @@ export class QueryResult {
 
   async taskManifest(jobId = this.config.queryId): Promise<TaskManifest> {
     return createTaskManifest({ jobId, tasks: await this.planTasks() });
+  }
+
+  async slice(options: SliceOptions): Promise<SliceResult> {
+    if (!Number.isInteger(options.maxRows) || options.maxRows <= 0) {
+      throw new LaQLError("LAQL_TYPE_ERROR", "slice maxRows must be a positive integer");
+    }
+    const manifest = await this.taskManifest();
+    const startOffset = options.bookmark?.position.rowOffset ?? 0;
+    if (options.bookmark) assertBookmarkMatches(options.bookmark, manifest.planFingerprint);
+
+    const rows: Row[] = [];
+    let skipped = 0;
+    let seen = 0;
+    let hasMore = false;
+    for await (const row of this.rows()) {
+      if (skipped < startOffset) {
+        skipped += 1;
+        seen += 1;
+        continue;
+      }
+      if (rows.length >= options.maxRows) {
+        hasMore = true;
+        break;
+      }
+      rows.push(row);
+      seen += 1;
+    }
+
+    if (!hasMore) return { rows };
+    const position: { fileIndex: number; rowGroup: number; rowOffset: number; taskId?: string } = {
+      fileIndex: 0,
+      rowGroup: 0,
+      rowOffset: seen,
+    };
+    const taskId = manifest.tasks[0]?.id;
+    if (taskId !== undefined) position.taskId = taskId;
+    return {
+      rows,
+      bookmark: createBookmark({
+        planFingerprint: manifest.planFingerprint,
+        snapshot: manifest.snapshot,
+        position,
+      }),
+    };
+  }
+
+  async *resumableBatches(options: ResumableBatchOptions): AsyncIterable<SliceResult> {
+    let bookmark = options.bookmark;
+    while (true) {
+      const sliceOptions: SliceOptions = { maxRows: options.bookmarkEvery };
+      if (bookmark !== undefined) sliceOptions.bookmark = bookmark;
+      const result = await this.slice(sliceOptions);
+      yield result;
+      if (!result.bookmark) return;
+      bookmark = result.bookmark;
+    }
   }
 
   async explain(): Promise<ExplainResult> {

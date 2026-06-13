@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { LaQLError } from "./errors.js";
 import { and, between, col, eq, fn, gt, isIn, isNull, like, lit, not, or } from "./expr.js";
+import { createBookmark } from "./manifest.js";
 import { memoryStore } from "./memory-store.js";
 import {
   Lake,
@@ -421,5 +422,55 @@ describe("Lake query runtime", () => {
     await expect(
       new Response(lake.path("table").where(eq("id", 2)).streamJson()).text(),
     ).resolves.toBe("[]");
+  });
+
+  it("slices queries with bookmarks and resumes to the same rows", async () => {
+    const { lake } = await makeLake({
+      rowsByPath: {
+        table: [
+          { id: 1, keep: true },
+          { id: 2, keep: false },
+          { id: 3, keep: true },
+          { id: 4, keep: true },
+        ],
+      },
+    });
+    const query = lake.path("table").select(["id"]).where(eq("keep", true));
+
+    const first = await query.run({ slice: { maxRows: 2 } });
+    expect(first.rows).toEqual([{ id: 1 }, { id: 3 }]);
+    expect(first.bookmark).toMatchObject({
+      position: { rowOffset: 2, fileIndex: 0, rowGroup: 0 },
+    });
+
+    const second = await query.run({ slice: { maxRows: 2, bookmark: first.bookmark } });
+    expect(second).toEqual({ rows: [{ id: 4 }] });
+
+    const replayed: Row[] = [];
+    for await (const batch of query.resumableBatches({ bookmarkEvery: 1 })) {
+      replayed.push(...batch.rows);
+    }
+    expect(replayed).toEqual(await query.toArray());
+  });
+
+  it("rejects stale or invalid slice bookmarks", async () => {
+    const { lake } = await makeLake({ rowsByPath: { table: [{ id: 1 }] } });
+    const query = lake.path("table");
+
+    await expect(query.run({ slice: { maxRows: 0 } })).rejects.toMatchObject({
+      code: "LAQL_TYPE_ERROR",
+    });
+    await expect(
+      query.run({
+        slice: {
+          maxRows: 1,
+          bookmark: createBookmark({
+            planFingerprint: "fp_stale",
+            snapshot: "snapshot",
+            position: { fileIndex: 0, rowGroup: 0, rowOffset: 0 },
+          }),
+        },
+      }),
+    ).rejects.toMatchObject({ code: "LAQL_BOOKMARK_STALE" });
   });
 });
