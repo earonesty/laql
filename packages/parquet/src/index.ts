@@ -15,6 +15,7 @@ import {
   type ScanOptions,
   type ScanTaskPlan,
   type ScanTaskPlanOptions,
+  type TaskCheckpoint,
 } from "@laql/core";
 import type { RowGroup } from "hyparquet";
 import { parquetMetadataAsync, parquetReadObjects } from "hyparquet";
@@ -312,59 +313,69 @@ export async function writePartitionedParquetTask(
   options: WritePartitionedParquetTaskOptions,
 ): Promise<WritePartitionedParquetTaskResult> {
   const existing = await options.checkpoints.get(options.taskId);
-  if (
-    existing?.state === "complete" &&
-    existing.idempotencyKey === options.idempotencyKey &&
-    existing.outputs !== undefined
-  ) {
-    return {
-      result: outputEntriesToPartitionedResult(existing.outputs),
-      entries: existing.outputs,
-    };
+  const existingOutputs =
+    existing?.idempotencyKey === options.idempotencyKey ? checkpointOutputs(existing) : undefined;
+  if (existing?.state === "complete" && existingOutputs !== undefined) {
+    return { result: outputEntriesToPartitionedResult(existingOutputs), entries: existingOutputs };
   }
 
   const nowMs = options.nowMs ?? Date.now();
-  await advanceTaskCheckpoint(options.checkpoints, {
-    taskId: options.taskId,
-    nextState: "planned",
-    idempotencyKey: options.idempotencyKey,
-    nowMs,
-    ...(options.staleTimeoutMs !== undefined ? { staleTimeoutMs: options.staleTimeoutMs } : {}),
-  });
-  await advanceTaskCheckpoint(options.checkpoints, {
-    taskId: options.taskId,
-    nextState: "running",
-    idempotencyKey: options.idempotencyKey,
-    nowMs: nowMs + 1,
-    ...(options.staleTimeoutMs !== undefined ? { staleTimeoutMs: options.staleTimeoutMs } : {}),
-  });
+  let result: WritePartitionedParquetResult;
+  let entries: OutputManifestEntry[];
+  if (
+    (existing?.state === "output-written" || existing?.state === "manifest-recorded") &&
+    existingOutputs !== undefined
+  ) {
+    entries = existingOutputs;
+    result = outputEntriesToPartitionedResult(entries);
+  } else {
+    if (existing?.state !== "running") {
+      await advanceTaskCheckpoint(options.checkpoints, {
+        taskId: options.taskId,
+        nextState: "planned",
+        idempotencyKey: options.idempotencyKey,
+        nowMs,
+        ...(options.staleTimeoutMs !== undefined ? { staleTimeoutMs: options.staleTimeoutMs } : {}),
+      });
+    }
+    await advanceTaskCheckpoint(options.checkpoints, {
+      taskId: options.taskId,
+      nextState: "running",
+      idempotencyKey: options.idempotencyKey,
+      nowMs: nowMs + 1,
+      ...(options.staleTimeoutMs !== undefined ? { staleTimeoutMs: options.staleTimeoutMs } : {}),
+    });
 
-  const {
-    checkpoints: _checkpoints,
-    nowMs: _nowMs,
-    staleTimeoutMs: _staleTimeoutMs,
-    iceberg,
-    ...writeOptions
-  } = options;
-  const result = await writePartitionedParquet(store, prefix, writeOptions);
-  const entries = partitionedParquetOutputEntries(result, {
-    taskId: options.taskId,
-    ...(iceberg !== undefined ? { iceberg } : {}),
-  });
+    const {
+      checkpoints: _checkpoints,
+      nowMs: _nowMs,
+      staleTimeoutMs: _staleTimeoutMs,
+      iceberg,
+      ...writeOptions
+    } = options;
+    result = await writePartitionedParquet(store, prefix, writeOptions);
+    entries = partitionedParquetOutputEntries(result, {
+      taskId: options.taskId,
+      ...(iceberg !== undefined ? { iceberg } : {}),
+    });
 
-  await advanceTaskCheckpoint(options.checkpoints, {
-    taskId: options.taskId,
-    nextState: "output-written",
-    idempotencyKey: options.idempotencyKey,
-    nowMs: nowMs + 2,
-    outputs: entries,
-  });
-  await advanceTaskCheckpoint(options.checkpoints, {
-    taskId: options.taskId,
-    nextState: "manifest-recorded",
-    idempotencyKey: options.idempotencyKey,
-    nowMs: nowMs + 3,
-  });
+    await advanceTaskCheckpoint(options.checkpoints, {
+      taskId: options.taskId,
+      nextState: "output-written",
+      idempotencyKey: options.idempotencyKey,
+      nowMs: nowMs + 2,
+      outputs: entries,
+    });
+  }
+
+  if (existing?.state !== "manifest-recorded") {
+    await advanceTaskCheckpoint(options.checkpoints, {
+      taskId: options.taskId,
+      nextState: "manifest-recorded",
+      idempotencyKey: options.idempotencyKey,
+      nowMs: nowMs + 3,
+    });
+  }
   await advanceTaskCheckpoint(options.checkpoints, {
     taskId: options.taskId,
     nextState: "complete",
@@ -373,6 +384,12 @@ export async function writePartitionedParquetTask(
   });
 
   return { result, entries };
+}
+
+function checkpointOutputs(checkpoint: TaskCheckpoint): OutputManifestEntry[] | undefined {
+  if (checkpoint.outputs !== undefined) return checkpoint.outputs;
+  if (checkpoint.output !== undefined) return [checkpoint.output];
+  return undefined;
 }
 
 export async function createParquetTableAs(

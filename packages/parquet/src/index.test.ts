@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import {
+  advanceTaskCheckpoint,
   and,
   between,
   col,
@@ -557,6 +558,140 @@ describe("writePartitionedParquet", () => {
     expect(replay.result.files.map((file) => file.path)).toEqual(
       result.result.files.map((file) => file.path),
     );
+  });
+
+  it("resumes partitioned write tasks from intermediate checkpoints", async () => {
+    const runningStore = memoryStore();
+    const runningCheckpoints = memoryCheckpointAdapter();
+    await advanceTaskCheckpoint(runningCheckpoints, {
+      taskId: "job_running-task-000001-a",
+      nextState: "planned",
+      idempotencyKey: "attempt-1",
+      nowMs: 10,
+    });
+    await advanceTaskCheckpoint(runningCheckpoints, {
+      taskId: "job_running-task-000001-a",
+      nextState: "running",
+      idempotencyKey: "attempt-1",
+      nowMs: 11,
+    });
+    const running = await writePartitionedParquetTask(runningStore, "out/running", {
+      checkpoints: runningCheckpoints,
+      taskId: "job_running-task-000001-a",
+      idempotencyKey: "attempt-1",
+      nowMs: 20,
+      rows: [{ country: "US", id: 1 }],
+      partitionBy: ["country"],
+      jobId: "job_running",
+      writeMode: "create",
+    });
+    expect(running.entries).toHaveLength(1);
+    await expect(runningCheckpoints.get("job_running-task-000001-a")).resolves.toMatchObject({
+      state: "complete",
+      outputs: [
+        {
+          outputPath:
+            "out/running/country=US/part-job_running-job_running-task-000001-a-attempt-1-00000.parquet",
+        },
+      ],
+    });
+
+    const outputWrittenStore = memoryStore();
+    const outputWrittenCheckpoints = memoryCheckpointAdapter();
+    const prewritten = await writePartitionedParquet(outputWrittenStore, "out/output-written", {
+      rows: [{ country: "CA", id: 2 }],
+      partitionBy: ["country"],
+      jobId: "job_output",
+      taskId: "job_output-task-000001-a",
+      idempotencyKey: "attempt-1",
+      writeMode: "create",
+    });
+    const prewrittenEntries = partitionedParquetOutputEntries(prewritten, {
+      taskId: "job_output-task-000001-a",
+    });
+    await advanceTaskCheckpoint(outputWrittenCheckpoints, {
+      taskId: "job_output-task-000001-a",
+      nextState: "planned",
+      idempotencyKey: "attempt-1",
+      nowMs: 30,
+    });
+    await advanceTaskCheckpoint(outputWrittenCheckpoints, {
+      taskId: "job_output-task-000001-a",
+      nextState: "running",
+      idempotencyKey: "attempt-1",
+      nowMs: 31,
+    });
+    await advanceTaskCheckpoint(outputWrittenCheckpoints, {
+      taskId: "job_output-task-000001-a",
+      nextState: "output-written",
+      idempotencyKey: "attempt-1",
+      nowMs: 32,
+      outputs: prewrittenEntries,
+    });
+    const outputWritten = await writePartitionedParquetTask(
+      outputWrittenStore,
+      "out/output-written",
+      {
+        checkpoints: outputWrittenCheckpoints,
+        taskId: "job_output-task-000001-a",
+        idempotencyKey: "attempt-1",
+        nowMs: 40,
+        rows: [{ country: "CA", id: 999 }],
+        partitionBy: ["country"],
+        jobId: "job_output",
+        writeMode: "create",
+      },
+    );
+    expect(outputWritten.entries).toEqual(prewrittenEntries);
+    await expect(
+      readParquetObjects(outputWrittenStore, prewritten.files[0]?.path ?? ""),
+    ).resolves.toEqual([{ id: 2 }]);
+
+    const manifestCheckpoints = memoryCheckpointAdapter();
+    await advanceTaskCheckpoint(manifestCheckpoints, {
+      taskId: "job_manifest_resume-task-000001-a",
+      nextState: "planned",
+      idempotencyKey: "attempt-1",
+      nowMs: 50,
+    });
+    await advanceTaskCheckpoint(manifestCheckpoints, {
+      taskId: "job_manifest_resume-task-000001-a",
+      nextState: "running",
+      idempotencyKey: "attempt-1",
+      nowMs: 51,
+    });
+    await advanceTaskCheckpoint(manifestCheckpoints, {
+      taskId: "job_manifest_resume-task-000001-a",
+      nextState: "output-written",
+      idempotencyKey: "attempt-1",
+      nowMs: 52,
+      outputs: prewrittenEntries.map((entry) => ({
+        ...entry,
+        taskId: "job_manifest_resume-task-000001-a",
+      })),
+    });
+    await advanceTaskCheckpoint(manifestCheckpoints, {
+      taskId: "job_manifest_resume-task-000001-a",
+      nextState: "manifest-recorded",
+      idempotencyKey: "attempt-1",
+      nowMs: 53,
+    });
+    await writePartitionedParquetTask(outputWrittenStore, "out/manifest-resume", {
+      checkpoints: manifestCheckpoints,
+      taskId: "job_manifest_resume-task-000001-a",
+      idempotencyKey: "attempt-1",
+      nowMs: 60,
+      rows: [{ country: "US", id: 999 }],
+      partitionBy: ["country"],
+      jobId: "job_manifest_resume",
+      writeMode: "create",
+    });
+    await expect(
+      manifestCheckpoints.get("job_manifest_resume-task-000001-a"),
+    ).resolves.toMatchObject({
+      state: "complete",
+      outputs: [{ taskId: "job_manifest_resume-task-000001-a" }],
+    });
   });
 
   it("creates partitioned Parquet tables from query results through checkpoints", async () => {
