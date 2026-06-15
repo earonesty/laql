@@ -65,11 +65,25 @@ export class S3ObjectStore implements ObjectStore {
   }
 
   async *list(prefix: string, options?: ListOptions): AsyncIterable<ObjectInfo> {
-    const query = new URLSearchParams({ "list-type": "2", prefix });
-    if (options?.limit !== undefined) query.set("max-keys", String(options.limit));
-    const response = await this.request("GET", "", {}, undefined, query);
-    assertOk(response, prefix);
-    for (const object of parseListObjectsV2(await response.text())) yield object;
+    let continuationToken: string | undefined;
+    let emitted = 0;
+    do {
+      const query = new URLSearchParams({ "list-type": "2", prefix });
+      if (options?.limit !== undefined) query.set("max-keys", String(options.limit - emitted));
+      if (continuationToken !== undefined) query.set("continuation-token", continuationToken);
+      const response = await this.request("GET", "", {}, undefined, query);
+      assertOk(response, prefix);
+      const result = parseListObjectsV2(await response.text());
+      for (const object of result.objects) {
+        if (options?.limit !== undefined && emitted >= options.limit) return;
+        yield object;
+        emitted += 1;
+      }
+      continuationToken = result.nextContinuationToken;
+    } while (
+      continuationToken !== undefined &&
+      (options?.limit === undefined || emitted < options.limit)
+    );
   }
 
   async head(path: string): Promise<ObjectHead | null> {
@@ -176,7 +190,10 @@ export async function signS3Request(request: SignRequest): Promise<Headers> {
   return headers;
 }
 
-function parseListObjectsV2(xml: string): ObjectInfo[] {
+function parseListObjectsV2(xml: string): {
+  objects: ObjectInfo[];
+  nextContinuationToken?: string;
+} {
   const objects: ObjectInfo[] = [];
   for (const match of xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/gu)) {
     const block = match[1] ?? "";
@@ -190,7 +207,12 @@ function parseListObjectsV2(xml: string): ObjectInfo[] {
     if (lastModified) info.lastModified = new Date(lastModified);
     objects.push(info);
   }
-  return objects;
+  const nextContinuationToken =
+    text(xml, "IsTruncated") === "true" ? decodeXml(text(xml, "NextContinuationToken")) : "";
+  return {
+    objects,
+    ...(nextContinuationToken ? { nextContinuationToken } : {}),
+  };
 }
 
 function text(block: string, tag: string): string {

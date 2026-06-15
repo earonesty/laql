@@ -74,9 +74,14 @@ describe("s3Store", () => {
             },
           });
         }
+        if (url.includes("continuation-token=page-2")) {
+          return new Response(
+            "<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>c.txt</Key><Size>2</Size></Contents></ListBucketResult>",
+          );
+        }
         if (url.includes("list-type=2")) {
           return new Response(
-            "<ListBucketResult><Contents><Key>a&amp;b.txt</Key><Size>1</Size><ETag>&quot;e&quot;</ETag><LastModified>2026-06-13T00:00:00.000Z</LastModified></Contents><Contents><Key>skip</Key><Size>nan</Size></Contents></ListBucketResult>",
+            "<ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>page-2</NextContinuationToken><Contents><Key>a&amp;b.txt</Key><Size>1</Size><ETag>&quot;e&quot;</ETag><LastModified>2026-06-13T00:00:00.000Z</LastModified></Contents><Contents><Key>skip</Key><Size>nan</Size></Contents></ListBucketResult>",
           );
         }
         return new Response(enc.encode(headers.get("range") ?? "body"), {
@@ -102,9 +107,18 @@ describe("s3Store", () => {
         etag: '"e"',
         lastModified: new Date("2026-06-13T00:00:00.000Z"),
       },
+      {
+        path: "c.txt",
+        size: 2,
+      },
     ]);
     expect(seen.every((entry) => entry.auth?.startsWith("AWS4-HMAC-SHA256"))).toBe(true);
     expect(seen.map((entry) => entry.range)).toContain("bytes=1-2");
+    expect(seen.some((entry) => entry.url.includes("continuation-token=page-2"))).toBe(true);
+
+    const limited = [];
+    for await (const object of store.list("a", { limit: 1 })) limited.push(object);
+    expect(limited.map((object) => object.path)).toEqual(["a&b.txt"]);
   });
 
   it("returns null for missing get/head", async () => {
