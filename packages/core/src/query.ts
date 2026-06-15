@@ -10,7 +10,7 @@ import {
   type TaskManifest,
 } from "./manifest.js";
 import { classifyPredicate, type PredicatePlan } from "./predicate-plan.js";
-import type { SpillAdapter, SpillRef } from "./runtime.js";
+import type { MetricsHook, RuntimeSubstrate, SpillAdapter, SpillRef } from "./runtime.js";
 import type { ObjectInfo, ObjectStore } from "./store.js";
 import type { Bookmark, BookmarkQuery, QueryStats, Row, SliceResult } from "./types.js";
 
@@ -46,6 +46,7 @@ export interface LakeConfig {
   scanner: ScanAdapter;
   budget?: QueryBudget;
   policy?: QueryPolicy;
+  substrate?: RuntimeSubstrate;
   now?: () => number;
   queryId?: () => string;
 }
@@ -276,14 +277,19 @@ export class Lake {
   private readonly policy: QueryPolicy;
   private readonly now: () => number;
   private readonly queryId: () => string;
+  private readonly substrate: RuntimeSubstrate | undefined;
 
   constructor(config: LakeConfig) {
+    const substrate = config.substrate;
     this.store = config.store;
     this.scanner = config.scanner;
     this.budget = config.budget ?? {};
     this.policy = config.policy ?? {};
-    this.now = config.now ?? (() => performance.now());
-    this.queryId = config.queryId ?? (() => `q_${Math.random().toString(36).slice(2)}`);
+    this.now = config.now ?? (() => substrate?.clock?.now() ?? performance.now());
+    this.queryId =
+      config.queryId ??
+      (() => substrate?.ids?.id("q") ?? `q_${Math.random().toString(36).slice(2)}`);
+    this.substrate = substrate;
   }
 
   path(source: string): QueryBuilder {
@@ -304,6 +310,7 @@ export class Lake {
 
   createResult(init: PathQueryInit): QueryResult {
     const effective = applyQueryPolicy(init, this.policy);
+    const metrics = this.substrate?.metrics;
     return new QueryResult({
       ...effective,
       lake: this,
@@ -311,6 +318,7 @@ export class Lake {
       budget: this.budget,
       now: this.now,
       queryId: this.queryId(),
+      ...(metrics !== undefined ? { metrics } : {}),
       scanner: this.scanner,
     });
   }
@@ -466,6 +474,7 @@ interface QueryResultConfig extends PathQueryInit {
   budget: QueryBudget;
   now: () => number;
   queryId: string;
+  metrics?: MetricsHook;
 }
 
 export class QueryResult {
@@ -476,6 +485,7 @@ export class QueryResult {
     validateQueryInit(config);
     this.config = config;
     this.stats = initialStats(config.queryId);
+    config.metrics?.count("laql.query.created", 1, { queryId: config.queryId });
   }
 
   async *rows(): AsyncIterable<Row> {
@@ -539,6 +549,7 @@ export class QueryResult {
       }
     }
     stats.elapsedMs = config.now() - startedAt;
+    config.metrics?.timing("laql.query.elapsed", stats.elapsedMs, { queryId: stats.queryId });
   }
 
   async toArray(): Promise<Row[]> {

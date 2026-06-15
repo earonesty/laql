@@ -17,7 +17,7 @@ import {
   serializeSortOperatorState,
   serializeTopKOperatorState,
 } from "./query.js";
-import { memorySpillAdapter } from "./runtime.js";
+import { memorySpillAdapter, type RuntimeSubstrate } from "./runtime.js";
 import type { Bookmark, Row } from "./types.js";
 
 class FakeScanner implements ScanAdapter {
@@ -447,6 +447,41 @@ describe("Lake query runtime", () => {
         .orderBy([{ column: "secret" }])
         .toArray(),
     ).toThrow(/disallowed/u);
+  });
+
+  it("uses runtime substrate hooks for query ids, clock, and metrics", async () => {
+    const store = memoryStore();
+    await store.put("table", new Uint8Array([1, 2, 3]));
+    const scanner = new FakeScanner({ table: [{ id: 1 }, { id: 2 }] });
+    const counts: Array<{
+      name: string;
+      value: number | undefined;
+      tags: Record<string, string> | undefined;
+    }> = [];
+    const timings: Array<{ name: string; ms: number; tags: Record<string, string> | undefined }> =
+      [];
+    let now = 100;
+    const substrate: RuntimeSubstrate = {
+      clock: { now: () => (now += 5) },
+      ids: { id: (prefix = "id") => `${prefix}_substrate` },
+      metrics: {
+        count: (name, value, tags) => counts.push({ name, value, tags }),
+        timing: (name, ms, tags) => timings.push({ name, ms, tags }),
+      },
+    };
+    const lake = new Lake({ store, scanner, substrate });
+
+    const result = lake.path("table").run();
+
+    await expect(result.toArray()).resolves.toEqual([{ id: 1 }, { id: 2 }]);
+    expect(result.stats.queryId).toBe("q_substrate");
+    expect(result.stats.elapsedMs).toBe(35);
+    expect(counts).toEqual([
+      { name: "laql.query.created", value: 1, tags: { queryId: "q_substrate" } },
+    ]);
+    expect(timings).toEqual([
+      { name: "laql.query.elapsed", ms: 35, tags: { queryId: "q_substrate" } },
+    ]);
   });
 
   it("validates malformed query policy", async () => {
