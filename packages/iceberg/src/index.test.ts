@@ -22,6 +22,7 @@ import {
   ParquetScanAdapter,
   readIcebergParquetDeletes,
   readParquetObjects,
+  writeParquet,
 } from "../../parquet/src/index.js";
 import type { IcebergCommitCatalog, IcebergCommitInput } from "./index.js";
 import {
@@ -758,6 +759,64 @@ describe("loadIcebergTable", () => {
       partition: { country: "US", date: "2026-01-04" },
       recordCount: 2,
     });
+  });
+
+  it("reads appended Parquet rows through Iceberg time travel", async () => {
+    const appendStore = memoryStore();
+    await appendStore.put(ICEBERG.metadataFile, readFileSync(fixturePath(ICEBERG.metadataFile)));
+    const dataPath = "appends/date=2026-01-06/country=US/part-000.parquet";
+    const written = await writeParquet(appendStore, dataPath, {
+      columnData: [
+        { name: "id", data: [901, 902], type: "INT32" },
+        { name: "date", data: ["2026-01-06", "2026-01-06"], type: "STRING" },
+        { name: "country", data: ["US", "US"], type: "STRING" },
+        { name: "amount", data: [91, 92], type: "INT32" },
+      ],
+    });
+    const table = await loadIcebergTable({
+      store: appendStore,
+      metadataPath: ICEBERG.metadataFile,
+    });
+
+    const result = await table.appendFiles({
+      jobId: "job_readback_append",
+      nowMs: 1_767_657_600_000,
+      files: [
+        {
+          path: dataPath,
+          partition: { date: "2026-01-06", country: "US" },
+          recordCount: 2,
+          fileSizeInBytes: written.byteSize,
+        },
+      ],
+    });
+    const appended = await loadIcebergTable({
+      store: appendStore,
+      metadataPath: result.metadataPath,
+    });
+
+    expect(
+      appended.planFiles({ snapshotId: 2, readMode: "ignore-unsupported-deletes" }).files,
+    ).not.toEqual(expect.arrayContaining([expect.objectContaining({ path: dataPath })]));
+    const plan = appended.planFiles({
+      snapshotId: 3,
+      where: eq("date", "2026-01-06"),
+      readMode: "ignore-unsupported-deletes",
+    });
+    const rows: Row[] = [];
+    for await (const batch of scanPlannedIcebergRows({
+      plan,
+      readDataFile: async (file) => readParquetObjects(appendStore, file.path),
+      readDeleteFile: async (deleteFile) => readIcebergParquetDeletes(appendStore, deleteFile),
+    })) {
+      rows.push(...batch);
+    }
+
+    expect(plan.files.map((file) => file.path)).toContain(dataPath);
+    expect(rows).toEqual([
+      { id: 901, date: "2026-01-06", country: "US", amount: 91 },
+      { id: 902, date: "2026-01-06", country: "US", amount: 92 },
+    ]);
   });
 
   it("appends files through the Iceberg REST catalog API", async () => {
