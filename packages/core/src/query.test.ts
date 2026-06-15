@@ -979,6 +979,50 @@ describe("Lake query runtime", () => {
     ).rejects.toMatchObject({ code: "LAQL_BOOKMARK_INVALID" });
   });
 
+  it("propagates typed spill budget failures through stateful operators", async () => {
+    const rowsByPath = {
+      table: [
+        { id: 3, region: "west" },
+        { id: 1, region: "east" },
+        { id: 2, region: "west" },
+      ],
+    };
+
+    await expect(
+      (await makeLake({ rowsByPath })).lake
+        .path("table")
+        .orderBy([{ column: "id" }])
+        .limit(2)
+        .topKWithState({ spill: memorySpillAdapter({ maxBytes: 1 }) }),
+    ).rejects.toMatchObject({
+      code: "LAQL_BUDGET_EXCEEDED",
+      details: { metric: "spill bytes", limit: 1 },
+    });
+
+    await expect(
+      (await makeLake({ rowsByPath, budget: { maxBufferedRows: 2 } })).lake
+        .path("table")
+        .orderBy([{ column: "id" }])
+        .sortWithState({ spill: memorySpillAdapter({ maxBytes: 1 }) }),
+    ).rejects.toMatchObject({
+      code: "LAQL_BUDGET_EXCEEDED",
+      details: { metric: "spill bytes", limit: 1 },
+    });
+
+    await expect(
+      (await makeLake({ rowsByPath })).lake
+        .path("table")
+        .groupBy(["region"])
+        .aggregateWithState(
+          { rows: { op: "count" } },
+          { spill: memorySpillAdapter({ maxBytes: 1 }) },
+        ),
+    ).rejects.toMatchObject({
+      code: "LAQL_BUDGET_EXCEEDED",
+      details: { metric: "spill bytes", limit: 1 },
+    });
+  });
+
   it("rejects stale or invalid slice bookmarks", async () => {
     const { lake } = await makeLake({ rowsByPath: { table: [{ id: 1 }] } });
     const query = lake.path("table");
