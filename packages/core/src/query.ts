@@ -11,6 +11,7 @@ import {
 } from "./manifest.js";
 import { classifyPredicate, type PredicatePlan } from "./predicate-plan.js";
 import type { MetricsHook, RuntimeSubstrate, SpillAdapter, SpillRef } from "./runtime.js";
+import { pruneFilesWithIndex, type SidecarFileIndex } from "./sidecar-index.js";
 import type { ObjectInfo, ObjectStore } from "./store.js";
 import type { Bookmark, BookmarkQuery, QueryStats, Row, SliceResult } from "./types.js";
 
@@ -44,6 +45,7 @@ export interface QueryPolicy {
 export interface LakeConfig {
   store: ObjectStore;
   scanner: ScanAdapter;
+  sidecarIndex?: SidecarFileIndex[];
   budget?: QueryBudget;
   policy?: QueryPolicy;
   substrate?: RuntimeSubstrate;
@@ -278,6 +280,7 @@ export class Lake {
   private readonly now: () => number;
   private readonly queryId: () => string;
   private readonly substrate: RuntimeSubstrate | undefined;
+  private readonly sidecarIndex: SidecarFileIndex[] | undefined;
 
   constructor(config: LakeConfig) {
     const substrate = config.substrate;
@@ -290,6 +293,7 @@ export class Lake {
       config.queryId ??
       (() => substrate?.ids?.id("q") ?? `q_${Math.random().toString(36).slice(2)}`);
     this.substrate = substrate;
+    this.sidecarIndex = config.sidecarIndex;
   }
 
   path(source: string): QueryBuilder {
@@ -319,6 +323,7 @@ export class Lake {
       now: this.now,
       queryId: this.queryId(),
       ...(metrics !== undefined ? { metrics } : {}),
+      ...(this.sidecarIndex !== undefined ? { sidecarIndex: this.sidecarIndex } : {}),
       scanner: this.scanner,
     });
   }
@@ -475,6 +480,7 @@ interface QueryResultConfig extends PathQueryInit {
   now: () => number;
   queryId: string;
   metrics?: MetricsHook;
+  sidecarIndex?: SidecarFileIndex[];
 }
 
 export class QueryResult {
@@ -984,13 +990,27 @@ export class QueryResult {
   private async planObjects(): Promise<{ planned: ObjectInfo[]; skipped: number }> {
     const config = this.config;
     const objects = await expandPaths(config.lake.store, config.source);
-    if (!config.hive || !config.where) return { planned: objects, skipped: 0 };
-    const planned: ObjectInfo[] = [];
+    let planned = objects;
     let skipped = 0;
-    for (const object of objects) {
-      const partitions = parseHivePartitions(object.path);
-      if (partitionMayMatch(config.where, partitions)) planned.push(object);
-      else skipped += 1;
+    if (config.hive && config.where) {
+      const hivePlanned: ObjectInfo[] = [];
+      for (const object of planned) {
+        const partitions = parseHivePartitions(object.path);
+        if (partitionMayMatch(config.where, partitions)) hivePlanned.push(object);
+        else skipped += 1;
+      }
+      planned = hivePlanned;
+    }
+    if (config.sidecarIndex && config.where) {
+      const indexedByPath = new Map(config.sidecarIndex.map((index) => [index.path, index]));
+      const indexedObjects = planned.map((object) => ({
+        ...object,
+        ...indexedByPath.get(object.path),
+        path: object.path,
+      }));
+      const pruned = pruneFilesWithIndex(indexedObjects, config.where);
+      planned = pruned.planned;
+      skipped += pruned.skipped.length;
     }
     return { planned, skipped };
   }

@@ -22,10 +22,12 @@ import type { Bookmark, Row } from "./types.js";
 
 class FakeScanner implements ScanAdapter {
   readonly requestedColumns: (string[] | undefined)[] = [];
+  readonly requestedPaths: string[] = [];
 
   constructor(private readonly rowsByPath: Record<string, Row[]>) {}
 
   async *scan(path: string, options: ScanOptions): AsyncIterable<Row[]> {
+    this.requestedPaths.push(path);
     this.requestedColumns.push(options.columns);
     options.stats.rangeRequests += 1;
     const rows = this.rowsByPath[path] ?? [];
@@ -44,6 +46,7 @@ class FakeScanner implements ScanAdapter {
 
 async function makeLake(config: {
   rowsByPath: Record<string, Row[]>;
+  sidecarIndex?: ConstructorParameters<typeof Lake>[0]["sidecarIndex"];
   budget?: ConstructorParameters<typeof Lake>[0]["budget"];
   policy?: ConstructorParameters<typeof Lake>[0]["policy"];
   now?: () => number;
@@ -56,6 +59,7 @@ async function makeLake(config: {
   const lake = new Lake({
     store,
     scanner,
+    ...(config.sidecarIndex !== undefined ? { sidecarIndex: config.sidecarIndex } : {}),
     budget: config.budget,
     policy: config.policy,
     now: config.now,
@@ -254,6 +258,35 @@ describe("Lake query runtime", () => {
       },
     });
     expect(explain.text).toContain("files skipped: 1");
+  });
+
+  it("uses sidecar indexes to prune planned objects before scanning", async () => {
+    const { lake, scanner } = await makeLake({
+      rowsByPath: {
+        "lake/a.parquet": [{ id: 1, amount: 10 }],
+        "lake/b.parquet": [{ id: 2, amount: 20 }],
+        "lake/c.parquet": [{ id: 3, amount: 30 }],
+      },
+      sidecarIndex: [
+        { path: "lake/a.parquet", columns: { amount: { min: 0, max: 10 } } },
+        { path: "lake/b.parquet", columns: { amount: { min: 20, max: 20 } } },
+        { path: "lake/c.parquet", columns: { amount: { min: 30, max: 40 } } },
+      ],
+    });
+
+    const query = lake.path("lake/*.parquet").select(["id"]).where(gt("amount", 15));
+
+    expect(await query.toArray()).toEqual([{ id: 2 }, { id: 3 }]);
+    expect(scanner.requestedPaths).toEqual(["lake/b.parquet", "lake/c.parquet"]);
+
+    const result = query.run();
+    expect(await result.explain()).toMatchObject({
+      json: {
+        filesPlanned: 2,
+        filesSkipped: 1,
+      },
+      text: expect.stringContaining("files skipped: 1"),
+    });
   });
 
   it("parses hive partition segments and preserves non-hive path pieces", () => {

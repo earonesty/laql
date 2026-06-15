@@ -23,17 +23,17 @@ export interface SidecarFileIndex {
   h3?: Record<string, string[]>;
 }
 
-export interface IndexPruneResult {
-  planned: SidecarFileIndex[];
-  skipped: SidecarFileIndex[];
+export interface IndexPruneResult<T extends SidecarFileIndex = SidecarFileIndex> {
+  planned: T[];
+  skipped: T[];
 }
 
-export function pruneFilesWithIndex(
-  files: SidecarFileIndex[],
+export function pruneFilesWithIndex<T extends SidecarFileIndex>(
+  files: T[],
   where: Expr | undefined,
-): IndexPruneResult {
-  const planned: SidecarFileIndex[] = [];
-  const skipped: SidecarFileIndex[] = [];
+): IndexPruneResult<T> {
+  const planned: T[] = [];
+  const skipped: T[] = [];
   for (const file of [...files].sort((a, b) => a.path.localeCompare(b.path))) {
     if (fileMayMatch(file, where)) planned.push(file);
     else skipped.push(file);
