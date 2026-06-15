@@ -59,6 +59,7 @@ export const WRITE = {
 
 export const MANIFESTS = {
   taskManifest: "manifests/task-manifest.golden.json",
+  parquetTaskManifest: "manifests/parquet-task-manifest.golden.json",
   outputManifest: "manifests/output-manifest.golden.json",
   bookmark: "manifests/bookmark.golden.json",
   retryLog: "manifests/retry-log.golden.json",

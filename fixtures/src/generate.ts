@@ -277,6 +277,36 @@ function generateManifestGoldens() {
   ];
 
   writeJsonFixture(MANIFESTS.taskManifest, taskManifest);
+  const parquetTaskInput = normalizeTaskInput({
+    path: "data/stats.parquet",
+    etag: "v1",
+    rowGroupRanges: [{ start: 1, end: 3 }],
+    projectedColumns: ["id", "metric"],
+    partitionValues: {},
+    residualPredicate: {
+      kind: "compare",
+      left: { kind: "column", name: "metric" },
+      op: "gte",
+      right: { kind: "literal", value: 100 },
+    },
+  });
+  writeJsonFixture(MANIFESTS.parquetTaskManifest, {
+    version: 1,
+    jobId: "job_stats",
+    planFingerprint: fingerprint({
+      version: 1,
+      snapshot: fingerprint([{ etag: "v1", path: "data/stats.parquet" }]),
+      tasks: [parquetTaskInput],
+    }),
+    snapshot: fingerprint([{ etag: "v1", path: "data/stats.parquet" }]),
+    tasks: [
+      {
+        id: taskId("job_stats", 0, parquetTaskInput),
+        input: parquetTaskInput,
+        outputRole: "rows",
+      },
+    ],
+  });
   writeJsonFixture(MANIFESTS.outputManifest, {
     version: 1,
     jobId: "job_2",
@@ -479,8 +509,9 @@ function normalizeTaskInput(task: {
   rowGroupRanges: { start: number; end: number }[];
   projectedColumns?: string[];
   partitionValues: Record<string, string>;
+  residualPredicate?: unknown;
 }) {
-  return {
+  const normalized = {
     path: task.path,
     etag: task.etag,
     rowGroupRanges: [...task.rowGroupRanges]
@@ -489,6 +520,10 @@ function normalizeTaskInput(task: {
     projectedColumns: task.projectedColumns ? [...task.projectedColumns].sort() : undefined,
     partitionValues: sortRecord(task.partitionValues),
   };
+  if (task.residualPredicate !== undefined) {
+    return { ...normalized, residualPredicate: task.residualPredicate };
+  }
+  return normalized;
 }
 
 function normalizeOutputEntry(entry: {

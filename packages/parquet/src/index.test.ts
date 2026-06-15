@@ -31,6 +31,7 @@ import {
   H3,
   HIVE,
   ICEBERG,
+  MANIFESTS,
   SALES,
   STATS,
   TYPES,
@@ -959,9 +960,16 @@ describe("createParquetLake", () => {
     const explain = await query.explain();
     expect(explain.json.tasks[0]?.rowGroupRanges).toEqual([{ start: 1, end: 3 }]);
 
-    await expect(query.taskManifest("job_stats").then(stableStringify)).resolves.toBe(
-      '{"jobId":"job_stats","planFingerprint":"fp_4ed85d6a777cdba1","snapshot":"fp_298e49a4c4a90564","tasks":[{"id":"job_stats-task-000000-44dd8a7f","input":{"etag":"v1","partitionValues":{},"path":"data/stats.parquet","projectedColumns":["id","metric"],"residualPredicate":{"kind":"compare","left":{"kind":"column","name":"metric"},"op":"gte","right":{"kind":"literal","value":100}},"rowGroupRanges":[{"end":3,"start":1}]},"outputRole":"rows"}],"version":1}',
-    );
+    const golden = readFileSync(fixturePath(MANIFESTS.parquetTaskManifest), "utf8").trim();
+    await expect(query.taskManifest("job_stats").then(stableStringify)).resolves.toBe(golden);
+    await expect(
+      lake
+        .path(`data/${STATS.file}`)
+        .select(["id"])
+        .where(gte("metric", 100))
+        .taskManifest("job_stats")
+        .then(stableStringify),
+    ).resolves.toBe(golden);
   });
 
   it("reuses cached Parquet footer metadata across scans", async () => {
