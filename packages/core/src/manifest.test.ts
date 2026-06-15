@@ -835,6 +835,54 @@ describe("bookmarks and checkpoints", () => {
     });
   });
 
+  it("replays every checkpoint transition as one logical completion", async () => {
+    const checkpoints = memoryCheckpointAdapter();
+    const taskId = "job_10-task-000001-a";
+    const output = {
+      taskId,
+      outputPath: "out/job-10.parquet",
+      partitionValues: { country: "US" },
+      rowCount: 10,
+      byteSize: 100,
+      contentHash: "sha256:10",
+    };
+    const transitions = [
+      { nextState: "planned" as const, nowMs: 10 },
+      { nextState: "running" as const, nowMs: 20 },
+      { nextState: "output-written" as const, nowMs: 30, output },
+      { nextState: "manifest-recorded" as const, nowMs: 40 },
+      { nextState: "complete" as const, nowMs: 50 },
+    ];
+
+    for (const transition of transitions) {
+      const first = await advanceTaskCheckpoint(checkpoints, {
+        taskId,
+        idempotencyKey: "idem-1",
+        ...transition,
+      });
+      const replayed = await advanceTaskCheckpoint(checkpoints, {
+        taskId,
+        idempotencyKey: "idem-1",
+        ...transition,
+      });
+      expect(replayed).toEqual(first);
+    }
+
+    await expect(checkpoints.get(taskId)).resolves.toMatchObject({
+      state: "complete",
+      output: { outputPath: "out/job-10.parquet" },
+    });
+    await expect(
+      createOutputManifestFromCheckpoints({
+        jobId: "job_10",
+        planFingerprint: "fp_job_10",
+        checkpoints,
+      }),
+    ).resolves.toMatchObject({
+      entries: [{ taskId, outputPath: "out/job-10.parquet", rowCount: 10 }],
+    });
+  });
+
   it("rejects unsafe task checkpoint transitions", () => {
     const running = {
       taskId: "job_5-task-000001-a",
