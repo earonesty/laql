@@ -206,6 +206,16 @@ If a slice cannot pass `pnpm check`, either fix it in the same slice or revert o
 slice's own changes before choosing a smaller next slice. Do not mark the overall goal
 blocked just because later queue items remain.
 
+If the current queue item has multiple remaining tracks, consume them left-to-right as
+written unless a later track is a strict prerequisite for an earlier one. "All phases" is
+the goal; "current queue item, next listed track, largest verifiable slice" is the work
+selection rule.
+
+The goal is blocked only when the next listed track cannot be advanced after the failing
+condition has been reproduced, the repo state has been inspected, and no smaller
+verifiable slice inside that same track can move forward. Missing later-phase work is not
+a blocker; it is just the next queue item.
+
 ### Queue order
 
 ```txt
@@ -283,8 +293,10 @@ Q7  phase 8 closure: additive tracks
     - landed: VISION read, geospatial bbox, and nested H3 SQL examples parse and round-trip;
       CLI help/explain/inspect/schema outputs have inline snapshots; sidecar indexes prune
       object planning before scan/explain
-    - remaining: audit geo/H3 pushdown fixture coverage, join coverage, and runnable
-      docs/recipes
+    - remaining order:
+      1. audit geo/H3 pushdown fixture coverage
+      2. audit join coverage
+      3. make docs/recipes runnable against fixtures
     - exit: every VISION SQL example parses/runs where applicable, CLI snapshots are stable,
       index planning is covered, and docs recipes run against fixtures
 
