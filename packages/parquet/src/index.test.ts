@@ -1102,6 +1102,11 @@ describe("createParquetLake", () => {
     expect(result.stats.rowGroupsRead).toBe(1);
     expect(result.stats.rowGroupsSkipped).toBe(1);
 
+    const fullScan = lake.hive("data/hive/**/*.parquet").select(["id", "country"]).run();
+    await fullScan.toArray();
+    expect(result.stats.bytesRequested).toBeLessThan(fullScan.stats.bytesRequested);
+    expect(result.stats.rangeRequests).toBeLessThan(fullScan.stats.rangeRequests);
+
     const explain = await lake
       .hive("data/hive/**/*.parquet")
       .select(["id", "country"])
