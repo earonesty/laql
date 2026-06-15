@@ -271,8 +271,9 @@ Q6  phase 7 closure: writes
       task/idempotency output paths; output-manifest fan-in; CTAS through checkpoints;
       Iceberg append and REST conflict coverage; partitioned write tasks resume from
       running, output-written, manifest-recorded, and complete checkpoints; retry proof
-      leaves one physical output file set and one checkpoint fan-in entry set
-    - remaining: audit append read-back/time-travel coverage before advancing
+      leaves one physical output file set and one checkpoint fan-in entry set; Iceberg append
+      time-travel readback scans real appended Parquet rows
+    - remaining: none known after audit; advance to Q7 unless a final Q6 proof gap is found
     - exit: append to fixture warehouse, read back through time travel, survive mid-write
       resume, and prove retries create one logical output manifest entry/file set
 
