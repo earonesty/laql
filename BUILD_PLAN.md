@@ -126,21 +126,21 @@ Fixture inventory grows with the phases:
 ```txt
 phase 1   sales.parquet   (multi row group, string/double columns)        [done]
           types.parquet   (int32/int64-past-2^53/bool/nullable/double)    [done]
-phase 2   stats.parquet           (row groups with disjoint min/max ranges)
-          hive/ directory layout  (date=*/country=* partitions, small files)
-          wide.parquet            (30+ columns, for projection assertions)
+phase 2   stats.parquet           (row groups with disjoint min/max ranges) [done]
+          hive/ directory layout  (date=*/country=* partitions, small files) [done]
+          wide.parquet            (30+ columns, for projection assertions)  [done]
 phase 3   iceberg-v2 warehouse    (metadata.json chain, manifest list, manifests,
-                                   2 snapshots, schema evolution: add/rename/drop)
+                                   2 snapshots, schema evolution: add/rename/drop) [done]
           iceberg-deletes         (position deletes, deletion vectors,
-                                   equality deletes)
-phase 5   task-manifest golden JSON
-          output-manifest golden JSON
-          retry replay logs       (same task retried at each transition)
-phase 6   groupby.parquet         (known group cardinalities incl. a >maxGroups case)
-          bookmark replay logs    (golden bookmark JSON at fixed positions)
-phase 7   write golden files      (expected parquet output bytes for fixed input)
-phase 8   geo.parquet             (GeoJSON column + bbox columns)
-          h3.parquet              (h3_7/h3_8 columns aligned with partition layout)
+                                   equality deletes)                         [done]
+phase 5   task-manifest golden JSON                                          [done]
+          output-manifest golden JSON                                        [done]
+          retry replay logs       (same task retried at each transition)     [done]
+phase 6   groupby.parquet         (known group cardinalities incl. a >maxGroups case) [done]
+          bookmark replay logs    (golden bookmark JSON at fixed positions)  [done]
+phase 7   write golden files      (expected parquet output bytes for fixed input) [done]
+phase 8   geo.parquet             (GeoJSON column + bbox columns)            [done]
+          h3.parquet              (h3_7/h3_8 columns aligned with partition layout) [done]
 ```
 
 ## Test taxonomy
@@ -304,6 +304,10 @@ Q8  final release hardening
     - update BUILD_PLAN phase status markers
     - run full local gate plus conformance lanes available in the repo
     - verify package exports, docs, and examples
+    - landed: phase and fixture markers are complete; `pnpm check` is the full local
+      gate; docs recipes have fixture-backed tests; package dist export smoke check
+      passes; conformance lane runs and skips when external fixtures are absent
+    - remaining: none known after final local gate
     - exit: no known unchecked phase deliverables remain
 ```
 
@@ -335,7 +339,7 @@ generating real Parquet via hyparquet-writer, core error model + expression buil
 ObjectStore contract + MemoryObjectStore, parquet read adapter over ObjectStore with
 fixture round-trip tests.
 
-### Phase 1 — core read path
+### Phase 1 — core read path  [done]
 
 Scope: scan/filter/project/limit over plain Parquet paths, streaming-first and
 row-group-aware.
@@ -366,7 +370,7 @@ exit       query a multi-file glob from MemoryObjectStore and stream NDJSON;
            no public read path requires holding a full Parquet file in memory
 ```
 
-### Phase 2 — pruning
+### Phase 2 — pruning  [done]
 
 Scope: the spec's reason to exist — skip files, row groups, columns.
 
@@ -392,7 +396,7 @@ exit       a selective query over hive/ reads strictly fewer bytes than a full
            are stable for the same object versions and query
 ```
 
-### Phase 3 — Iceberg reads
+### Phase 3 — Iceberg reads  [done]
 
 ```txt
 deliverables
@@ -418,7 +422,7 @@ exit       time-travel query against the fixture warehouse with position
            snapshot and query yield the same planned files and row groups
 ```
 
-### Phase 4 — runtime drivers + Worker ergonomics
+### Phase 4 — runtime drivers + Worker ergonomics  [done]
 
 ```txt
 deliverables
@@ -443,7 +447,7 @@ exit       same fixture suite passes on Node and workerd; an R2-backed Worker
            checkpoint adapters
 ```
 
-### Phase 5 — task manifests, bookmarks, queue-safe retry
+### Phase 5 — task manifests, bookmarks, queue-safe retry  [done]
 
 ```txt
 deliverables
@@ -482,7 +486,7 @@ exit       a query sliced at arbitrary points yields byte-identical output to
            queue-visible transition produces exactly one logical task completion
 ```
 
-### Phase 6 — aggregation, sort, bounded memory operators
+### Phase 6 — aggregation, sort, bounded memory operators  [done]
 
 ```txt
 deliverables
@@ -503,7 +507,7 @@ exit       aggregations and bounded sorts resume across process restarts and
            never exceed configured group/memory budgets without typed failure
 ```
 
-### Phase 7 — writes
+### Phase 7 — writes  [done]
 
 ```txt
 deliverables
@@ -532,7 +536,7 @@ exit       append to the fixture warehouse, read it back with time travel, and
            logical output manifest entry and one committed file set
 ```
 
-### Phase 8 — geo/H3, SQL, indexes, CLI, joins
+### Phase 8 — geo/H3, SQL, indexes, CLI, joins  [done]
 
 Additive tracks, parallelizable, each gated the same way:
 
