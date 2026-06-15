@@ -494,12 +494,14 @@ export class QueryResult {
     }
   }
 
-  private async *matchedRows(startedAt: number): AsyncIterable<Row> {
+  private async *matchedRows(
+    startedAt: number,
+    readColumns: string[] | undefined,
+  ): AsyncIterable<Row> {
     const config = this.config;
     const { stats } = this;
     const { planned: paths, skipped: skippedFiles } = await this.planObjects();
     stats.filesSkipped = skippedFiles;
-    const columns = projectedReadColumns(undefined, config.where);
     for (const object of paths) {
       stats.filesPlanned += 1;
       stats.filesRead += 1;
@@ -513,7 +515,7 @@ export class QueryResult {
         startedAt,
       };
       const partitionValues = config.hive ? parseHivePartitions(object.path) : {};
-      const physicalColumns = columns?.filter((column) => !(column in partitionValues));
+      const physicalColumns = readColumns?.filter((column) => !(column in partitionValues));
       if (physicalColumns !== undefined && physicalColumns.length > 0) {
         scanOptions.columns = physicalColumns;
       }
@@ -762,7 +764,8 @@ export class QueryResult {
     validateAggregateRequest(groupColumns, spec, options);
     const groups = await aggregateGroupsFromState(groupColumns, spec, options);
     const startedAt = this.config.now();
-    for await (const row of this.matchedRows(startedAt)) {
+    const readColumns = aggregateReadColumns(groupColumns, spec, this.config.where);
+    for await (const row of this.matchedRows(startedAt, readColumns)) {
       const keyValues = groupColumns.map((column) => valueForColumn(row, column));
       const key = stableStringify(keyValues);
       let group = groups.get(key);
@@ -2138,6 +2141,20 @@ function projectedReadColumns(
   const columns = new Set<string>();
   for (const column of select ?? []) columns.add(column);
   for (const term of orderBy ?? []) columns.add(term.column);
+  collectExprColumns(where, columns);
+  return columns.size === 0 ? undefined : [...columns].sort();
+}
+
+function aggregateReadColumns(
+  groupColumns: string[],
+  spec: AggregateSpec,
+  where: Expr | undefined,
+): string[] | undefined {
+  const columns = new Set<string>();
+  for (const column of groupColumns) columns.add(column);
+  for (const aggregate of Object.values(spec)) {
+    if (aggregate.column !== undefined) columns.add(aggregate.column);
+  }
   collectExprColumns(where, columns);
   return columns.size === 0 ? undefined : [...columns].sort();
 }

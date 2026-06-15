@@ -1116,6 +1116,30 @@ describe("Lake query runtime", () => {
     });
   });
 
+  it("projects predicate, group, and aggregate columns for grouped aggregates", async () => {
+    const { lake, scanner } = await makeLake({
+      rowsByPath: {
+        table: [
+          { region: "west", amount: 10, keep: true, ignored: "x" },
+          { region: "west", amount: 20, keep: false, ignored: "x" },
+          { region: "east", amount: 7, keep: true, ignored: "x" },
+        ],
+      },
+    });
+
+    await expect(
+      lake
+        .path("table")
+        .where(eq("keep", true))
+        .groupBy(["region"])
+        .aggregate({ total: { op: "sum", column: "amount" } }),
+    ).resolves.toEqual([
+      { region: "west", total: 10 },
+      { region: "east", total: 7 },
+    ]);
+    expect(scanner.requestedColumns[0]).toEqual(["amount", "keep", "region"]);
+  });
+
   it("serializes and resumes aggregate operator state", async () => {
     const first = await makeLake({
       rowsByPath: {
