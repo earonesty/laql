@@ -5,6 +5,7 @@ import {
   between,
   col,
   createOutputManifest,
+  createOutputManifestFromCheckpoints,
   eq,
   fn,
   gt,
@@ -558,6 +559,18 @@ describe("writePartitionedParquet", () => {
     expect(replay.result.files.map((file) => file.path)).toEqual(
       result.result.files.map((file) => file.path),
     );
+    const listedPaths: string[] = [];
+    for await (const object of outStore.list("out/checkpointed/")) listedPaths.push(object.path);
+    expect(listedPaths).toEqual(result.result.files.map((file) => file.path));
+    await expect(
+      createOutputManifestFromCheckpoints({
+        jobId: "job_9",
+        planFingerprint: "fp_job_9",
+        checkpoints,
+      }),
+    ).resolves.toMatchObject({
+      entries: result.entries,
+    });
   });
 
   it("resumes partitioned write tasks from intermediate checkpoints", async () => {
