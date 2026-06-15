@@ -167,4 +167,30 @@ describe("s3Store", () => {
 
     expect(seen).toEqual([{ token: "TOKEN", hasBody: true }]);
   });
+
+  it("encodes keys and rejects path escapes before signing", async () => {
+    const seen: string[] = [];
+    const store = s3Store(
+      options(async (input) => {
+        seen.push(String(input));
+        return new Response(enc.encode("ok"));
+      }) as typeof fetch,
+    );
+
+    await store.get("dir/file name?#.parquet");
+    expect(seen).toEqual(["https://s3.example.test/bucket/dir/file%20name%3F%23.parquet"]);
+    await expect(store.get("../../other-bucket/key")).rejects.toMatchObject({
+      code: "LAQL_VALIDATION_ERROR",
+    });
+    await expect(store.get("%2e%2e/key")).rejects.toMatchObject({
+      code: "LAQL_VALIDATION_ERROR",
+    });
+    await expect(store.get("/bucket/key")).rejects.toMatchObject({
+      code: "LAQL_VALIDATION_ERROR",
+    });
+    await expect(store.get("https://evil.test/key")).rejects.toMatchObject({
+      code: "LAQL_VALIDATION_ERROR",
+    });
+    expect(seen).toHaveLength(1);
+  });
 });

@@ -299,4 +299,13 @@ describe("parseSql", () => {
     expect(() => parseSql("from t where name = @bad")).toThrow(/Unexpected character/u);
     expect(() => formatSql({ source: "bad source" })).toThrow(/cannot be represented/u);
   });
+
+  it("rejects excessive expression nesting and token counts with parse errors", () => {
+    const nested = `${"(".repeat(129)}a${")".repeat(129)}`;
+    expect(() => parseSql(`from t where ${nested}`)).toThrow(/nesting exceeds/u);
+    expect(() => parseSql(`from t where ${"not ".repeat(129)}a`)).toThrow(/nesting exceeds/u);
+    expect(() =>
+      parseSql(`from t where a in (${Array.from({ length: 10_001 }, () => "1").join(",")})`),
+    ).toThrow(/token count exceeds/u);
+  });
 });

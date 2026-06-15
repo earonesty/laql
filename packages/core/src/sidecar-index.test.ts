@@ -140,10 +140,28 @@ describe("sidecar min/max indexes", () => {
         isIn("amount", [1]),
       ).planned,
     ).toHaveLength(1);
+    expect(
+      pruneFilesWithIndex(
+        [{ path: "nan.parquet", columns: { amount: { min: Number.NaN, max: Number.NaN } } }],
+        eq("amount", 1),
+      ).planned,
+    ).toHaveLength(1);
+    expect(
+      pruneFilesWithIndex(
+        [
+          {
+            path: "big.parquet",
+            columns: { id: { min: 9_007_199_254_740_993n, max: 9_007_199_254_740_995n } },
+          },
+        ],
+        eq("id", 9_007_199_254_740_994),
+      ).planned,
+    ).toHaveLength(1);
   });
 
   it("throws typed errors for invalid index inputs", () => {
     expect(() => buildMinMaxIndex([{ value: { nested: true } }], ["value"])).toThrow(/scalar/u);
+    expect(() => buildMinMaxIndex([{ value: Number.NaN }], ["value"])).toThrow(/scalar/u);
     expect(() =>
       buildBBoxIndex([], { minx: "minx", miny: "miny", maxx: "maxx", maxy: "maxy" }),
     ).toThrow(/empty/u);

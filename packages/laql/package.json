@@ -2,6 +2,14 @@
   "name": "laql",
   "version": "0.0.1",
   "description": "LaQL: lightweight TypeScript query engine for Iceberg + Parquet on object storage",
+  "keywords": [
+    "lakehouse",
+    "parquet",
+    "iceberg",
+    "query-engine",
+    "object-storage"
+  ],
+  "author": "Erik Aronesty",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -21,8 +29,13 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
+  "scripts": {
+    "prepack": "pnpm -w build"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/earonesty/laql.git",

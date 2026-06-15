@@ -77,6 +77,7 @@ export const HIVE = {
 } as const;
 
 export const ICEBERG = {
+  tableLocation: "iceberg/warehouse/places",
   metadataFile: "iceberg/warehouse/places/metadata/v2.metadata.json",
   manifestRefMetadataFile: "iceberg/warehouse/places/metadata/v2.manifest-ref.metadata.json",
   manifestListMetadataFile: "iceberg/warehouse/places/metadata/v2.manifest-list.metadata.json",
@@ -88,8 +89,13 @@ export const ICEBERG = {
   ],
   plannedFilesGolden: "iceberg/warehouse/places/plans/current-us.golden.json",
   plannedTasksGolden: "iceberg/warehouse/places/plans/current-us-row-groups.golden.json",
-  equalityDeleteFile: "deletes/country-ca.eq.parquet",
-  positionDeleteFile: "deletes/us-second.pos.parquet",
+  dataFiles: [
+    "iceberg/warehouse/places/data/date=2026-01-01/country=US/part-000.parquet",
+    "iceberg/warehouse/places/data/date=2026-01-02/country=CA/part-000.parquet",
+    "iceberg/warehouse/places/data/date=2026-01-02/country=US/part-000.parquet",
+  ],
+  equalityDeleteFile: "iceberg/warehouse/places/deletes/country-ca.eq.parquet",
+  positionDeleteFile: "iceberg/warehouse/places/deletes/us-second.pos.parquet",
   snapshots: [1, 2],
 } as const;
 

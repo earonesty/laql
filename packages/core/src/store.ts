@@ -3,6 +3,14 @@ export interface PutOptions {
   metadata?: Record<string, string>;
 }
 
+export interface ConditionalPutOptions extends PutOptions {
+  /**
+   * ETag that must still identify the existing object. Use null to require
+   * the object to be absent.
+   */
+  expectedEtag: string | null;
+}
+
 export interface ListOptions {
   /** Stop listing after this many objects. */
   limit?: number;
@@ -45,4 +53,12 @@ export interface ObjectStore {
   list(prefix: string, options?: ListOptions): AsyncIterable<ObjectInfo>;
 
   head(path: string): Promise<ObjectHead | null>;
+}
+
+export interface ConditionalObjectStore extends ObjectStore {
+  conditionalPut(
+    path: string,
+    body: Uint8Array | ReadableStream<Uint8Array>,
+    options: ConditionalPutOptions,
+  ): Promise<boolean>;
 }

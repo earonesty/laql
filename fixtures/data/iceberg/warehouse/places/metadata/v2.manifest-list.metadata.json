@@ -1,7 +1,7 @@
 {
   "format-version": 2,
   "table-uuid": "00000000-0000-4000-8000-000000000001",
-  "location": "fixtures/data/iceberg/warehouse/places",
+  "location": "iceberg/warehouse/places",
   "current-snapshot-id": 2,
   "refs": {
     "main": {
@@ -72,7 +72,7 @@
           "path": "iceberg/warehouse/places/metadata/manifest-1.json",
           "files": [
             {
-              "path": "hive/date=2026-01-01/country=US/part-000.parquet",
+              "path": "iceberg/warehouse/places/data/date=2026-01-01/country=US/part-000.parquet",
               "sequenceNumber": 1,
               "partition": {
                 "country": "US",
@@ -81,7 +81,7 @@
               "recordCount": 4
             },
             {
-              "path": "hive/date=2026-01-02/country=CA/part-000.parquet",
+              "path": "iceberg/warehouse/places/data/date=2026-01-02/country=CA/part-000.parquet",
               "sequenceNumber": 2,
               "partition": {
                 "country": "CA",

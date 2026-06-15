@@ -105,4 +105,32 @@ describe("httpStore", () => {
     });
     await expect(failed.get("x")).rejects.toMatchObject({ code: "LAQL_OBJECT_NOT_FOUND" });
   });
+
+  it("keeps object paths inside the configured base URL", async () => {
+    const seen: string[] = [];
+    const store = httpStore({
+      baseUrl: "https://example.test/data/prefix/",
+      headers: { authorization: "Bearer secret" },
+      fetch: async (input) => {
+        seen.push(String(input));
+        return new Response(enc.encode("ok"));
+      },
+    });
+
+    await store.get("dir/file name?#.parquet");
+    expect(seen).toEqual(["https://example.test/data/prefix/dir/file%20name%3F%23.parquet"]);
+    await expect(store.get("https://evil.test/file")).rejects.toMatchObject({
+      code: "LAQL_VALIDATION_ERROR",
+    });
+    await expect(store.get("//evil.test/file")).rejects.toMatchObject({
+      code: "LAQL_VALIDATION_ERROR",
+    });
+    await expect(store.get("../secret")).rejects.toMatchObject({
+      code: "LAQL_VALIDATION_ERROR",
+    });
+    await expect(store.get("%2e%2e/secret")).rejects.toMatchObject({
+      code: "LAQL_VALIDATION_ERROR",
+    });
+    expect(seen).toHaveLength(1);
+  });
 });

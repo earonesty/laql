@@ -12,7 +12,7 @@ pnpm fixtures:external
 Iceberg conformance inputs are discovered under
 `fixtures/external/iceberg-reference/`. Put reference warehouse directories there;
 the conformance lane looks for `metadata.json` and `*.metadata.json` files and loads
-their sibling JSON manifest metadata through `@laql/iceberg`.
+their sibling JSON/Avro manifest metadata through `@laql/iceberg`.
 
 Then run the conformance lane:
 

@@ -341,19 +341,23 @@ function validateBBox(box: BBoxIndex): void {
 function isIndexValue(value: unknown): value is IndexValue {
   return (
     typeof value === "string" ||
-    typeof value === "number" ||
+    (typeof value === "number" && Number.isFinite(value)) ||
     typeof value === "bigint" ||
     typeof value === "boolean"
   );
 }
 
 function sameComparableType(left: IndexValue, right: IndexValue): boolean {
+  if (typeof left === "number" && !Number.isFinite(left)) return false;
+  if (typeof right === "number" && !Number.isFinite(right)) return false;
   if (typeof left === typeof right) return true;
-  return isNumberLike(left) && isNumberLike(right);
+  return isLosslessNumberBigIntPair(left, right);
 }
 
-function isNumberLike(value: IndexValue): value is number | bigint {
-  return typeof value === "number" || typeof value === "bigint";
+function isLosslessNumberBigIntPair(left: IndexValue, right: IndexValue): boolean {
+  if (typeof left === "number" && typeof right === "bigint") return Number.isSafeInteger(left);
+  if (typeof left === "bigint" && typeof right === "number") return Number.isSafeInteger(right);
+  return false;
 }
 
 function compareIndexValues(left: IndexValue, right: IndexValue): number {

@@ -139,6 +139,8 @@ describe("evaluate", () => {
     expect(evaluate(fn("h3_within", col("h3_8"), "8829a1d757fffff", 0), row)).toBe(true);
     expect(evaluate(fn("h3_within", col("h3_8"), "8829a1d753fffff", 1), row)).toBe(true);
     expect(evaluate(fn("h3_within", col("h3_8"), "8829a1d753fffff", 0), row)).toBe(false);
+    expect(evaluate(fn("h3_cell", 34.05, -118.24, 8), row)).toBe("8829a1d757fffff");
+    expect(evaluate(fn("h3_parent", col("h3_8"), 7), row)).toBe("8729a1d75ffffff");
   });
 
   it("returns null from null-propagating functions", () => {
@@ -209,6 +211,9 @@ describe("evaluate", () => {
     expect(() => evaluate(fn("h3_within", col("h3_8"), "8829a1d757fffff", -1), row)).toThrowError(
       LaQLError,
     );
+    expect(() => evaluate(fn("h3_within", col("h3_8"), "invalid", 1), row)).toThrowError(LaQLError);
+    expect(() => evaluate(fn("h3_cell", 34.05, -118.24, 16), row)).toThrowError(LaQLError);
+    expect(() => evaluate(fn("h3_parent", "invalid", 7), row)).toThrowError(LaQLError);
     expect(() => evaluate(like("amount", "%"), row)).toThrowError(LaQLError);
     expect(() => matches(lit(1), row)).toThrowError(LaQLError);
   });

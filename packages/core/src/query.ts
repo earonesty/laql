@@ -218,6 +218,7 @@ export type AggregateStateSnapshot =
 export interface TaskInput {
   path: string;
   etag?: string;
+  size?: number;
   rowGroupRanges: { start: number; end: number }[];
   projectedColumns?: string[];
   residualPredicate?: Expr;
@@ -976,6 +977,7 @@ export class QueryResult {
       });
       const task: TaskInput = {
         path: object.path,
+        size: object.size,
         rowGroupRanges: scanPlan?.rowGroupRanges ?? [{ start: 0, end: Number.POSITIVE_INFINITY }],
         partitionValues,
       };

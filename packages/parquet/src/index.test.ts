@@ -60,22 +60,51 @@ const store = memoryStore();
 
 function rowGroupWithStats(
   column: string,
-  minValue?: string | number,
-  maxValue?: string | number,
+  minValue?: string | number | bigint,
+  maxValue?: string | number | bigint,
 ): RowGroup {
   return rowGroupWithStatsEntries([[column, minValue, maxValue]]);
 }
 
 function rowGroupWithStatsEntries(
-  entries: [column: string, minValue?: string | number, maxValue?: string | number][],
+  entries: [
+    column: string,
+    minValue?: string | number | bigint,
+    maxValue?: string | number | bigint,
+  ][],
+): RowGroup {
+  return rowGroupFromStatsEntries(entries, "modern");
+}
+
+function rowGroupWithLegacyStats(
+  column: string,
+  minValue?: string | number | bigint,
+  maxValue?: string | number | bigint,
+): RowGroup {
+  return rowGroupFromStatsEntries([[column, minValue, maxValue]], "legacy");
+}
+
+function rowGroupFromStatsEntries(
+  entries: [
+    column: string,
+    minValue?: string | number | bigint,
+    maxValue?: string | number | bigint,
+  ][],
+  mode: "modern" | "legacy",
 ): RowGroup {
   const columns: RowGroup["columns"] = [];
   for (const [column, minValue, maxValue] of entries) {
     const statistics: NonNullable<
       NonNullable<NonNullable<RowGroup["columns"][number]["meta_data"]>["statistics"]>
     > = {};
-    if (minValue !== undefined) statistics.min_value = minValue;
-    if (maxValue !== undefined) statistics.max_value = maxValue;
+    const legacyStatistics = statistics as typeof statistics & { min?: unknown; max?: unknown };
+    if (mode === "modern") {
+      if (minValue !== undefined) statistics.min_value = minValue;
+      if (maxValue !== undefined) statistics.max_value = maxValue;
+    } else {
+      if (minValue !== undefined) legacyStatistics.min = minValue;
+      if (maxValue !== undefined) legacyStatistics.max = maxValue;
+    }
     columns.push({
       file_offset: 0n,
       meta_data: {
@@ -267,7 +296,7 @@ describe("readIcebergParquetDeletes", () => {
         path: `data/${ICEBERG.positionDeleteFile}`,
       }),
     ).resolves.toEqual({
-      positionDeletes: [{ path: HIVE.files[0], position: 1 }],
+      positionDeletes: [{ path: ICEBERG.dataFiles[0], position: 1 }],
     });
   });
 
@@ -1341,6 +1370,20 @@ describe("rowGroupMayMatch", () => {
     expect(rowGroupMayMatch(rowGroupWithStats("metric", 1, 9), between("missing", 1, 2))).toBe(
       true,
     );
+    expect(
+      rowGroupMayMatch(rowGroupWithStats("metric", Number.NaN, Number.NaN), eq("metric", 5)),
+    ).toBe(true);
+    expect(
+      rowGroupMayMatch(
+        rowGroupWithStats("metric", 9_007_199_254_740_993n, 9_007_199_254_740_995n),
+        eq("metric", 9_007_199_254_740_994),
+      ),
+    ).toBe(true);
+  });
+
+  it("falls back to legacy min/max row-group statistics", () => {
+    expect(rowGroupMayMatch(rowGroupWithLegacyStats("metric", 1, 9), eq("metric", 5))).toBe(true);
+    expect(rowGroupMayMatch(rowGroupWithLegacyStats("metric", 1, 9), eq("metric", 50))).toBe(false);
   });
 
   it("prunes bbox and h3 function predicates with row-group stats", () => {

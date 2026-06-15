@@ -282,6 +282,7 @@ function generateManifestGoldens() {
   const parquetTaskInput = normalizeTaskInput({
     path: "data/stats.parquet",
     etag: "v1",
+    size: 1152,
     rowGroupRanges: [{ start: 1, end: 3 }],
     projectedColumns: ["id", "metric"],
     partitionValues: {},
@@ -297,10 +298,10 @@ function generateManifestGoldens() {
     jobId: "job_stats",
     planFingerprint: fingerprint({
       version: 1,
-      snapshot: fingerprint([{ etag: "v1", path: "data/stats.parquet" }]),
+      snapshot: fingerprint([{ etag: "v1", path: "data/stats.parquet", size: 1152 }]),
       tasks: [parquetTaskInput],
     }),
-    snapshot: fingerprint([{ etag: "v1", path: "data/stats.parquet" }]),
+    snapshot: fingerprint([{ etag: "v1", path: "data/stats.parquet", size: 1152 }]),
     tasks: [
       {
         id: taskId("job_stats", 0, parquetTaskInput),
@@ -321,25 +322,32 @@ function generateManifestGoldens() {
 
 function generateHive() {
   for (const file of HIVE.files) {
-    const path = fixturePath(file);
-    mkdirSync(dirname(path), { recursive: true });
-    const country = file.includes("country=CA") ? "CA" : "US";
-    const date = file.includes("date=2026-01-01") ? "2026-01-01" : "2026-01-02";
-    const base = country === "CA" ? 100 : date.endsWith("01") ? 0 : 200;
-    const id: number[] = [];
-    const amount: number[] = [];
-    for (let i = 0; i < HIVE.rowsPerFile; i++) {
-      id.push(base + i);
-      amount.push(base + i * 10);
-    }
-    parquetWriteFile({
-      filename: path,
-      columnData: [
-        { name: "id", data: id, type: "INT32" },
-        { name: "amount", data: amount, type: "INT32" },
-      ],
-    });
+    writeHiveLikeParquet(file);
   }
+  for (const file of ICEBERG.dataFiles) {
+    writeHiveLikeParquet(file);
+  }
+}
+
+function writeHiveLikeParquet(file: string): void {
+  const path = fixturePath(file);
+  mkdirSync(dirname(path), { recursive: true });
+  const country = file.includes("country=CA") ? "CA" : "US";
+  const date = file.includes("date=2026-01-01") ? "2026-01-01" : "2026-01-02";
+  const base = country === "CA" ? 100 : date.endsWith("01") ? 0 : 200;
+  const id: number[] = [];
+  const amount: number[] = [];
+  for (let i = 0; i < HIVE.rowsPerFile; i++) {
+    id.push(base + i);
+    amount.push(base + i * 10);
+  }
+  parquetWriteFile({
+    filename: path,
+    columnData: [
+      { name: "id", data: id, type: "INT32" },
+      { name: "amount", data: amount, type: "INT32" },
+    ],
+  });
 }
 
 function generateIceberg() {
@@ -348,13 +356,13 @@ function generateIceberg() {
     path: ICEBERG.manifestFiles[0],
     files: [
       {
-        path: HIVE.files[0],
+        path: ICEBERG.dataFiles[0],
         sequenceNumber: 1,
         partition: { country: "US", date: "2026-01-01" },
         recordCount: HIVE.rowsPerFile,
       },
       {
-        path: HIVE.files[1],
+        path: ICEBERG.dataFiles[1],
         sequenceNumber: 2,
         partition: { country: "CA", date: "2026-01-02" },
         recordCount: HIVE.rowsPerFile,
@@ -365,21 +373,21 @@ function generateIceberg() {
     path: ICEBERG.manifestFiles[1],
     files: [
       {
-        path: HIVE.files[0],
+        path: ICEBERG.dataFiles[0],
         sequenceNumber: 1,
         partition: { country: "US", date: "2026-01-01" },
         recordCount: HIVE.rowsPerFile,
         deleteFiles: [{ content: "position-delete", path: ICEBERG.positionDeleteFile }],
       },
       {
-        path: HIVE.files[1],
+        path: ICEBERG.dataFiles[1],
         sequenceNumber: 2,
         partition: { country: "CA", date: "2026-01-02" },
         recordCount: HIVE.rowsPerFile,
-        deleteFiles: [{ content: "equality-delete", path: "deletes/country-ca.eq.parquet" }],
+        deleteFiles: [{ content: "equality-delete", path: ICEBERG.equalityDeleteFile }],
       },
       {
-        path: HIVE.files[2],
+        path: ICEBERG.dataFiles[2],
         sequenceNumber: 3,
         partition: { country: "US", date: "2026-01-02" },
         recordCount: HIVE.rowsPerFile,
@@ -389,7 +397,7 @@ function generateIceberg() {
   const metadata = {
     "format-version": 2,
     "table-uuid": "00000000-0000-4000-8000-000000000001",
-    location: "fixtures/data/iceberg/warehouse/places",
+    location: ICEBERG.tableLocation,
     "current-snapshot-id": 2,
     refs: {
       main: { type: "branch", "snapshot-id": 2 },
@@ -512,12 +520,12 @@ function generateIceberg() {
     snapshotId: 2,
     tasks: [
       {
-        path: HIVE.files[0],
+        path: ICEBERG.dataFiles[0],
         partition: { country: "US", date: "2026-01-01" },
         rowGroupRanges: [],
       },
       {
-        path: HIVE.files[2],
+        path: ICEBERG.dataFiles[2],
         partition: { country: "US", date: "2026-01-02" },
         rowGroupRanges: [{ start: 0, end: 1 }],
       },
@@ -538,7 +546,7 @@ function generateIcebergDeletes() {
   parquetWriteFile({
     filename: positionPath,
     columnData: [
-      { name: "file_path", data: [HIVE.files[0]], type: "STRING" },
+      { name: "file_path", data: [ICEBERG.dataFiles[0]], type: "STRING" },
       { name: "pos", data: [1n], type: "INT64" },
     ],
   });
@@ -567,6 +575,7 @@ function writeJsonFixture(name: string, value: unknown) {
 function normalizeTaskInput(task: {
   path: string;
   etag?: string;
+  size?: number;
   rowGroupRanges: { start: number; end: number }[];
   projectedColumns?: string[];
   partitionValues: Record<string, string>;
@@ -575,6 +584,7 @@ function normalizeTaskInput(task: {
   const normalized = {
     path: task.path,
     etag: task.etag,
+    size: task.size,
     rowGroupRanges: [...task.rowGroupRanges]
       .map((range) => ({ start: range.start, end: range.end }))
       .sort((a, b) => a.start - b.start || a.end - b.end),

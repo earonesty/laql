@@ -60,6 +60,9 @@ const CLAUSE_KEYWORDS = new Set([
   "offset",
 ]);
 
+const MAX_TOKENS = 10_000;
+const MAX_PARSE_DEPTH = 128;
+
 export function parseSql(sql: string): SqlQueryAst {
   const parser = new Parser(tokenize(sql));
   return parser.parseQuery();
@@ -88,6 +91,7 @@ export function formatSql(ast: SqlQueryAst): string {
 
 class Parser {
   private index = 0;
+  private depth = 0;
 
   constructor(private readonly tokens: Token[]) {}
 
@@ -205,7 +209,14 @@ class Parser {
   }
 
   private parseNot(stop: () => boolean): Expr {
-    if (this.matchKeyword("not")) return { kind: "not", operand: this.parseNot(stop) };
+    if (this.matchKeyword("not")) {
+      this.enterDepth();
+      try {
+        return { kind: "not", operand: this.parseNot(stop) };
+      } finally {
+        this.exitDepth();
+      }
+    }
     return this.parsePredicate(stop);
   }
 
@@ -263,9 +274,14 @@ class Parser {
   private parsePrimary(stop: () => boolean): Expr {
     if (stop()) throwParse("Expected expression");
     if (this.matchPunct("(")) {
-      const expr = this.parseOr(() => this.peekPunct(")"));
-      this.expectPunct(")");
-      return expr;
+      this.enterDepth();
+      try {
+        const expr = this.parseOr(() => this.peekPunct(")"));
+        this.expectPunct(")");
+        return expr;
+      } finally {
+        this.exitDepth();
+      }
     }
     const token = this.advance();
     if (token.kind === "identifier" || token.kind === "keyword") {
@@ -273,14 +289,19 @@ class Parser {
       if (token.value === "false") return literal(false);
       if (token.value === "null") return literal(null);
       if (this.matchPunct("(")) {
-        const args: Expr[] = [];
-        if (!this.matchPunct(")")) {
-          do {
-            args.push(this.parseOr(() => this.peekPunct(",") || this.peekPunct(")")));
-          } while (this.matchPunct(","));
-          this.expectPunct(")");
+        this.enterDepth();
+        try {
+          const args: Expr[] = [];
+          if (!this.matchPunct(")")) {
+            do {
+              args.push(this.parseOr(() => this.peekPunct(",") || this.peekPunct(")")));
+            } while (this.matchPunct(","));
+            this.expectPunct(")");
+          }
+          return { kind: "call", fn: token.value, args };
+        } finally {
+          this.exitDepth();
         }
-        return { kind: "call", fn: token.value, args };
       }
       return { kind: "column", name: token.value };
     }
@@ -357,10 +378,25 @@ class Parser {
     this.index += 1;
     return token;
   }
+
+  private enterDepth(): void {
+    this.depth += 1;
+    if (this.depth > MAX_PARSE_DEPTH) {
+      throwParse(`SQL expression nesting exceeds ${MAX_PARSE_DEPTH}`);
+    }
+  }
+
+  private exitDepth(): void {
+    this.depth -= 1;
+  }
 }
 
 function tokenize(input: string): Token[] {
   const tokens: Token[] = [];
+  const pushToken = (token: Token) => {
+    tokens.push(token);
+    if (tokens.length > MAX_TOKENS) throwParse(`SQL token count exceeds ${MAX_TOKENS}`);
+  };
   let index = 0;
   while (index < input.length) {
     const char = input[index] ?? "";
@@ -371,42 +407,42 @@ function tokenize(input: string): Token[] {
     if (char === "'") {
       const end = input.indexOf("'", index + 1);
       if (end === -1) throwParse("Unterminated string literal");
-      tokens.push({ kind: "string", value: input.slice(index + 1, end) });
+      pushToken({ kind: "string", value: input.slice(index + 1, end) });
       index = end + 1;
       continue;
     }
     if (/[(),]/u.test(char)) {
-      tokens.push({ kind: "punct", value: char });
+      pushToken({ kind: "punct", value: char });
       index += 1;
       continue;
     }
     const two = input.slice(index, index + 2);
     if (["<=", ">=", "<>", "!="].includes(two)) {
-      tokens.push({ kind: "operator", value: two });
+      pushToken({ kind: "operator", value: two });
       index += 2;
       continue;
     }
     if (/[=<>]/u.test(char)) {
-      tokens.push({ kind: "operator", value: char });
+      pushToken({ kind: "operator", value: char });
       index += 1;
       continue;
     }
     const number = /^-?[0-9]+(?:\.[0-9]+)?/u.exec(input.slice(index));
     if (number) {
-      tokens.push({ kind: "number", value: number[0] });
+      pushToken({ kind: "number", value: number[0] });
       index += number[0].length;
       continue;
     }
     const identifier = /^[A-Za-z_][A-Za-z0-9_.*:/=-]*/u.exec(input.slice(index));
     if (identifier) {
       const value = identifier[0].toLowerCase();
-      tokens.push({ kind: KEYWORDS.has(value) ? "keyword" : "identifier", value });
+      pushToken({ kind: KEYWORDS.has(value) ? "keyword" : "identifier", value });
       index += identifier[0].length;
       continue;
     }
     throwParse(`Unexpected character ${char}`);
   }
-  tokens.push({ kind: "eof", value: "" });
+  pushToken({ kind: "eof", value: "" });
   return tokens;
 }
 

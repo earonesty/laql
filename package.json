@@ -14,16 +14,21 @@
     "coverage": "vitest run --coverage",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
-    "typecheck": "tsc -b --noEmit",
+    "typecheck": "node scripts/typecheck.mjs",
     "fixtures": "pnpm --filter @laql/fixtures generate",
     "fixtures:external": "pnpm --filter @laql/fixtures fetch:external",
-    "check": "pnpm lint && pnpm build && pnpm test && pnpm test:workerd && pnpm coverage && pnpm fixtures && git diff --exit-code -- fixtures/data"
+    "changeset": "changeset",
+    "version": "changeset version",
+    "release": "pnpm check && changeset publish",
+    "check": "pnpm lint && pnpm typecheck && pnpm build && pnpm test && pnpm test:workerd && pnpm test:conformance && pnpm coverage && node scripts/check-fixtures.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.0",
+    "@changesets/cli": "^2.31.0",
     "@cloudflare/vitest-pool-workers": "0.16.15",
     "@types/node": "^25.9.3",
     "@vitest/coverage-v8": "^4.1.8",
+    "avsc": "^5.7.9",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"
   }

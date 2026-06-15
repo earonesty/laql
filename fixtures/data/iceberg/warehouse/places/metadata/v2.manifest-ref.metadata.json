@@ -1,7 +1,7 @@
 {
   "format-version": 2,
   "table-uuid": "00000000-0000-4000-8000-000000000001",
-  "location": "fixtures/data/iceberg/warehouse/places",
+  "location": "iceberg/warehouse/places",
   "current-snapshot-id": 2,
   "refs": {
     "main": {

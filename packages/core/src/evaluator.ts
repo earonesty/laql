@@ -1,3 +1,4 @@
+import { cellToParent, gridDisk, isValidCell, latLngToCell } from "h3-js";
 import { LaQLError } from "./errors.js";
 import type { Expr, Scalar } from "./expr.js";
 import type { Row } from "./types.js";
@@ -266,6 +267,10 @@ function callFunction(name: string, args: EvalValue[]): EvalValue {
       return h3In(args);
     case "h3_within":
       return h3Within(args);
+    case "h3_cell":
+      return h3Cell(args);
+    case "h3_parent":
+      return h3Parent(args);
     default:
       throw new LaQLError("LAQL_UNSUPPORTED_PUSHDOWN", `Unsupported scalar function ${name}`, {
         function: name,
@@ -422,15 +427,45 @@ function h3Within(args: EvalValue[]): EvalValue {
   if (typeof cell !== "string" || typeof origin !== "string") {
     throw new LaQLError("LAQL_TYPE_ERROR", "h3_within() expects string cells");
   }
+  validateH3Cell(cell, "cell");
+  validateH3Cell(origin, "origin");
   if (typeof k !== "number" || !Number.isInteger(k) || k < 0) {
     throw new LaQLError("LAQL_TYPE_ERROR", "h3_within() expects a non-negative integer radius");
   }
-  if (k === 0) return cell === origin;
-  return h3Prefix(cell, k) === h3Prefix(origin, k);
+  return gridDisk(origin, k).includes(cell);
 }
 
-function h3Prefix(cell: string, k: number): string {
-  return cell.slice(0, Math.max(1, cell.length - k * 6));
+function h3Cell(args: EvalValue[]): EvalValue {
+  requireArgCount("h3_cell", args, 3);
+  const lat = args[0] ?? null;
+  const lon = args[1] ?? null;
+  const res = args[2] ?? null;
+  if (!finiteNumber(lat) || !finiteNumber(lon)) {
+    throw new LaQLError("LAQL_TYPE_ERROR", "h3_cell() expects finite lat/lon numbers");
+  }
+  if (typeof res !== "number" || !Number.isInteger(res) || res < 0 || res > 15) {
+    throw new LaQLError("LAQL_TYPE_ERROR", "h3_cell() expects an integer resolution 0..15");
+  }
+  return latLngToCell(lat, lon, res);
+}
+
+function h3Parent(args: EvalValue[]): EvalValue {
+  requireArgCount("h3_parent", args, 2);
+  const cell = args[0] ?? null;
+  const res = args[1] ?? null;
+  if (cell === null || res === null) return null;
+  if (typeof cell !== "string") throwType("h3_parent", "string", cell);
+  validateH3Cell(cell, "cell");
+  if (typeof res !== "number" || !Number.isInteger(res) || res < 0 || res > 15) {
+    throw new LaQLError("LAQL_TYPE_ERROR", "h3_parent() expects an integer resolution 0..15");
+  }
+  return cellToParent(cell, res);
+}
+
+function validateH3Cell(cell: string, label: string): void {
+  if (!isValidCell(cell)) {
+    throw new LaQLError("LAQL_TYPE_ERROR", `h3 cell ${label} is invalid`, { cell });
+  }
 }
 
 function envelope(value: EvalValue, name: string): BBox {

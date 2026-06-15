@@ -23,6 +23,9 @@ jobs:
       - name: Lint (biome)
         run: pnpm lint
 
+      - name: Typecheck
+        run: pnpm typecheck
+
       - name: Build (tsc -b)
         run: pnpm build
 
@@ -33,3 +36,9 @@ jobs:
 
       - name: Test with coverage gate (90%)
         run: pnpm coverage
+
+      - name: Test Workers runtime
+        run: pnpm test:workerd
+
+      - name: Test conformance config
+        run: pnpm test:conformance

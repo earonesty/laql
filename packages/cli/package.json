@@ -2,6 +2,14 @@
   "name": "@laql/cli",
   "version": "0.0.1",
   "description": "LaQL command line: query, explain, inspect, write, compact",
+  "keywords": [
+    "lakehouse",
+    "parquet",
+    "iceberg",
+    "object-storage",
+    "cli"
+  ],
+  "author": "Erik Aronesty",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -16,8 +24,13 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
+  "scripts": {
+    "prepack": "pnpm -w build"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/earonesty/laql.git",

@@ -29,6 +29,16 @@ export interface ReadParquetOptions {
   rowEnd?: number;
 }
 
+export interface ReadParquetBatchOptions extends ReadParquetOptions {
+  batchSize?: number;
+  where?: Expr;
+}
+
+export interface ParquetRowBatch {
+  rowOffset: number;
+  rows: Row[];
+}
+
 export type IcebergParquetDeleteFileContent =
   | "position-delete"
   | "equality-delete"
@@ -172,13 +182,51 @@ export async function readParquetObjects(
   path: string,
   options: ReadParquetOptions = {},
 ): Promise<Record<string, unknown>[]> {
+  const rows: Row[] = [];
+  for await (const batch of readParquetObjectBatches(store, path, options)) {
+    rows.push(...batch.rows);
+  }
+  return rows;
+}
+
+export async function* readParquetObjectBatches(
+  store: ObjectStore,
+  path: string,
+  options: ReadParquetBatchOptions = {},
+): AsyncIterable<ParquetRowBatch> {
   const file = await asyncBufferFromStore(store, path);
   try {
-    const readOptions: Parameters<typeof parquetReadObjects>[0] = { file };
-    if (options.columns) readOptions.columns = options.columns;
-    if (options.rowStart !== undefined) readOptions.rowStart = options.rowStart;
-    if (options.rowEnd !== undefined) readOptions.rowEnd = options.rowEnd;
-    return await parquetReadObjects(readOptions);
+    const metadata = await parquetMetadataAsync(file);
+    const batchSize = options.batchSize ?? 4096;
+    const requestedStart = options.rowStart ?? 0;
+    const requestedEnd = options.rowEnd ?? Number(metadata.num_rows);
+    let rowGroupStart = 0;
+    for (const rowGroup of metadata.row_groups) {
+      const rowGroupEnd = rowGroupStart + Number(rowGroup.num_rows);
+      if (
+        rowGroupEnd <= requestedStart ||
+        rowGroupStart >= requestedEnd ||
+        !rowGroupMayMatch(rowGroup, options.where)
+      ) {
+        rowGroupStart = rowGroupEnd;
+        continue;
+      }
+      const start = Math.max(rowGroupStart, requestedStart);
+      const end = Math.min(rowGroupEnd, requestedEnd);
+      for (let rowStart = start; rowStart < end; rowStart += batchSize) {
+        const rowEnd = Math.min(rowStart + batchSize, end);
+        const readOptions: Parameters<typeof parquetReadObjects>[0] = {
+          file,
+          metadata,
+          rowFormat: "object",
+          rowStart,
+          rowEnd,
+        };
+        if (options.columns) readOptions.columns = options.columns;
+        yield { rowOffset: rowStart, rows: await parquetReadObjects(readOptions) };
+      }
+      rowGroupStart = rowGroupEnd;
+    }
   } catch (cause) {
     throw new LaQLError("LAQL_PARQUET_READ_ERROR", `Failed to read ${path}`, { path, cause });
   }
@@ -1306,8 +1354,8 @@ function columnStats(
   for (const chunk of rowGroup.columns) {
     const metadata = chunk.meta_data;
     if (!metadata || metadata.path_in_schema.join(".") !== column) continue;
-    const min = metadata.statistics?.min_value;
-    const max = metadata.statistics?.max_value;
+    const min = metadata.statistics?.min_value ?? metadata.statistics?.min;
+    const max = metadata.statistics?.max_value ?? metadata.statistics?.max;
     if (isStatsValue(min) && isStatsValue(max)) return { min, max };
   }
   return undefined;
@@ -1316,19 +1364,27 @@ function columnStats(
 function isStatsValue(value: unknown): value is StatsValue {
   return (
     typeof value === "string" ||
-    typeof value === "number" ||
+    (typeof value === "number" && Number.isFinite(value)) ||
     typeof value === "bigint" ||
     typeof value === "boolean"
   );
 }
 
 function sameComparableType(left: StatsValue, right: StatsValue): boolean {
+  if (typeof left === "number" && !Number.isFinite(left)) return false;
+  if (typeof right === "number" && !Number.isFinite(right)) return false;
   if (typeof left === typeof right) return true;
-  return isNumberLike(left) && isNumberLike(right);
+  return isLosslessNumberBigIntPair(left, right);
 }
 
 function isNumberLike(value: StatsValue): value is number | bigint {
   return typeof value === "number" || typeof value === "bigint";
+}
+
+function isLosslessNumberBigIntPair(left: StatsValue, right: StatsValue): boolean {
+  if (typeof left === "number" && typeof right === "bigint") return Number.isSafeInteger(left);
+  if (typeof left === "bigint" && typeof right === "number") return Number.isSafeInteger(right);
+  return false;
 }
 
 function compareValues(left: StatsValue, right: StatsValue): number {

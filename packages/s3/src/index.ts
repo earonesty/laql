@@ -114,7 +114,7 @@ export class S3ObjectStore implements ObjectStore {
     query = new URLSearchParams(),
   ): Promise<Response> {
     const url = new URL(
-      `${encodeURIComponent(this.options.bucket)}/${path}`,
+      `${encodeURIComponent(this.options.bucket)}/${encodeObjectPath(path)}`,
       ensureSlash(this.options.endpoint),
     );
     url.search = query.toString();
@@ -230,6 +230,34 @@ function decodeXml(value: string): string {
 
 function ensureSlash(value: string): string {
   return value.endsWith("/") ? value : `${value}/`;
+}
+
+function encodeObjectPath(path: string): string {
+  if (/^(?:[a-z][a-z0-9+.-]*:)?\/\//iu.test(path) || path.startsWith("/")) {
+    throw new LaQLError("LAQL_VALIDATION_ERROR", `Object path must be relative: ${path}`, {
+      path,
+    });
+  }
+  if (path === "") return "";
+  return path
+    .split("/")
+    .map((segment) => {
+      let decoded: string;
+      try {
+        decoded = decodeURIComponent(segment);
+      } catch {
+        throw new LaQLError("LAQL_VALIDATION_ERROR", `Object path has invalid encoding: ${path}`, {
+          path,
+        });
+      }
+      if (decoded === "." || decoded === "..") {
+        throw new LaQLError("LAQL_VALIDATION_ERROR", `Object path contains traversal: ${path}`, {
+          path,
+        });
+      }
+      return encodeURIComponent(segment);
+    })
+    .join("/");
 }
 
 function assertOk(response: Response, path: string): void {

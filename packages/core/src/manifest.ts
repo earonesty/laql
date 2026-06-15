@@ -235,7 +235,9 @@ export async function verifyPaginationToken(
   const payloadBytes = base64UrlDecode(payloadPart);
   const payload = new TextDecoder().decode(payloadBytes);
   const expected = await hmac(payload, secret);
-  if (signaturePart !== expected) throwInvalidBookmark("Pagination token signature is invalid");
+  if (!constantTimeEqual(signaturePart, expected)) {
+    throwInvalidBookmark("Pagination token signature is invalid");
+  }
   const parsed: unknown = JSON.parse(payload);
   return parseBookmark(parsed);
 }
@@ -345,6 +347,7 @@ function normalizeTaskInput(task: TaskInput): TaskInput {
     partitionValues: sortRecord(task.partitionValues),
   };
   if (task.etag !== undefined) normalized.etag = task.etag;
+  if (task.size !== undefined) normalized.size = task.size;
   if (task.projectedColumns !== undefined)
     normalized.projectedColumns = [...task.projectedColumns].sort();
   if (task.residualPredicate !== undefined) normalized.residualPredicate = task.residualPredicate;
@@ -447,6 +450,7 @@ function snapshotFromTasks(tasks: TaskInput[]): string {
     tasks.map((task) => ({
       path: task.path,
       etag: task.etag ?? null,
+      size: task.size ?? null,
     })),
   );
 }
@@ -573,6 +577,15 @@ function base64UrlDecode(value: string): Uint8Array {
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
   return bytes;
+}
+
+function constantTimeEqual(left: string, right: string): boolean {
+  const length = Math.max(left.length, right.length);
+  let diff = left.length ^ right.length;
+  for (let index = 0; index < length; index += 1) {
+    diff |= (left.charCodeAt(index) || 0) ^ (right.charCodeAt(index) || 0);
+  }
+  return diff === 0;
 }
 
 function parseBookmark(value: unknown): Bookmark {

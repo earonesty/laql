@@ -2,6 +2,14 @@
   "name": "@laql/parquet",
   "version": "0.0.1",
   "description": "LaQL Parquet adapter: hyparquet reads, hyparquet-writer writes, pruning, projection",
+  "keywords": [
+    "parquet",
+    "lakehouse",
+    "object-storage",
+    "hyparquet",
+    "query-engine"
+  ],
+  "author": "Erik Aronesty",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -13,8 +21,13 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
+  "scripts": {
+    "prepack": "pnpm -w build"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/earonesty/laql.git",

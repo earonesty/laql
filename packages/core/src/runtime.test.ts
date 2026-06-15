@@ -80,6 +80,13 @@ describe("runtime substrate helpers", () => {
     await expect(cache.get("delete-me")).resolves.toBeUndefined();
   });
 
+  it("adapts Cache API entries without expiration metadata", async () => {
+    const cache = cacheApiCache(new FakeCache());
+    await cache.set("plain", { value: new Uint8Array([5]) });
+
+    await expect(cache.get("plain")).resolves.toEqual({ value: new Uint8Array([5]) });
+  });
+
   it("spills bytes defensively and tracks memory usage", async () => {
     const spill = memorySpillAdapter();
     const source = new Uint8Array([1, 2, 3]);

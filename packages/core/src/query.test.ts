@@ -65,7 +65,7 @@ async function makeLake(config: {
     now: config.now,
     queryId: () => "q_test",
   });
-  return { lake, scanner };
+  return { lake, scanner, store };
 }
 
 describe("Lake query runtime", () => {
@@ -582,7 +582,7 @@ describe("Lake query runtime", () => {
   });
 
   it("slices queries with bookmarks and resumes to the same rows", async () => {
-    const { lake } = await makeLake({
+    const { lake, store } = await makeLake({
       rowsByPath: {
         table: [
           { id: 1, keep: true },
@@ -606,6 +606,10 @@ describe("Lake query runtime", () => {
     if (!first.bookmark) throw new Error("expected bookmark");
     await expect(lake.resume(first.bookmark).run({ slice: { maxRows: 2 } })).resolves.toEqual({
       rows: [{ id: 4 }],
+    });
+    await store.put("table", new Uint8Array([1, 2, 3, 4]));
+    await expect(lake.resume(first.bookmark).run({ slice: { maxRows: 2 } })).rejects.toMatchObject({
+      code: "LAQL_BOOKMARK_STALE",
     });
 
     const replayed: Row[] = [];

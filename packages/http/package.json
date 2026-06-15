@@ -2,6 +2,14 @@
   "name": "@laql/http",
   "version": "0.0.1",
   "description": "LaQL HTTP range-read object store adapter",
+  "keywords": [
+    "http",
+    "object-storage",
+    "range-requests",
+    "parquet",
+    "lakehouse"
+  ],
+  "author": "Erik Aronesty",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -13,8 +21,13 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
+  "scripts": {
+    "prepack": "pnpm -w build"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/earonesty/laql.git",

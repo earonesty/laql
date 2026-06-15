@@ -2,6 +2,14 @@
   "name": "@laql/r2",
   "version": "0.0.1",
   "description": "LaQL Cloudflare R2 object store adapter",
+  "keywords": [
+    "cloudflare",
+    "r2",
+    "object-storage",
+    "parquet",
+    "lakehouse"
+  ],
+  "author": "Erik Aronesty",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -13,8 +21,13 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
+  "scripts": {
+    "prepack": "pnpm -w build"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/earonesty/laql.git",

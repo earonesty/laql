@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { readFileSync } from "node:fs";
 import {
   and,
@@ -13,14 +14,17 @@ import {
   lit,
   memoryStore,
   not,
+  type ObjectStore,
   type Row,
   stableStringify,
 } from "@laql/core";
-import { fixturePath, HIVE, ICEBERG } from "@laql/fixtures";
+import { fixturePath, ICEBERG } from "@laql/fixtures";
+import avro from "avsc";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
   ParquetScanAdapter,
   readIcebergParquetDeletes,
+  readParquetObjectBatches,
   readParquetObjects,
   writeParquet,
 } from "../../parquet/src/index.js";
@@ -35,6 +39,24 @@ import {
 } from "./index.js";
 
 const store = memoryStore();
+
+const avroBigIntLongType = avro.types.LongType.__with({
+  fromBuffer: (bytes: Buffer) => bytes.readBigInt64LE(),
+  toBuffer: (value: bigint | number) => {
+    const bytes = Buffer.alloc(8);
+    bytes.writeBigInt64LE(BigInt(value));
+    return bytes;
+  },
+  fromJSON: (value: string | number | bigint) => BigInt(value),
+  toJSON: (value: bigint | number) => value.toString(),
+  isValid: (value: unknown) =>
+    typeof value === "bigint" || (typeof value === "number" && Number.isSafeInteger(value)),
+  compare: (left: bigint | number, right: bigint | number) => {
+    const leftBigInt = BigInt(left);
+    const rightBigInt = BigInt(right);
+    return leftBigInt === rightBigInt ? 0 : leftBigInt < rightBigInt ? -1 : 1;
+  },
+});
 
 beforeAll(async () => {
   await store.put(ICEBERG.metadataFile, readFileSync(fixturePath(ICEBERG.metadataFile)));
@@ -62,10 +84,46 @@ beforeAll(async () => {
     ICEBERG.positionDeleteFile,
     readFileSync(fixturePath(ICEBERG.positionDeleteFile)),
   );
-  for (const file of HIVE.files) {
+  for (const file of ICEBERG.dataFiles) {
     await store.put(file, readFileSync(fixturePath(file)));
   }
 });
+
+async function* asyncGenerator<T>(values: T[]): AsyncIterable<T> {
+  yield* values;
+}
+
+async function avroObjectContainer(schema: unknown, records: unknown[]): Promise<Uint8Array> {
+  const type = avro.Type.forSchema(schema, {
+    typeHook: (innerSchema: unknown) =>
+      innerSchema === "long" ||
+      (typeof innerSchema === "object" &&
+        innerSchema !== null &&
+        !Array.isArray(innerSchema) &&
+        "type" in innerSchema &&
+        innerSchema.type === "long")
+        ? avroBigIntLongType
+        : undefined,
+  });
+  const encoder = new avro.streams.BlockEncoder(type, { codec: "null" });
+  const chunks: Uint8Array[] = [];
+  encoder.on("data", (chunk: Uint8Array) => chunks.push(chunk));
+  const done = new Promise<void>((resolve, reject) => {
+    encoder.on("end", resolve);
+    encoder.on("error", reject);
+  });
+  for (const record of records) encoder.write(record);
+  encoder.end();
+  await done;
+  const length = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+  const out = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
 
 describe("loadIcebergTable", () => {
   it("loads a table through the Iceberg REST catalog API", async () => {
@@ -173,7 +231,10 @@ describe("loadIcebergTable", () => {
       deleteFilesPlanned: 1,
       deleteFilesIgnored: 0,
     });
-    expect(plan.files.map((file) => file.path)).toEqual([HIVE.files[0], HIVE.files[2]]);
+    expect(plan.files.map((file) => file.path)).toEqual([
+      ICEBERG.dataFiles[0],
+      ICEBERG.dataFiles[2],
+    ]);
     expect(plan.files.map((file) => file.sequenceNumber)).toEqual([1, 3]);
     expect(plan.files[0]?.projectedFieldIds).toEqual([1, 3]);
     expect(plan.files[0]?.deleteFiles).toEqual([
@@ -184,8 +245,8 @@ describe("loadIcebergTable", () => {
       where: eq("country", "CA"),
     });
     expect(strictDeletedPartitionPlan.files[0]).toMatchObject({
-      path: HIVE.files[1],
-      deleteFiles: [{ content: "equality-delete", path: "deletes/country-ca.eq.parquet" }],
+      path: ICEBERG.dataFiles[1],
+      deleteFiles: [{ content: "equality-delete", path: ICEBERG.equalityDeleteFile }],
     });
     expect(strictDeletedPartitionPlan).toMatchObject({
       deleteFilesPlanned: 1,
@@ -197,8 +258,8 @@ describe("loadIcebergTable", () => {
       readMode: "ignore-unsupported-deletes",
     });
     expect(deletedPartitionPlan.files[0]).toMatchObject({
-      path: HIVE.files[1],
-      deleteFiles: [{ content: "equality-delete", path: "deletes/country-ca.eq.parquet" }],
+      path: ICEBERG.dataFiles[1],
+      deleteFiles: [{ content: "equality-delete", path: ICEBERG.equalityDeleteFile }],
     });
     expect(deletedPartitionPlan).toMatchObject({
       deleteFilesPlanned: 1,
@@ -234,7 +295,10 @@ describe("loadIcebergTable", () => {
       filesSkipped: 1,
       deleteFilesPlanned: 1,
     });
-    expect(plan.files.map((file) => file.path)).toEqual([HIVE.files[0], HIVE.files[2]]);
+    expect(plan.files.map((file) => file.path)).toEqual([
+      ICEBERG.dataFiles[0],
+      ICEBERG.dataFiles[2],
+    ]);
     expect(
       stableStringify({
         snapshotId: plan.snapshotId,
@@ -262,7 +326,10 @@ describe("loadIcebergTable", () => {
       filesSkipped: 1,
       deleteFilesPlanned: 1,
     });
-    expect(plan.files.map((file) => file.path)).toEqual([HIVE.files[0], HIVE.files[2]]);
+    expect(plan.files.map((file) => file.path)).toEqual([
+      ICEBERG.dataFiles[0],
+      ICEBERG.dataFiles[2],
+    ]);
 
     const arrayListStore = memoryStore();
     await arrayListStore.put(
@@ -305,6 +372,557 @@ describe("loadIcebergTable", () => {
     expect(arrayListTable.planFiles().files.map((file) => file.path)).toEqual(["data/a.parquet"]);
   });
 
+  it("hydrates Avro Iceberg manifest lists and manifests", async () => {
+    const avroStore = memoryStore();
+    await avroStore.put(
+      "metadata.json",
+      new TextEncoder().encode(
+        JSON.stringify({
+          "format-version": 2,
+          "table-uuid": "table",
+          location: "memory",
+          "current-snapshot-id": 1,
+          schemas: [
+            { "schema-id": 1, fields: [{ id: 1, name: "id", type: "int", required: true }] },
+          ],
+          snapshots: [
+            {
+              "snapshot-id": 1,
+              "timestamp-ms": 1,
+              "schema-id": 1,
+              "manifest-list": "snap-1.avro",
+            },
+          ],
+        }),
+      ),
+    );
+    await avroStore.put(
+      "snap-1.avro",
+      await avroObjectContainer(
+        {
+          type: "record",
+          name: "manifest_file",
+          fields: [
+            { name: "manifest_path", type: "string" },
+            { name: "added_snapshot_id", type: "long" },
+          ],
+        },
+        [{ manifest_path: "manifest-1.avro", added_snapshot_id: 9_223_372_036_854_775_807n }],
+      ),
+    );
+    await avroStore.put(
+      "manifest-1.avro",
+      await avroObjectContainer(
+        {
+          type: "record",
+          name: "manifest_entry",
+          fields: [
+            { name: "status", type: "int" },
+            { name: "sequence_number", type: "long" },
+            {
+              name: "data_file",
+              type: {
+                type: "record",
+                name: "data_file",
+                fields: [
+                  { name: "content", type: "int" },
+                  { name: "file_path", type: "string" },
+                  {
+                    name: "file_format",
+                    type: { type: "enum", name: "file_format", symbols: ["PARQUET"] },
+                  },
+                  { name: "key_metadata", type: ["null", "bytes"], default: null },
+                  { name: "split_offsets", type: { type: "array", items: "long" } },
+                  { name: "column_sizes", type: { type: "map", values: "long" } },
+                  { name: "nan_value_counts", type: { type: "map", values: "long" } },
+                  { name: "lower_bounds", type: { type: "map", values: "bytes" } },
+                  { name: "flags", type: { type: "array", items: "boolean" } },
+                  { name: "quality", type: "float" },
+                  { name: "weight", type: "double" },
+                  { name: "checksum", type: { type: "fixed", name: "checksum", size: 2 } },
+                  {
+                    name: "partition",
+                    type: {
+                      type: "record",
+                      name: "partition",
+                      fields: [{ name: "country", type: ["null", "string"], default: null }],
+                    },
+                  },
+                  { name: "record_count", type: "long" },
+                  { name: "file_size_in_bytes", type: "long" },
+                ],
+              },
+            },
+            { name: "data_file_again", type: "data_file" },
+          ],
+        },
+        [
+          {
+            status: 1,
+            sequence_number: 7,
+            data_file: {
+              content: 0,
+              file_path: "data/us.parquet",
+              file_format: "PARQUET",
+              key_metadata: null,
+              split_offsets: [4],
+              column_sizes: { id: 12 },
+              nan_value_counts: {},
+              lower_bounds: { id: Buffer.from([1]) },
+              flags: [true, false],
+              quality: 1.5,
+              weight: 2.5,
+              checksum: Buffer.from([1, 2]),
+              partition: { country: "US" },
+              record_count: 3,
+              file_size_in_bytes: 123,
+            },
+            data_file_again: {
+              content: 0,
+              file_path: "data/us.parquet",
+              file_format: "PARQUET",
+              key_metadata: null,
+              split_offsets: [4],
+              column_sizes: { id: 12 },
+              nan_value_counts: {},
+              lower_bounds: { id: Buffer.from([1]) },
+              flags: [true, false],
+              quality: 1.5,
+              weight: 2.5,
+              checksum: Buffer.from([1, 2]),
+              partition: { country: "US" },
+              record_count: 3,
+              file_size_in_bytes: 123,
+            },
+          },
+          {
+            status: 2,
+            sequence_number: 8,
+            data_file: {
+              content: 0,
+              file_path: "data/deleted.parquet",
+              file_format: "PARQUET",
+              key_metadata: Buffer.from([9]),
+              split_offsets: [],
+              column_sizes: {},
+              nan_value_counts: {},
+              lower_bounds: {},
+              flags: [],
+              quality: 0,
+              weight: 0,
+              checksum: Buffer.from([0, 0]),
+              partition: { country: "US" },
+              record_count: 1,
+              file_size_in_bytes: 10,
+            },
+            data_file_again: {
+              content: 0,
+              file_path: "data/deleted.parquet",
+              file_format: "PARQUET",
+              key_metadata: Buffer.from([9]),
+              split_offsets: [],
+              column_sizes: {},
+              nan_value_counts: {},
+              lower_bounds: {},
+              flags: [],
+              quality: 0,
+              weight: 0,
+              checksum: Buffer.from([0, 0]),
+              partition: { country: "US" },
+              record_count: 1,
+              file_size_in_bytes: 10,
+            },
+          },
+          {
+            status: 1,
+            sequence_number: 9,
+            data_file: {
+              content: 1,
+              file_path: "data/delete.parquet",
+              file_format: "PARQUET",
+              key_metadata: null,
+              split_offsets: [],
+              column_sizes: {},
+              nan_value_counts: {},
+              lower_bounds: {},
+              flags: [],
+              quality: 0,
+              weight: 0,
+              checksum: Buffer.from([0, 1]),
+              partition: { country: "US" },
+              record_count: 1,
+              file_size_in_bytes: 10,
+            },
+            data_file_again: {
+              content: 1,
+              file_path: "data/delete.parquet",
+              file_format: "PARQUET",
+              key_metadata: null,
+              split_offsets: [],
+              column_sizes: {},
+              nan_value_counts: {},
+              lower_bounds: {},
+              flags: [],
+              quality: 0,
+              weight: 0,
+              checksum: Buffer.from([0, 1]),
+              partition: { country: "US" },
+              record_count: 1,
+              file_size_in_bytes: 10,
+            },
+          },
+        ],
+      ),
+    );
+
+    const table = await loadIcebergTable({ store: avroStore, metadataPath: "metadata.json" });
+    expect(table.planFiles()).toMatchObject({
+      files: [
+        {
+          path: "data/us.parquet",
+          sequenceNumber: 7,
+          partition: { country: "US" },
+          recordCount: 3,
+          fileSizeInBytes: 123,
+        },
+      ],
+    });
+  });
+
+  it("rejects invalid Avro Iceberg manifest list entries", async () => {
+    const avroStore = memoryStore();
+    await avroStore.put(
+      "metadata.json",
+      new TextEncoder().encode(
+        JSON.stringify({
+          "format-version": 2,
+          "table-uuid": "table",
+          location: "memory",
+          "current-snapshot-id": 1,
+          schemas: [
+            { "schema-id": 1, fields: [{ id: 1, name: "id", type: "int", required: true }] },
+          ],
+          snapshots: [
+            {
+              "snapshot-id": 1,
+              "timestamp-ms": 1,
+              "schema-id": 1,
+              "manifest-list": "snap-1.avro",
+            },
+          ],
+        }),
+      ),
+    );
+    await avroStore.put(
+      "snap-1.avro",
+      await avroObjectContainer(
+        {
+          type: "record",
+          name: "manifest_file",
+          fields: [{ name: "missing_manifest_path", type: "string" }],
+        },
+        [{ missing_manifest_path: "manifest-1.avro" }],
+      ),
+    );
+
+    await expect(
+      loadIcebergTable({ store: avroStore, metadataPath: "metadata.json" }),
+    ).rejects.toThrow("Iceberg Avro manifest list entry is invalid");
+  });
+
+  it("rejects invalid Avro Iceberg manifest records", async () => {
+    const avroStore = memoryStore();
+    await avroStore.put(
+      "metadata.json",
+      new TextEncoder().encode(
+        JSON.stringify({
+          "format-version": 2,
+          "table-uuid": "table",
+          location: "memory",
+          "current-snapshot-id": 1,
+          schemas: [
+            { "schema-id": 1, fields: [{ id: 1, name: "id", type: "int", required: true }] },
+          ],
+          snapshots: [
+            {
+              "snapshot-id": 1,
+              "timestamp-ms": 1,
+              "schema-id": 1,
+              manifests: [{ path: "manifest-1.avro" }],
+            },
+          ],
+        }),
+      ),
+    );
+    await avroStore.put(
+      "manifest-1.avro",
+      await avroObjectContainer(
+        {
+          type: "record",
+          name: "manifest_entry",
+          fields: [
+            { name: "status", type: "int" },
+            { name: "data_file", type: "string" },
+          ],
+        },
+        [{ status: 1, data_file: "not-a-record" }],
+      ),
+    );
+
+    await expect(
+      loadIcebergTable({ store: avroStore, metadataPath: "metadata.json" }),
+    ).rejects.toThrow("Iceberg Avro manifest entry is missing data_file");
+  });
+
+  it("rejects primitive Avro Iceberg manifest records", async () => {
+    const avroStore = memoryStore();
+    await avroStore.put(
+      "metadata.json",
+      new TextEncoder().encode(
+        JSON.stringify({
+          "format-version": 2,
+          "table-uuid": "table",
+          location: "memory",
+          "current-snapshot-id": 1,
+          schemas: [
+            { "schema-id": 1, fields: [{ id: 1, name: "id", type: "int", required: true }] },
+          ],
+          snapshots: [
+            {
+              "snapshot-id": 1,
+              "timestamp-ms": 1,
+              "schema-id": 1,
+              manifests: [{ path: "manifest-1.avro" }],
+            },
+          ],
+        }),
+      ),
+    );
+    await avroStore.put("manifest-1.avro", await avroObjectContainer("string", ["not-a-record"]));
+
+    await expect(
+      loadIcebergTable({ store: avroStore, metadataPath: "metadata.json" }),
+    ).rejects.toThrow("Iceberg Avro manifest entry is invalid");
+  });
+
+  it("rejects Avro Iceberg data files with unsafe exposed counts", async () => {
+    const avroStore = memoryStore();
+    await avroStore.put(
+      "metadata.json",
+      new TextEncoder().encode(
+        JSON.stringify({
+          "format-version": 2,
+          "table-uuid": "table",
+          location: "memory",
+          "current-snapshot-id": 1,
+          schemas: [
+            { "schema-id": 1, fields: [{ id: 1, name: "id", type: "int", required: true }] },
+          ],
+          snapshots: [
+            {
+              "snapshot-id": 1,
+              "timestamp-ms": 1,
+              "schema-id": 1,
+              manifests: [{ path: "manifest-1.avro" }],
+            },
+          ],
+        }),
+      ),
+    );
+    await avroStore.put(
+      "manifest-1.avro",
+      await avroObjectContainer(
+        {
+          type: "record",
+          name: "manifest_entry",
+          fields: [
+            { name: "status", type: "int" },
+            {
+              name: "data_file",
+              type: {
+                type: "record",
+                name: "data_file",
+                fields: [
+                  { name: "content", type: "int" },
+                  { name: "file_path", type: "string" },
+                  { name: "record_count", type: "long" },
+                ],
+              },
+            },
+          ],
+        },
+        [
+          {
+            status: 1,
+            data_file: {
+              content: 0,
+              file_path: "data/us.parquet",
+              record_count: 9_223_372_036_854_775_807n,
+            },
+          },
+        ],
+      ),
+    );
+
+    await expect(
+      loadIcebergTable({ store: avroStore, metadataPath: "metadata.json" }),
+    ).rejects.toThrow("Iceberg Avro data file has invalid fields");
+  });
+
+  it("hydrates Avro Iceberg manifests with omitted optional planning fields", async () => {
+    const avroStore = memoryStore();
+    await avroStore.put(
+      "metadata.json",
+      new TextEncoder().encode(
+        JSON.stringify({
+          "format-version": 2,
+          "table-uuid": "table",
+          location: "memory",
+          "current-snapshot-id": 1,
+          schemas: [
+            { "schema-id": 1, fields: [{ id: 1, name: "id", type: "int", required: true }] },
+          ],
+          snapshots: [
+            {
+              "snapshot-id": 1,
+              "timestamp-ms": 1,
+              "schema-id": 1,
+              manifests: [{ path: "manifest-1.avro" }],
+            },
+          ],
+        }),
+      ),
+    );
+    await avroStore.put(
+      "manifest-1.avro",
+      await avroObjectContainer(
+        {
+          type: "record",
+          name: "manifest_entry",
+          fields: [
+            { name: "status", type: "int" },
+            {
+              name: "data_file",
+              type: {
+                type: "record",
+                name: "data_file",
+                fields: [
+                  { name: "file_path", type: "string" },
+                  {
+                    name: "partition",
+                    type: {
+                      type: "record",
+                      name: "partition",
+                      fields: [{ name: "country", type: ["null", "string"], default: null }],
+                    },
+                  },
+                  { name: "record_count", type: "int" },
+                  { name: "file_size_in_bytes", type: "int" },
+                ],
+              },
+            },
+          ],
+        },
+        [
+          {
+            status: 1,
+            data_file: {
+              file_path: "data/defaults.parquet",
+              partition: { country: null },
+              record_count: 2,
+              file_size_in_bytes: 10,
+            },
+          },
+        ],
+      ),
+    );
+
+    const table = await loadIcebergTable({ store: avroStore, metadataPath: "metadata.json" });
+    expect(table.planFiles().files).toMatchObject([
+      {
+        path: "data/defaults.parquet",
+        sequenceNumber: 0,
+        partition: {},
+        recordCount: 2,
+        fileSizeInBytes: 10,
+      },
+    ]);
+  });
+
+  it("hydrates Avro Iceberg manifests with file sequence fallback fields", async () => {
+    const avroStore = memoryStore();
+    await avroStore.put(
+      "metadata.json",
+      new TextEncoder().encode(
+        JSON.stringify({
+          "format-version": 2,
+          "table-uuid": "table",
+          location: "memory",
+          "current-snapshot-id": 1,
+          schemas: [
+            { "schema-id": 1, fields: [{ id: 1, name: "id", type: "int", required: true }] },
+          ],
+          snapshots: [
+            {
+              "snapshot-id": 1,
+              "timestamp-ms": 1,
+              "schema-id": 1,
+              manifests: [{ path: "manifest-1.avro" }],
+            },
+          ],
+        }),
+      ),
+    );
+    await avroStore.put(
+      "manifest-1.avro",
+      await avroObjectContainer(
+        {
+          type: "record",
+          name: "manifest_entry",
+          fields: [
+            { name: "status", type: "int" },
+            { name: "file_sequence_number", type: "long" },
+            {
+              name: "data_file",
+              type: {
+                type: "record",
+                name: "data_file",
+                fields: [
+                  { name: "content", type: "int" },
+                  { name: "file_path", type: "string" },
+                  { name: "partition", type: "null" },
+                  { name: "record_count", type: "long" },
+                ],
+              },
+            },
+          ],
+        },
+        [
+          {
+            status: 1,
+            file_sequence_number: 4,
+            data_file: {
+              content: 0,
+              file_path: "data/fallback.parquet",
+              partition: null,
+              record_count: 2,
+            },
+          },
+        ],
+      ),
+    );
+
+    const table = await loadIcebergTable({ store: avroStore, metadataPath: "metadata.json" });
+    expect(table.planFiles().files).toMatchObject([
+      {
+        path: "data/fallback.parquet",
+        sequenceNumber: 4,
+        partition: {},
+        recordCount: 2,
+      },
+    ]);
+  });
+
   it("counts manifest pruning against generated Iceberg metadata fixtures", async () => {
     const table = await loadIcebergTable({
       store,
@@ -322,7 +940,10 @@ describe("loadIcebergTable", () => {
       filesPlanned: 2,
       filesSkipped: 1,
     });
-    expect(plan.files.map((file) => file.path)).toEqual([HIVE.files[0], HIVE.files[2]]);
+    expect(plan.files.map((file) => file.path)).toEqual([
+      ICEBERG.dataFiles[0],
+      ICEBERG.dataFiles[2],
+    ]);
   });
 
   it("locks Iceberg planned files with Parquet row-group task ranges", async () => {
@@ -357,8 +978,8 @@ describe("loadIcebergTable", () => {
     const table = await loadIcebergTable({ store, metadataPath: ICEBERG.metadataFile });
 
     expect(table.planFiles({ snapshotId: 1 }).files.map((file) => file.path)).toEqual([
-      HIVE.files[0],
-      HIVE.files[1],
+      ICEBERG.dataFiles[0],
+      ICEBERG.dataFiles[1],
     ]);
     expect(table.planFiles({ ref: "previous" }).snapshotId).toBe(1);
     expect(table.planFiles({ asOfTimestampMs: 1_767_225_600_000 }).snapshotId).toBe(1);
@@ -397,7 +1018,7 @@ describe("loadIcebergTable", () => {
           readMode: "ignore-deletes",
         })
         .files.map((file) => file.path),
-    ).toEqual([HIVE.files[1]]);
+    ).toEqual([ICEBERG.dataFiles[1]]);
 
     expect(
       table
@@ -407,18 +1028,22 @@ describe("loadIcebergTable", () => {
           readMode: "ignore-deletes",
         })
         .files.map((file) => file.path),
-    ).toEqual([HIVE.files[0], HIVE.files[1]]);
+    ).toEqual([ICEBERG.dataFiles[0], ICEBERG.dataFiles[1]]);
 
     expect(
       table.planFiles({ snapshotId: 1, where: like("country", "U%"), readMode: "ignore-deletes" })
         .files[0]?.path,
-    ).toBe(HIVE.files[0]);
+    ).toBe(ICEBERG.dataFiles[0]);
 
     expect(
       table.planFiles({ snapshotId: 1, where: lit(true), readMode: "ignore-deletes" }).files,
     ).toHaveLength(2);
     expect(
       table.planFiles({ snapshotId: 1, where: eq("amount", 10), readMode: "ignore-deletes" }).files,
+    ).toHaveLength(2);
+    expect(
+      table.planFiles({ snapshotId: 1, where: gt("country", 30), readMode: "ignore-deletes" })
+        .files,
     ).toHaveLength(2);
     expect(
       table.planFiles({ snapshotId: 1, where: eq("country", "MX"), readMode: "ignore-deletes" }),
@@ -619,6 +1244,36 @@ describe("loadIcebergTable", () => {
     ]);
   });
 
+  it("applies position deletes against absolute file row positions from batches", async () => {
+    const batches: Row[][] = [];
+
+    for await (const batch of scanPlannedIcebergRows({
+      plan: [
+        {
+          path: "data/a.parquet",
+          sequenceNumber: 1,
+          partition: {},
+          recordCount: 5,
+          projectedFieldIds: [1],
+          snapshotId: 1,
+          deleteFiles: [{ content: "position-delete", path: "deletes/a.pos.parquet" }],
+        },
+      ],
+      readDataFile: async () =>
+        asyncGenerator([
+          {
+            rowOffset: 2,
+            rows: [{ id: 3 }, { id: 4 }, { id: 5 }],
+          },
+        ]),
+      readDeleteFile: async () => ({ positionDeletes: [{ path: "data/a.parquet", position: 3 }] }),
+    })) {
+      batches.push(batch);
+    }
+
+    expect(batches).toEqual([[{ id: 3 }, { id: 5 }]]);
+  });
+
   it("applies fixture equality delete files while scanning planned Parquet rows", async () => {
     const table = await loadIcebergTable({ store, metadataPath: ICEBERG.metadataFile });
     const plan = table.planFiles({ where: eq("country", "CA") });
@@ -659,6 +1314,30 @@ describe("loadIcebergTable", () => {
     expect(rows.map((row) => row.id)).toEqual([0, 2, 3, 200, 201, 202, 203]);
   });
 
+  it("keeps fixture position deletes correct when Parquet reads start after pruned rows", async () => {
+    const rows: Row[] = [];
+
+    for await (const batch of scanPlannedIcebergRows({
+      plan: [
+        {
+          path: ICEBERG.dataFiles[0],
+          sequenceNumber: 1,
+          partition: {},
+          recordCount: 4,
+          projectedFieldIds: [1],
+          snapshotId: 1,
+          deleteFiles: [{ content: "position-delete", path: ICEBERG.positionDeleteFile }],
+        },
+      ],
+      readDataFile: async (file) => readParquetObjectBatches(store, file.path, { rowStart: 1 }),
+      readDeleteFile: async (deleteFile) => readIcebergParquetDeletes(store, deleteFile),
+    })) {
+      rows.push(...batch);
+    }
+
+    expect(rows.map((row) => row.id)).toEqual([2, 3]);
+  });
+
   it("appends files by writing a new snapshot and metadata file", async () => {
     const appendStore = memoryStore();
     await appendStore.put(ICEBERG.metadataFile, readFileSync(fixturePath(ICEBERG.metadataFile)));
@@ -669,9 +1348,10 @@ describe("loadIcebergTable", () => {
     const result = await table.appendFiles({
       jobId: "job_append",
       nowMs: 1_767_398_400_000,
+      nextSnapshotId: 3,
       files: [
         {
-          path: "appends/date=2026-01-03/country=US/part-000.parquet",
+          path: `${ICEBERG.tableLocation}/appends/date=2026-01-03/country=US/part-000.parquet`,
           partition: { date: "2026-01-03", country: "US" },
           recordCount: 2,
           fileSizeInBytes: 123,
@@ -701,9 +1381,9 @@ describe("loadIcebergTable", () => {
     });
     expect(appendedFromCatalog.metadataPath).toBe(result.metadataPath);
     expect(plan.files.map((file) => file.path)).toEqual([
-      HIVE.files[0],
-      HIVE.files[2],
-      "appends/date=2026-01-03/country=US/part-000.parquet",
+      ICEBERG.dataFiles[0],
+      ICEBERG.dataFiles[2],
+      `${ICEBERG.tableLocation}/appends/date=2026-01-03/country=US/part-000.parquet`,
     ]);
     expect(plan.files.at(-1)).toMatchObject({
       sequenceNumber: 4,
@@ -729,7 +1409,7 @@ describe("loadIcebergTable", () => {
       entries: [
         {
           taskId: "task-0",
-          outputPath: "appends/date=2026-01-04/country=US/part-000.parquet",
+          outputPath: `${ICEBERG.tableLocation}/appends/date=2026-01-04/country=US/part-000.parquet`,
           partitionValues: { country: "US", date: "2026-01-04" },
           rowCount: 2,
           byteSize: 456,
@@ -742,7 +1422,11 @@ describe("loadIcebergTable", () => {
       ],
     });
 
-    const result = await table.appendOutputManifest({ manifest, nowMs: 1_767_484_800_000 });
+    const result = await table.appendOutputManifest({
+      manifest,
+      nowMs: 1_767_484_800_000,
+      nextSnapshotId: 3,
+    });
 
     expect(result).toMatchObject({
       snapshotId: 3,
@@ -755,7 +1439,7 @@ describe("loadIcebergTable", () => {
     expect(
       appended.planFiles({ snapshotId: 3, where: eq("date", "2026-01-04") }).files.at(-1),
     ).toMatchObject({
-      path: "appends/date=2026-01-04/country=US/part-000.parquet",
+      path: `${ICEBERG.tableLocation}/appends/date=2026-01-04/country=US/part-000.parquet`,
       partition: { country: "US", date: "2026-01-04" },
       recordCount: 2,
     });
@@ -764,7 +1448,7 @@ describe("loadIcebergTable", () => {
   it("reads appended Parquet rows through Iceberg time travel", async () => {
     const appendStore = memoryStore();
     await appendStore.put(ICEBERG.metadataFile, readFileSync(fixturePath(ICEBERG.metadataFile)));
-    const dataPath = "appends/date=2026-01-06/country=US/part-000.parquet";
+    const dataPath = `${ICEBERG.tableLocation}/appends/date=2026-01-06/country=US/part-000.parquet`;
     const written = await writeParquet(appendStore, dataPath, {
       columnData: [
         { name: "id", data: [901, 902], type: "INT32" },
@@ -781,6 +1465,7 @@ describe("loadIcebergTable", () => {
     const result = await table.appendFiles({
       jobId: "job_readback_append",
       nowMs: 1_767_657_600_000,
+      nextSnapshotId: 3,
       files: [
         {
           path: dataPath,
@@ -843,9 +1528,10 @@ describe("loadIcebergTable", () => {
       catalog,
       jobId: "job_rest_append",
       nowMs: 1_767_571_200_000,
+      nextSnapshotId: 3,
       files: [
         {
-          path: "appends/date=2026-01-05/country=US/part-000.parquet",
+          path: `${ICEBERG.tableLocation}/appends/date=2026-01-05/country=US/part-000.parquet`,
           partition: { country: "US", date: "2026-01-05" },
           recordCount: 2,
           fileSizeInBytes: 789,
@@ -911,9 +1597,10 @@ describe("loadIcebergTable", () => {
 
     const result = await table.appendFiles({
       catalog,
+      nextSnapshotId: 3,
       files: [
         {
-          path: "appends/rest-no-body.parquet",
+          path: `${ICEBERG.tableLocation}/appends/rest-no-body.parquet`,
           partition: {},
           recordCount: 1,
           fileSizeInBytes: 10,
@@ -937,7 +1624,7 @@ describe("loadIcebergTable", () => {
       entries: [
         {
           taskId: "task-0",
-          outputPath: "appends/missing.parquet",
+          outputPath: `${ICEBERG.tableLocation}/appends/missing.parquet`,
           partitionValues: {},
           rowCount: 1,
           byteSize: 1,
@@ -986,6 +1673,7 @@ describe("loadIcebergTable", () => {
     const result = await table.appendFiles({
       files: [{ path: "data/b.parquet", recordCount: 1, fileSizeInBytes: 2 }],
       nowMs: 2,
+      nextSnapshotId: 2,
     });
 
     expect(result).toMatchObject({
@@ -1020,9 +1708,10 @@ describe("loadIcebergTable", () => {
     await expect(
       table.appendFiles({
         catalog,
+        nextSnapshotId: 3,
         files: [
           {
-            path: "appends/conflict.parquet",
+            path: `${ICEBERG.tableLocation}/appends/conflict.parquet`,
             partition: {},
             recordCount: 1,
             fileSizeInBytes: 10,
@@ -1041,6 +1730,103 @@ describe("loadIcebergTable", () => {
     await expect(
       conflictStore.head("iceberg/warehouse/places/metadata/v3.metadata.json"),
     ).resolves.toBeNull();
+  });
+
+  it("rejects stale object-store append commits", async () => {
+    const conflictStore = memoryStore();
+    const metadata = JSON.parse(readFileSync(fixturePath(ICEBERG.metadataFile), "utf8")) as Record<
+      string,
+      unknown
+    >;
+    await conflictStore.put(
+      ICEBERG.metadataFile,
+      new TextEncoder().encode(JSON.stringify(metadata)),
+    );
+    const table = await loadIcebergTable({
+      store: conflictStore,
+      metadataPath: ICEBERG.metadataFile,
+    });
+    metadata["current-snapshot-id"] = 1;
+    await conflictStore.put(
+      ICEBERG.metadataFile,
+      new TextEncoder().encode(JSON.stringify(metadata)),
+    );
+
+    await expect(
+      table.appendFiles({
+        files: [
+          {
+            path: `${ICEBERG.tableLocation}/appends/stale.parquet`,
+            partition: {},
+            recordCount: 1,
+            fileSizeInBytes: 10,
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "LAQL_ICEBERG_COMMIT_CONFLICT" });
+  });
+
+  it("requires conditional writes for default object-store appends", async () => {
+    const backingStore = memoryStore();
+    await backingStore.put(ICEBERG.metadataFile, readFileSync(fixturePath(ICEBERG.metadataFile)));
+    const unsafeStore: ObjectStore = {
+      get: (path) => backingStore.get(path),
+      getRange: (path, range) => backingStore.getRange(path, range),
+      put: (path, body, options) => backingStore.put(path, body, options),
+      delete: (path) => backingStore.delete(path),
+      list: (prefix, options) => backingStore.list(prefix, options),
+      head: (path) => backingStore.head(path),
+    };
+    const table = await loadIcebergTable({
+      store: unsafeStore,
+      metadataPath: ICEBERG.metadataFile,
+    });
+
+    await expect(
+      table.appendFiles({
+        nextSnapshotId: 3,
+        files: [
+          {
+            path: `${ICEBERG.tableLocation}/appends/unsafe-store.parquet`,
+            partition: {},
+            recordCount: 1,
+            fileSizeInBytes: 10,
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "LAQL_CATALOG_ERROR" });
+  });
+
+  it("treats version-hint compare-and-swap failure as an append conflict", async () => {
+    const conflictStore = memoryStore();
+    await conflictStore.put(ICEBERG.metadataFile, readFileSync(fixturePath(ICEBERG.metadataFile)));
+    const table = await loadIcebergTable({
+      store: conflictStore,
+      metadataPath: ICEBERG.metadataFile,
+    });
+    const originalConditionalPut = conflictStore.conditionalPut.bind(conflictStore);
+    let failNextHintUpdate = true;
+    conflictStore.conditionalPut = (path, body, options) => {
+      if (path.endsWith("version-hint.text") && failNextHintUpdate) {
+        failNextHintUpdate = false;
+        return Promise.resolve(false);
+      }
+      return originalConditionalPut(path, body, options);
+    };
+
+    await expect(
+      table.appendFiles({
+        nextSnapshotId: 3,
+        files: [
+          {
+            path: `${ICEBERG.tableLocation}/appends/cas-conflict.parquet`,
+            partition: {},
+            recordCount: 1,
+            fileSizeInBytes: 10,
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "LAQL_ICEBERG_COMMIT_CONFLICT" });
   });
 
   it("turns REST catalog commit conflicts into Iceberg commit conflicts", async () => {
@@ -1062,7 +1848,7 @@ describe("loadIcebergTable", () => {
         catalog,
         files: [
           {
-            path: "appends/rest-conflict.parquet",
+            path: `${ICEBERG.tableLocation}/appends/rest-conflict.parquet`,
             partition: {},
             recordCount: 1,
             fileSizeInBytes: 10,
@@ -1277,6 +2063,74 @@ describe("loadIcebergTable", () => {
     await expect(
       loadIcebergTable({ store: malformedManifestListStore, metadataPath: "metadata.json" }),
     ).rejects.toMatchObject({ code: "LAQL_CATALOG_ERROR" });
+  });
+
+  it("rejects unsafe manifest-sourced paths before store reads", async () => {
+    const unsafeDataPathStore = memoryStore();
+    await unsafeDataPathStore.put(
+      "metadata.json",
+      new TextEncoder().encode(
+        JSON.stringify({
+          "format-version": 2,
+          "table-uuid": "table",
+          location: "memory",
+          "current-snapshot-id": 1,
+          schemas: [
+            { "schema-id": 1, fields: [{ id: 1, name: "id", type: "int", required: true }] },
+          ],
+          snapshots: [
+            {
+              "snapshot-id": 1,
+              "timestamp-ms": 1,
+              "schema-id": 1,
+              manifests: [
+                {
+                  path: "manifest.json",
+                  files: [
+                    {
+                      path: "https://evil.test/data.parquet",
+                      sequenceNumber: 1,
+                      recordCount: 1,
+                      deleteFiles: [{ content: "position-delete", path: "../delete.parquet" }],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    );
+    await expect(
+      loadIcebergTable({ store: unsafeDataPathStore, metadataPath: "metadata.json" }),
+    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+
+    const unsafeManifestRefStore = memoryStore();
+    await unsafeManifestRefStore.put(
+      "metadata.json",
+      new TextEncoder().encode(
+        JSON.stringify({
+          "format-version": 2,
+          "table-uuid": "table",
+          location: "memory",
+          "current-snapshot-id": 1,
+          schemas: [
+            { "schema-id": 1, fields: [{ id: 1, name: "id", type: "int", required: true }] },
+          ],
+          snapshots: [
+            {
+              "snapshot-id": 1,
+              "timestamp-ms": 1,
+              "schema-id": 1,
+              manifests: [{ path: "//evil.test/manifest.json" }],
+            },
+          ],
+        }),
+      ),
+    );
+    await expect(
+      loadIcebergTable({ store: unsafeManifestRefStore, metadataPath: "metadata.json" }),
+    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
   });
 
   it("validates append inputs and snapshot schemas", async () => {

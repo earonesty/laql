@@ -2,6 +2,14 @@
   "name": "@laql/iceberg",
   "version": "0.0.1",
   "description": "LaQL Iceberg adapter: table loading, snapshots, manifest planning, commits",
+  "keywords": [
+    "iceberg",
+    "lakehouse",
+    "parquet",
+    "object-storage",
+    "query-engine"
+  ],
+  "author": "Erik Aronesty",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -13,8 +21,13 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
+  "scripts": {
+    "prepack": "pnpm -w build"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/earonesty/laql.git",
@@ -27,7 +40,8 @@
     "access": "public"
   },
   "dependencies": {
-    "@laql/core": "workspace:*"
+    "@laql/core": "workspace:*",
+    "avsc": "^5.7.9"
   },
   "devDependencies": {
     "@laql/fixtures": "workspace:*"

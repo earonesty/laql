@@ -108,8 +108,48 @@ export class HttpObjectStore implements ObjectStore {
     if (init.headers) {
       for (const [key, value] of new Headers(init.headers)) headers.set(key, value);
     }
-    return this.fetchImpl(new URL(path, this.baseUrl), { ...init, headers });
+    return this.fetchImpl(this.urlForPath(path), { ...init, headers });
   }
+
+  private urlForPath(path: string): URL {
+    const base = new URL(this.baseUrl);
+    const url = new URL(encodeObjectPath(path), base);
+    if (url.origin !== base.origin || !url.pathname.startsWith(base.pathname)) {
+      throw new LaQLError("LAQL_VALIDATION_ERROR", `Object path escapes HTTP base URL: ${path}`, {
+        path,
+        baseUrl: this.baseUrl,
+      });
+    }
+    return url;
+  }
+}
+
+function encodeObjectPath(path: string): string {
+  if (/^(?:[a-z][a-z0-9+.-]*:)?\/\//iu.test(path) || path.startsWith("/")) {
+    throw new LaQLError("LAQL_VALIDATION_ERROR", `Object path must be relative: ${path}`, {
+      path,
+    });
+  }
+  if (path === "") return "";
+  return path
+    .split("/")
+    .map((segment) => {
+      let decoded: string;
+      try {
+        decoded = decodeURIComponent(segment);
+      } catch {
+        throw new LaQLError("LAQL_VALIDATION_ERROR", `Object path has invalid encoding: ${path}`, {
+          path,
+        });
+      }
+      if (decoded === "." || decoded === "..") {
+        throw new LaQLError("LAQL_VALIDATION_ERROR", `Object path contains traversal: ${path}`, {
+          path,
+        });
+      }
+      return encodeURIComponent(segment);
+    })
+    .join("/");
 }
 
 function assertOk(response: Response, path: string): void {

@@ -70,4 +70,35 @@ describe("MemoryObjectStore", () => {
     const second = (await store.head("k"))?.etag;
     expect(first).not.toBe(second);
   });
+
+  it("conditionally creates and updates objects", async () => {
+    const store = memoryStore();
+
+    await expect(
+      store.conditionalPut("cas", enc.encode("1"), {
+        expectedEtag: null,
+        contentType: "text/plain",
+      }),
+    ).resolves.toBe(true);
+    const first = await store.head("cas");
+    expect(first).toMatchObject({ size: 1, contentType: "text/plain" });
+
+    await expect(
+      store.conditionalPut("cas", enc.encode("2"), { expectedEtag: first?.etag ?? "" }),
+    ).resolves.toBe(true);
+    expect(await store.get("cas")).toEqual(enc.encode("2"));
+  });
+
+  it("rejects conditional writes when existence or etag does not match", async () => {
+    const store = memoryStore();
+    await store.put("cas", enc.encode("1"));
+
+    await expect(
+      store.conditionalPut("cas", enc.encode("2"), { expectedEtag: null }),
+    ).resolves.toBe(false);
+    await expect(
+      store.conditionalPut("cas", enc.encode("3"), { expectedEtag: "stale" }),
+    ).resolves.toBe(false);
+    expect(await store.get("cas")).toEqual(enc.encode("1"));
+  });
 });

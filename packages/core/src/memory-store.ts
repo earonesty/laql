@@ -1,5 +1,12 @@
 import { LaQLError } from "./errors.js";
-import type { ListOptions, ObjectHead, ObjectInfo, ObjectStore, PutOptions } from "./store.js";
+import type {
+  ConditionalPutOptions,
+  ListOptions,
+  ObjectHead,
+  ObjectInfo,
+  ObjectStore,
+  PutOptions,
+} from "./store.js";
 
 interface StoredObject {
   bytes: Uint8Array;
@@ -58,6 +65,26 @@ export class MemoryObjectStore implements ObjectStore {
     options?: PutOptions,
   ): Promise<void> {
     const bytes = await collect(body);
+    this.writeObject(path, bytes, options);
+  }
+
+  async conditionalPut(
+    path: string,
+    body: Uint8Array | ReadableStream<Uint8Array>,
+    options: ConditionalPutOptions,
+  ): Promise<boolean> {
+    const bytes = await collect(body);
+    const current = this.objects.get(path);
+    if (options.expectedEtag === null) {
+      if (current !== undefined) return false;
+    } else if (current?.etag !== options.expectedEtag) {
+      return false;
+    }
+    this.writeObject(path, bytes, options);
+    return true;
+  }
+
+  private writeObject(path: string, bytes: Uint8Array, options?: PutOptions): void {
     this.version += 1;
     const stored: StoredObject = {
       bytes,

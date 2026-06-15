@@ -7,13 +7,9 @@ Runs in Cloudflare Workers, browsers, Node, Deno, Bun, and service workers.
 Built on:
 
 ```txt
-iceberg-js        (catalog + commit protocol)
-icebird           (Iceberg metadata + manifest reads)
 hyparquet         (Parquet reads)
 hyparquet-writer  (Parquet writes)
-avsc              (Avro for Iceberg manifests)
-h3-js             (optional, via @laql/geo)
-@turf/*           (optional, via @laql/geo)
+h3-js             (H3 cell creation, parents, and grid-disk predicates)
 ```
 
 Dependency roles:
@@ -26,14 +22,12 @@ hyparquet          pure JS Parquet reads; snappy built in; zstd/gzip/lz4 via
 hyparquet-writer   snappy by default, custom compressors pluggable (zstd = bring your own);
                    column statistics on by default; nested records; row-group sizing
 
-icebird 0.8        reads Iceberg v1/v2/v3; position deletes and v3 deletion vectors
-                   support; v2/v3 writes (create/append/delete)
-
-iceberg-js 1.0     Supabase REST catalog client, catalog + commit endpoints only —
-                   no data ops; laql owns building commit requirements/updates
-
-avsc 5.7           mature Avro; manifest read/write viable
+h3-js              H3 lat/lon-to-cell, parent, and grid-disk operations used by
+                   the expression evaluator
 ```
+
+Current Iceberg manifest hydration reads LaQL's JSON fixture/manifest format
+and uncompressed Avro Iceberg manifest lists/manifests.
 
 Primary use case:
 
@@ -203,11 +197,10 @@ where it runs.
   page/batch streaming
 
 @laql/iceberg
-  iceberg-js / icebird adapter
   table loading
   schema loading
   snapshot loading
-  manifest planning
+  JSON and Avro manifest planning
   partition pruning
   Iceberg append commits
 
@@ -544,25 +537,14 @@ st_as_wkt(value)
 ```txt
 h3_cell(lat, lon, res)
 h3_parent(cell, res)
-h3_children(cell, res)
-h3_resolution(cell)
-
-h3_grid_disk(cell, k)
-h3_grid_distance(a, b)
-
-h3_boundary(cell)
-h3_center(cell)
-
 h3_within(column, origin, k)
-h3_intersects_cell(geom, cell)
-h3_polygon_to_cells(geom, res)
+h3_in(column, cells)
 ```
 
 Special pushdown-aware predicates:
 
 ```txt
 h3_within(h3_8, '8829a1d757fffff', 2)
-h3_parent_is(h3_8, '8729a1d75ffffff')
 h3_in(h3_8, [...])
 ```
 
@@ -2622,7 +2604,7 @@ Major subsystems and their responsibilities:
    Hive partition discovery and partition pruning
 
 3. Iceberg reads
-   icebird adapter: metadata, snapshots, manifests, manifest pruning
+   in-repo metadata, snapshots, JSON/Avro manifests, manifest pruning
    position deletes, deletion vectors, equality deletes
    strict mode fails loudly on unknown delete formats
 
@@ -2644,7 +2626,7 @@ Major subsystems and their responsibilities:
    hyparquet-writer adapter, partitioned writes
    deterministic output manifests
    pluggable compression
-   Iceberg append commit via iceberg-js + Durable Object commit coordinator
+   Iceberg append commit via object-store or REST catalog commit coordinator
    commit requirements and updates
    resumable writes
 

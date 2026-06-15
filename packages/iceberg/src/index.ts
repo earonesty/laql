@@ -8,8 +8,19 @@ import {
   type Row,
   stableStringify,
 } from "@laql/core";
+import avro from "avsc";
 
 export const PACKAGE = "@laql/iceberg" as const;
+
+interface AvroLongBuffer extends Uint8Array {
+  readBigInt64LE(): bigint;
+  writeBigInt64LE(value: bigint): number;
+}
+
+declare const Buffer: {
+  alloc(size: number): AvroLongBuffer;
+  from(buffer: ArrayBufferLike, byteOffset?: number, length?: number): Uint8Array;
+};
 
 export type IcebergReadMode = "strict" | "ignore-deletes" | "ignore-unsupported-deletes";
 
@@ -63,6 +74,7 @@ export interface IcebergAppendOptions {
   files: IcebergAppendFile[];
   jobId?: string;
   nowMs?: number;
+  nextSnapshotId?: number;
   catalog?: IcebergCommitCatalog;
 }
 
@@ -112,6 +124,7 @@ export interface PlannedIcebergFile {
   sequenceNumber: number;
   partition: Record<string, string>;
   recordCount: number;
+  fileSizeInBytes?: number;
   projectedFieldIds: number[];
   snapshotId: number;
   deleteFiles?: IcebergDeleteFile[];
@@ -164,9 +177,14 @@ export interface DecodedIcebergDeletes {
   deletionVectors?: IcebergDeletionVector[];
 }
 
+export interface IcebergRowBatch {
+  rowOffset: number;
+  rows: Row[];
+}
+
 export interface ScanPlannedIcebergRowsOptions {
   plan: IcebergPlan | PlannedIcebergFile[];
-  readDataFile(file: PlannedIcebergFile): Promise<Row[] | AsyncIterable<Row[]>>;
+  readDataFile(file: PlannedIcebergFile): Promise<Row[] | AsyncIterable<Row[] | IcebergRowBatch>>;
   readDeleteFile(
     deleteFile: IcebergDeleteFile,
     dataFile: PlannedIcebergFile,
@@ -211,6 +229,14 @@ export interface ManifestFile {
 export interface ManifestDeleteFile {
   content: string;
   path: string;
+}
+
+interface ConditionalObjectStore extends ObjectStore {
+  conditionalPut(
+    path: string,
+    body: Uint8Array | ReadableStream<Uint8Array>,
+    options: { contentType?: string; expectedEtag: string | null },
+  ): Promise<boolean>;
 }
 
 export class IcebergTable {
@@ -325,6 +351,7 @@ export class IcebergTable {
           projectedFieldIds,
           snapshotId: snapshot["snapshot-id"],
         };
+        if (file.fileSizeInBytes !== undefined) planned.fileSizeInBytes = file.fileSizeInBytes;
         if (
           (readMode === "strict" || readMode === "ignore-unsupported-deletes") &&
           supportedDeleteFiles.length > 0
@@ -361,7 +388,8 @@ export class IcebergTable {
     }
     const currentSnapshot = this.snapshot();
     const nextSnapshotId =
-      Math.max(...this.metadata.snapshots.map((snapshot) => snapshot["snapshot-id"])) + 1;
+      options.nextSnapshotId ?? randomSnapshotId(this.metadata.snapshots.map(snapshotIdOf));
+    validateNewSnapshotId(nextSnapshotId, this.metadata.snapshots);
     const nextSequenceNumber = maxSequenceNumber(this.metadata) + 1;
     const manifestPath = appendManifestPath(this.metadataPath, options.jobId, nextSnapshotId);
     const manifest: Manifest = {
@@ -452,6 +480,7 @@ export class IcebergTable {
       files,
       jobId: options.manifest.jobId,
       ...(options.nowMs !== undefined ? { nowMs: options.nowMs } : {}),
+      ...(options.nextSnapshotId !== undefined ? { nextSnapshotId: options.nextSnapshotId } : {}),
       ...(options.catalog !== undefined ? { catalog: options.catalog } : {}),
     });
   }
@@ -479,6 +508,25 @@ export class IcebergTable {
 
 export class ObjectStoreIcebergCommitCatalog implements IcebergCommitCatalog {
   async commitAppend(input: IcebergCommitInput): Promise<IcebergCommitResult> {
+    if (!supportsConditionalPut(input.store)) {
+      throw new LaQLError(
+        "LAQL_CATALOG_ERROR",
+        "Object-store Iceberg append requires conditional put support",
+        { metadataPath: input.currentMetadataPath },
+      );
+    }
+    const currentBytes = await input.store.get(input.currentMetadataPath);
+    if (!currentBytes) {
+      throw new LaQLError("LAQL_OBJECT_NOT_FOUND", `No object at ${input.currentMetadataPath}`, {
+        path: input.currentMetadataPath,
+      });
+    }
+    const current = validateMetadata(JSON.parse(new TextDecoder().decode(currentBytes)) as unknown);
+    if (current["current-snapshot-id"] !== input.expectedSnapshotId) {
+      return { committed: false };
+    }
+    const versionHintPath = metadataVersionHintPath(input.nextMetadataPath);
+    const versionHintHead = await input.store.head(versionHintPath);
     await input.store.put(
       input.manifestPath,
       new TextEncoder().encode(`${stableStringify(input.manifest)}\n`),
@@ -489,11 +537,12 @@ export class ObjectStoreIcebergCommitCatalog implements IcebergCommitCatalog {
       new TextEncoder().encode(`${JSON.stringify(input.metadata, null, 2)}\n`),
       { contentType: "application/json" },
     );
-    await input.store.put(
-      metadataVersionHintPath(input.nextMetadataPath),
+    const updated = await input.store.conditionalPut(
+      versionHintPath,
       new TextEncoder().encode(`${input.nextSnapshotId}\n`),
-      { contentType: "text/plain" },
+      { contentType: "text/plain", expectedEtag: versionHintHead?.etag ?? null },
     );
+    if (!updated) return { committed: false };
     return { committed: true, metadataPath: input.nextMetadataPath };
   }
 }
@@ -720,16 +769,18 @@ export async function* scanPlannedIcebergRows(
     const deletes = await decodedDeletesForFile(file, options);
     const data = await options.readDataFile(file);
     let rowOffset = 0;
-    for await (const rows of rowBatches(data)) {
+    for await (const batch of rowBatches(data)) {
+      const rows = Array.isArray(batch) ? batch : batch.rows;
+      const absoluteRowOffset = Array.isArray(batch) ? rowOffset : batch.rowOffset;
       const visibleRows = hasDeletes(deletes)
         ? applyIcebergDeletes({
             dataFilePath: file.path,
             rows,
-            rowOffset,
+            rowOffset: absoluteRowOffset,
             ...deletes,
           })
         : rows;
-      rowOffset += rows.length;
+      rowOffset = absoluteRowOffset + rows.length;
       if (visibleRows.length > 0) yield visibleRows;
     }
   }
@@ -767,7 +818,9 @@ function hasDeletes(deletes: DecodedIcebergDeletes): boolean {
   );
 }
 
-async function* rowBatches(rows: Row[] | AsyncIterable<Row[]>): AsyncIterable<Row[]> {
+async function* rowBatches(
+  rows: Row[] | AsyncIterable<Row[] | IcebergRowBatch>,
+): AsyncIterable<Row[] | IcebergRowBatch> {
   if (isAsyncIterable(rows)) {
     yield* rows;
   } else {
@@ -775,7 +828,7 @@ async function* rowBatches(rows: Row[] | AsyncIterable<Row[]>): AsyncIterable<Ro
   }
 }
 
-function isAsyncIterable(value: unknown): value is AsyncIterable<Row[]> {
+function isAsyncIterable(value: unknown): value is AsyncIterable<Row[] | IcebergRowBatch> {
   return (
     typeof value === "object" &&
     value !== null &&
@@ -800,10 +853,42 @@ function nextMetadataPathFor(metadataPath: string, snapshotId: number): string {
   return `${prefix}v${snapshotId}.metadata.json`;
 }
 
+function randomSnapshotId(existingIds: readonly number[]): number {
+  const existing = new Set(existingIds);
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const id = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER) + 1;
+    if (!existing.has(id)) return id;
+  }
+  throw new LaQLError("LAQL_CATALOG_ERROR", "Unable to allocate unique Iceberg snapshot id");
+}
+
+function validateNewSnapshotId(snapshotId: number, snapshots: readonly Snapshot[]): void {
+  if (!Number.isSafeInteger(snapshotId) || snapshotId <= 0) {
+    throw new LaQLError(
+      "LAQL_VALIDATION_ERROR",
+      "Iceberg snapshot id must be a positive safe integer",
+      { snapshotId },
+    );
+  }
+  if (snapshots.some((snapshot) => snapshotIdOf(snapshot) === snapshotId)) {
+    throw new LaQLError("LAQL_VALIDATION_ERROR", "Iceberg snapshot id already exists", {
+      snapshotId,
+    });
+  }
+}
+
+function snapshotIdOf(snapshot: Snapshot): number {
+  return snapshot["snapshot-id"];
+}
+
 function metadataVersionHintPath(metadataPath: string): string {
   const slash = metadataPath.lastIndexOf("/");
   const prefix = slash === -1 ? "" : `${metadataPath.slice(0, slash + 1)}`;
   return `${prefix}version-hint.text`;
+}
+
+function supportsConditionalPut(store: ObjectStore): store is ConditionalObjectStore {
+  return typeof (store as Partial<ConditionalObjectStore>).conditionalPut === "function";
 }
 
 async function hydrateMetadataManifests(
@@ -811,16 +896,22 @@ async function hydrateMetadataManifests(
   metadata: MetadataFile,
 ): Promise<MetadataFile> {
   const hydrated = cloneMetadata(metadata);
+  const tablePrefix = tableLocationObjectPrefix(hydrated.location);
   for (const snapshot of hydrated.snapshots) {
     const manifestReferences =
       snapshot.manifests ??
       (snapshot["manifest-list"] !== undefined
-        ? await readManifestList(store, snapshot["manifest-list"])
+        ? await readManifestList(
+            store,
+            validateManifestSourcedPath(snapshot["manifest-list"], tablePrefix),
+          )
         : []);
     snapshot.manifests = await Promise.all(
       manifestReferences.map(async (manifest) => {
-        if (Array.isArray(manifest.files)) return manifest;
-        return await readManifest(store, manifest.path);
+        const manifestPath = validateManifestSourcedPath(manifest.path, tablePrefix);
+        if (Array.isArray(manifest.files))
+          return validateManifestPaths(manifest, manifestPath, tablePrefix);
+        return await readManifest(store, manifestPath, tablePrefix);
       }),
     );
   }
@@ -833,7 +924,9 @@ async function readManifestList(store: ObjectStore, path: string): Promise<Manif
     throw new LaQLError("LAQL_OBJECT_NOT_FOUND", `No Iceberg manifest list at ${path}`, { path });
   }
   try {
-    return validateManifestList(JSON.parse(new TextDecoder().decode(bytes)), path);
+    return avroObjectContainer(bytes)
+      ? validateAvroManifestList(await decodeAvroObjectContainer(bytes), path)
+      : validateManifestList(JSON.parse(new TextDecoder().decode(bytes)), path);
   } catch (cause) {
     if (cause instanceof LaQLError) throw cause;
     throw new LaQLError("LAQL_CATALOG_ERROR", `Invalid Iceberg manifest list at ${path}`, {
@@ -843,13 +936,16 @@ async function readManifestList(store: ObjectStore, path: string): Promise<Manif
   }
 }
 
-async function readManifest(store: ObjectStore, path: string): Promise<Manifest> {
+async function readManifest(store: ObjectStore, path: string, tablePrefix = ""): Promise<Manifest> {
   const bytes = await store.get(path);
   if (!bytes) {
     throw new LaQLError("LAQL_OBJECT_NOT_FOUND", `No Iceberg manifest at ${path}`, { path });
   }
   try {
-    return validateManifest(JSON.parse(new TextDecoder().decode(bytes)), path);
+    const manifest = avroObjectContainer(bytes)
+      ? validateAvroManifest(await decodeAvroObjectContainer(bytes), path)
+      : validateManifest(JSON.parse(new TextDecoder().decode(bytes)), path);
+    return validateManifestPaths(manifest, path, tablePrefix);
   } catch (cause) {
     if (cause instanceof LaQLError) throw cause;
     throw new LaQLError("LAQL_CATALOG_ERROR", `Invalid Iceberg manifest at ${path}`, {
@@ -857,6 +953,134 @@ async function readManifest(store: ObjectStore, path: string): Promise<Manifest>
       cause,
     });
   }
+}
+
+function validateAvroManifestList(records: unknown[], path: string): Manifest[] {
+  return records.map((record) => {
+    if (!isRecord(record) || typeof record.manifest_path !== "string") {
+      throw new LaQLError("LAQL_CATALOG_ERROR", "Iceberg Avro manifest list entry is invalid", {
+        path,
+      });
+    }
+    return { path: record.manifest_path } as Manifest;
+  });
+}
+
+function validateAvroManifest(records: unknown[], path: string): Manifest {
+  const files: ManifestFile[] = [];
+  for (const record of records) {
+    if (!isRecord(record)) {
+      throw new LaQLError("LAQL_CATALOG_ERROR", "Iceberg Avro manifest entry is invalid", {
+        path,
+      });
+    }
+    if (typeof record.status === "number" && record.status === 2) continue;
+    const dataFile = record.data_file;
+    if (!isRecord(dataFile)) {
+      throw new LaQLError(
+        "LAQL_CATALOG_ERROR",
+        "Iceberg Avro manifest entry is missing data_file",
+        {
+          path,
+        },
+      );
+    }
+    const content = typeof dataFile.content === "number" ? dataFile.content : 0;
+    if (content !== 0) continue;
+    const recordCount = safeAvroNumber(dataFile.record_count);
+    if (typeof dataFile.file_path !== "string" || recordCount === undefined) {
+      throw new LaQLError("LAQL_CATALOG_ERROR", "Iceberg Avro data file has invalid fields", {
+        path,
+      });
+    }
+    const sequenceNumber =
+      safeAvroNumber(record.sequence_number) ?? safeAvroNumber(record.file_sequence_number) ?? 0;
+    const file: ManifestFile = {
+      path: dataFile.file_path,
+      sequenceNumber,
+      partition: avroPartitionValues(dataFile.partition),
+      recordCount,
+    };
+    const fileSizeInBytes = safeAvroNumber(dataFile.file_size_in_bytes);
+    if (fileSizeInBytes !== undefined) {
+      file.fileSizeInBytes = fileSizeInBytes;
+    }
+    files.push(file);
+  }
+  return validateManifestPaths({ path, files }, path);
+}
+
+function avroPartitionValues(value: unknown): Record<string, string> {
+  if (!isRecord(value)) return {};
+  const out: Record<string, string> = {};
+  for (const [key, inner] of Object.entries(value)) {
+    if (inner === null || inner === undefined) continue;
+    out[key] = String(jsonSafeValue(inner));
+  }
+  return sortStringRecord(out);
+}
+
+function safeAvroNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isSafeInteger(value)) return value;
+  if (typeof value === "bigint") {
+    const numberValue = Number(value);
+    if (Number.isSafeInteger(numberValue) && BigInt(numberValue) === value) return numberValue;
+  }
+  return undefined;
+}
+
+function avroObjectContainer(bytes: Uint8Array): boolean {
+  return (
+    bytes.length >= 4 &&
+    bytes[0] === 0x4f &&
+    bytes[1] === 0x62 &&
+    bytes[2] === 0x6a &&
+    bytes[3] === 0x01
+  );
+}
+
+const avroBigIntLongType = avro.types.LongType.__with({
+  fromBuffer: (bytes: AvroLongBuffer) => bytes.readBigInt64LE(),
+  toBuffer: (value: bigint | number) => {
+    const bytes = Buffer.alloc(8);
+    bytes.writeBigInt64LE(BigInt(value));
+    return bytes;
+  },
+  fromJSON: (value: string | number | bigint) => BigInt(value),
+  toJSON: (value: bigint | number) => value.toString(),
+  isValid: (value: unknown) =>
+    typeof value === "bigint" || (typeof value === "number" && Number.isSafeInteger(value)),
+  compare: (left: bigint | number, right: bigint | number) => {
+    const leftBigInt = BigInt(left);
+    const rightBigInt = BigInt(right);
+    return leftBigInt === rightBigInt ? 0 : leftBigInt < rightBigInt ? -1 : 1;
+  },
+});
+
+function avroLongTypeHook(schema: unknown): avro.Type | undefined {
+  if (schema === "long" || (isRecord(schema) && schema.type === "long")) return avroBigIntLongType;
+  return undefined;
+}
+
+async function decodeAvroObjectContainer(bytes: Uint8Array): Promise<unknown[]> {
+  const decoder = new avro.streams.BlockDecoder({
+    parseHook: (schema) => avro.Type.forSchema(schema, { typeHook: avroLongTypeHook }),
+  }) as AvroBlockDecoder;
+  const records: unknown[] = [];
+  const done = new Promise<unknown[]>((resolve, reject) => {
+    decoder.on("data", (record: unknown) => records.push(record));
+    decoder.on("end", () => resolve(records));
+    decoder.on("error", reject);
+  });
+  decoder.end(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+  return done;
+}
+
+interface AvroBlockDecoder {
+  on(event: "data", listener: (record: unknown) => void): this;
+  on(event: "end", listener: () => void): this;
+  on(event: "error", listener: (error: Error) => void): this;
+  end(chunk: Uint8Array): void;
 }
 
 function validateManifestList(value: unknown, path: string): Manifest[] {
@@ -888,6 +1112,73 @@ function validateManifestReference(value: unknown, path: string): Manifest {
   }
   if (Array.isArray(value.files)) return value as unknown as Manifest;
   return { path: value.path } as Manifest;
+}
+
+function validateManifestPaths(manifest: Manifest, path: string, tablePrefix = ""): Manifest {
+  validateManifestSourcedPath(manifest.path, tablePrefix);
+  for (const file of manifest.files) {
+    validateManifestSourcedPath(file.path, tablePrefix);
+    for (const deleteFile of file.deleteFiles ?? []) {
+      validateManifestSourcedPath(deleteFile.path, tablePrefix);
+    }
+  }
+  return { ...manifest, path };
+}
+
+function validateManifestSourcedPath(path: string, tablePrefix = ""): string {
+  if (/^(?:[a-z][a-z0-9+.-]*:)?\/\//iu.test(path) || path.startsWith("/")) {
+    throw new LaQLError(
+      "LAQL_VALIDATION_ERROR",
+      `Iceberg manifest path must be relative: ${path}`,
+      {
+        path,
+      },
+    );
+  }
+  for (const segment of path.split("/")) {
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(segment);
+    } catch {
+      throw new LaQLError("LAQL_VALIDATION_ERROR", `Iceberg manifest path is invalid: ${path}`, {
+        path,
+      });
+    }
+    if (decoded === "." || decoded === "..") {
+      throw new LaQLError(
+        "LAQL_VALIDATION_ERROR",
+        `Iceberg manifest path contains traversal: ${path}`,
+        {
+          path,
+        },
+      );
+    }
+  }
+  if (tablePrefix !== "" && path !== tablePrefix && !path.startsWith(`${tablePrefix}/`)) {
+    throw new LaQLError(
+      "LAQL_VALIDATION_ERROR",
+      `Iceberg manifest path escapes table location: ${path}`,
+      {
+        path,
+        tableLocation: tablePrefix,
+      },
+    );
+  }
+  return path;
+}
+
+function tableLocationObjectPrefix(location: string): string {
+  const trimmed = trimTrailingSlash(location.trim());
+  if (trimmed === "" || !trimmed.includes("/")) return "";
+  if (/^[a-z][a-z0-9+.-]*:\/\//iu.test(trimmed)) {
+    const url = new URL(trimmed);
+    return trimSlashes(decodeURIComponent(url.pathname));
+  }
+  return trimSlashes(trimmed);
+}
+
+function trimSlashes(value: string): string {
+  return value.replace(/^\/+|\/+$/gu, "");
 }
 
 async function readVersionHint(store: ObjectStore, path: string): Promise<number | undefined> {
@@ -1184,7 +1475,12 @@ function partitionMayMatch(expr: Expr | undefined, partition: Record<string, str
   const columns = new Set<string>();
   collectColumns(expr, columns);
   if (columns.size === 0 || [...columns].some((column) => !(column in partition))) return true;
-  return matches(expr, partition);
+  try {
+    return matches(expr, partition);
+  } catch (cause) {
+    if (cause instanceof LaQLError && cause.code === "LAQL_TYPE_ERROR") return true;
+    throw cause;
+  }
 }
 
 function collectColumns(expr: Expr, columns: Set<string>): void {
