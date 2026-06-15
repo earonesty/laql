@@ -27,6 +27,7 @@ class FakeBucket implements R2BucketLike {
   readonly objects = new Map<string, Uint8Array>();
   metadata = true;
   lastPutOptions: unknown;
+  pageSize = Number.POSITIVE_INFINITY;
 
   async get(key: string, options?: { range?: { offset: number; length: number } }) {
     const bytes = this.objects.get(key);
@@ -54,13 +55,20 @@ class FakeBucket implements R2BucketLike {
     this.objects.delete(key);
   }
 
-  async list(options?: { prefix?: string; limit?: number }) {
-    const objects = [...this.objects.entries()]
+  async list(options?: { prefix?: string; limit?: number; cursor?: string }) {
+    const start = options?.cursor === undefined ? 0 : Number(options.cursor);
+    const limit = Math.min(options?.limit ?? Number.POSITIVE_INFINITY, this.pageSize);
+    const matching = [...this.objects.entries()]
       .filter(([key]) => key.startsWith(options?.prefix ?? ""))
-      .sort(([a], [b]) => a.localeCompare(b))
-      .slice(0, options?.limit)
-      .map(([key, bytes]) => new FakeR2Object(key, bytes));
-    return { objects };
+      .sort(([a], [b]) => a.localeCompare(b));
+    const page = matching.slice(start, start + limit);
+    const objects = page.map(([key, bytes]) => new FakeR2Object(key, bytes));
+    const next = start + page.length;
+    return {
+      objects,
+      truncated: next < matching.length,
+      cursor: next < matching.length ? String(next) : undefined,
+    };
   }
 }
 
@@ -98,6 +106,23 @@ describe("r2Store", () => {
     await expect(store.getRange("missing.txt", { offset: 0, length: 1 })).rejects.toMatchObject({
       code: "LAQL_OBJECT_NOT_FOUND",
     });
+  });
+
+  it("paginates truncated R2 listings", async () => {
+    const bucket = new FakeBucket();
+    bucket.pageSize = 1;
+    await bucket.put("logs/2.txt", enc.encode("2"));
+    await bucket.put("logs/1.txt", enc.encode("1"));
+    await bucket.put("skip/0.txt", enc.encode("0"));
+    const store = r2Store(bucket);
+
+    const listed = [];
+    for await (const object of store.list("logs/")) listed.push(object.path);
+    expect(listed).toEqual(["logs/1.txt", "logs/2.txt"]);
+
+    const limited = [];
+    for await (const object of store.list("logs/", { limit: 1 })) limited.push(object.path);
+    expect(limited).toEqual(["logs/1.txt"]);
   });
 
   it("accepts stream writes and optional metadata-less objects", async () => {

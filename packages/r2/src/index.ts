@@ -30,7 +30,7 @@ export interface R2BucketLike {
     options?: { httpMetadata?: { contentType?: string }; customMetadata?: Record<string, string> },
   ): Promise<unknown>;
   delete(key: string): Promise<void>;
-  list(options?: { prefix?: string; limit?: number }): Promise<{
+  list(options?: { prefix?: string; limit?: number; cursor?: string }): Promise<{
     objects: Omit<R2ObjectBody, "arrayBuffer">[];
     truncated?: boolean;
     cursor?: string;
@@ -75,10 +75,20 @@ export class R2ObjectStore implements ObjectStore {
   }
 
   async *list(prefix: string, options?: ListOptions): AsyncIterable<ObjectInfo> {
-    const listOptions: { prefix?: string; limit?: number } = { prefix };
-    if (options?.limit !== undefined) listOptions.limit = options.limit;
-    const result = await this.bucket.list(listOptions);
-    for (const object of result.objects) yield r2Info(object);
+    let cursor: string | undefined;
+    let emitted = 0;
+    do {
+      const listOptions: { prefix?: string; limit?: number; cursor?: string } = { prefix };
+      if (options?.limit !== undefined) listOptions.limit = options.limit - emitted;
+      if (cursor !== undefined) listOptions.cursor = cursor;
+      const result = await this.bucket.list(listOptions);
+      for (const object of result.objects) {
+        if (options?.limit !== undefined && emitted >= options.limit) return;
+        yield r2Info(object);
+        emitted += 1;
+      }
+      cursor = result.truncated === true ? result.cursor : undefined;
+    } while (cursor !== undefined && (options?.limit === undefined || emitted < options.limit));
   }
 
   async head(path: string): Promise<ObjectHead | null> {
