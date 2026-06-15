@@ -26,6 +26,28 @@ describe("broadcastJoin", () => {
     ]);
   });
 
+  it("matches null, boolean, and bigint scalar keys deterministically", async () => {
+    await expect(
+      broadcastJoin(
+        [
+          { id: null, label: "null-left" },
+          { id: true, label: "bool-left" },
+          { id: 9007199254740993n, label: "bigint-left" },
+        ],
+        [
+          { id: null, value: "null-right" },
+          { id: true, value: "bool-right" },
+          { id: 9007199254740993n, value: "bigint-right" },
+        ],
+        { leftKey: "id", rightKey: "id", maxRightRows: 3 },
+      ),
+    ).resolves.toEqual([
+      { id: null, label: "null-left", value: "null-right" },
+      { id: true, label: "bool-left", value: "bool-right" },
+      { id: 9007199254740993n, label: "bigint-left", value: "bigint-right" },
+    ]);
+  });
+
   it("supports async inputs, left joins, and right column prefixes", async () => {
     await expect(
       broadcastJoin(
@@ -141,6 +163,34 @@ describe("lookupJoin", () => {
       ),
     ).resolves.toEqual([{ id: 1, name: "a", color: "red" }]);
     expect(calls).toEqual([1, 2]);
+  });
+
+  it("passes scalar lookup keys without string coercion", async () => {
+    const calls: unknown[] = [];
+    const lookup: LookupJoinFunction = (key) => {
+      calls.push(key);
+      if (key === null) return [{ id: null, value: "null-right" }];
+      if (key === false) return [{ id: false, value: "bool-right" }];
+      if (key === 12n) return [{ id: 12n, value: "bigint-right" }];
+      return [];
+    };
+
+    await expect(
+      lookupJoin(
+        [
+          { id: null, label: "null-left" },
+          { id: false, label: "bool-left" },
+          { id: 12n, label: "bigint-left" },
+        ],
+        lookup,
+        { leftKey: "id", rightKey: "id", maxRightRows: 3 },
+      ),
+    ).resolves.toEqual([
+      { id: null, label: "null-left", value: "null-right" },
+      { id: false, label: "bool-left", value: "bool-right" },
+      { id: 12n, label: "bigint-left", value: "bigint-right" },
+    ]);
+    expect(calls).toEqual([null, false, 12n]);
   });
 
   it("supports async lookup rows, left joins, and right prefixes", async () => {
