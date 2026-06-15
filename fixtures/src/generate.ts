@@ -1,7 +1,9 @@
 // Deterministic fixture generation: same input, same bytes, no clock, no RNG.
 // Run via `pnpm fixtures` (root) or `pnpm generate` (this package).
-import { mkdirSync, writeFileSync } from "node:fs";
+import { Buffer } from "node:buffer";
+import { mkdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import avro from "avsc";
 import { parquetWriteFile } from "hyparquet-writer";
 import {
   fixtureDataDir,
@@ -350,33 +352,36 @@ function writeHiveLikeParquet(file: string): void {
   });
 }
 
-function generateIceberg() {
+async function generateIceberg() {
   mkdirSync(dirname(fixturePath(ICEBERG.metadataFile)), { recursive: true });
-  const manifest1 = {
-    path: ICEBERG.manifestFiles[0],
+  const manifest1Json = {
+    path: ICEBERG.legacyManifestFiles[0],
     files: [
       {
         path: ICEBERG.dataFiles[0],
         sequenceNumber: 1,
         partition: { country: "US", date: "2026-01-01" },
         recordCount: HIVE.rowsPerFile,
+        fileSizeInBytes: fixtureSize(ICEBERG.dataFiles[0]),
       },
       {
         path: ICEBERG.dataFiles[1],
         sequenceNumber: 2,
         partition: { country: "CA", date: "2026-01-02" },
         recordCount: HIVE.rowsPerFile,
+        fileSizeInBytes: fixtureSize(ICEBERG.dataFiles[1]),
       },
     ],
   };
-  const manifest2 = {
-    path: ICEBERG.manifestFiles[1],
+  const manifest2Json = {
+    path: ICEBERG.legacyManifestFiles[1],
     files: [
       {
         path: ICEBERG.dataFiles[0],
         sequenceNumber: 1,
         partition: { country: "US", date: "2026-01-01" },
         recordCount: HIVE.rowsPerFile,
+        fileSizeInBytes: fixtureSize(ICEBERG.dataFiles[0]),
         deleteFiles: [{ content: "position-delete", path: ICEBERG.positionDeleteFile }],
       },
       {
@@ -384,6 +389,7 @@ function generateIceberg() {
         sequenceNumber: 2,
         partition: { country: "CA", date: "2026-01-02" },
         recordCount: HIVE.rowsPerFile,
+        fileSizeInBytes: fixtureSize(ICEBERG.dataFiles[1]),
         deleteFiles: [{ content: "equality-delete", path: ICEBERG.equalityDeleteFile }],
       },
       {
@@ -391,9 +397,74 @@ function generateIceberg() {
         sequenceNumber: 3,
         partition: { country: "US", date: "2026-01-02" },
         recordCount: HIVE.rowsPerFile,
+        fileSizeInBytes: fixtureSize(ICEBERG.dataFiles[2]),
       },
     ],
   };
+  const manifest1Path = ICEBERG.manifestFiles[0];
+  const manifest2DataPath = ICEBERG.manifestFiles[1];
+  const manifest2DeletesPath = ICEBERG.manifestFiles[2];
+  const manifest2UsPath = "iceberg/warehouse/places/metadata/manifest-2-us.avro";
+  const manifest2CaPath = "iceberg/warehouse/places/metadata/manifest-2-ca.avro";
+  await writeAvroFixture(
+    manifest1Path,
+    icebergManifestEntrySchema(),
+    manifest1Json.files.map((file) => avroDataManifestEntry(file, 1)),
+  );
+  await writeAvroFixture(
+    ICEBERG.v1ManifestFile,
+    icebergV1ManifestEntrySchema(),
+    manifest1Json.files.map((file) => avroV1DataManifestEntry(file, 1)),
+  );
+  await writeAvroFixture(ICEBERG.v1ManifestListFile, icebergV1ManifestListSchema(), [
+    avroV1ManifestListEntry(
+      ICEBERG.v1ManifestFile,
+      1,
+      manifest1Json.files.length,
+      HIVE.rowsPerFile * 2,
+    ),
+  ]);
+  await writeAvroFixture(
+    manifest2DataPath,
+    icebergManifestEntrySchema(),
+    manifest2Json.files.map((file) => avroDataManifestEntry(file, 2)),
+  );
+  await writeAvroFixture(manifest2DeletesPath, icebergManifestEntrySchema(), [
+    avroDeleteManifestEntry({
+      path: ICEBERG.positionDeleteFile,
+      content: 1,
+      partition: { country: "US", date: "2026-01-01" },
+      recordCount: 1,
+      fileSizeInBytes: fixtureSize(ICEBERG.positionDeleteFile),
+      sequenceNumber: 2,
+    }),
+    avroDeleteManifestEntry({
+      path: ICEBERG.equalityDeleteFile,
+      content: 2,
+      partition: { country: "CA", date: "2026-01-02" },
+      recordCount: 1,
+      fileSizeInBytes: fixtureSize(ICEBERG.equalityDeleteFile),
+      sequenceNumber: 2,
+    }),
+  ]);
+  await writeAvroFixture(
+    manifest2UsPath,
+    icebergManifestEntrySchema(),
+    manifest2Json.files
+      .filter((file) => file.partition.country === "US")
+      .map((file) => avroDataManifestEntry(file, 2)),
+  );
+  await writeAvroFixture(
+    manifest2CaPath,
+    icebergManifestEntrySchema(),
+    manifest2Json.files
+      .filter((file) => file.partition.country === "CA")
+      .map((file) => avroDataManifestEntry(file, 2)),
+  );
+  await writeAvroFixture(ICEBERG.manifestListFile, icebergManifestListSchema(), [
+    avroManifestListEntry(manifest2DataPath, 0, 2, 3, HIVE.rowsPerFile * 3),
+    avroManifestListEntry(manifest2DeletesPath, 1, 2, 2, 2),
+  ]);
   const metadata = {
     "format-version": 2,
     "table-uuid": "00000000-0000-4000-8000-000000000001",
@@ -426,25 +497,45 @@ function generateIceberg() {
         "snapshot-id": 1,
         "timestamp-ms": 1_767_225_600_000,
         "schema-id": 1,
-        manifests: [manifest1],
+        manifests: [{ path: manifest1Path }],
       },
       {
         "snapshot-id": 2,
         "timestamp-ms": 1_767_312_000_000,
         "schema-id": 2,
-        manifests: [manifest2],
+        "manifest-list": ICEBERG.manifestListFile,
       },
     ],
   };
   writeFileSync(fixturePath(ICEBERG.metadataFile), `${JSON.stringify(metadata, null, 2)}\n`);
-  for (const manifest of [manifest1, manifest2]) {
+  const v1Metadata = {
+    ...metadata,
+    "format-version": 1,
+    "current-snapshot-id": 1,
+    "current-schema-id": 1,
+    snapshots: [
+      {
+        "snapshot-id": 1,
+        "timestamp-ms": 1_767_225_600_000,
+        "schema-id": 1,
+        "manifest-list": ICEBERG.v1ManifestListFile,
+      },
+    ],
+    refs: undefined,
+  };
+  writeFileSync(fixturePath(ICEBERG.v1MetadataFile), `${JSON.stringify(v1Metadata, null, 2)}\n`);
+  for (const manifest of [manifest1Json, manifest2Json]) {
     writeFileSync(fixturePath(manifest.path), `${JSON.stringify(manifest, null, 2)}\n`);
   }
   const manifestRefMetadata = {
     ...metadata,
     snapshots: metadata.snapshots.map((snapshot) => ({
       ...snapshot,
-      manifests: snapshot.manifests.map((manifest) => ({ path: manifest.path })),
+      "manifest-list": undefined,
+      manifests:
+        snapshot["snapshot-id"] === 2
+          ? [{ path: manifest2DataPath }, { path: manifest2DeletesPath }]
+          : [{ path: manifest1Path }],
     })),
   };
   writeFileSync(
@@ -452,8 +543,8 @@ function generateIceberg() {
     `${JSON.stringify(manifestRefMetadata, null, 2)}\n`,
   );
   writeFileSync(
-    fixturePath(ICEBERG.manifestListFile),
-    `${JSON.stringify({ manifests: [manifest2] }, null, 2)}\n`,
+    fixturePath(ICEBERG.legacyManifestListFile),
+    `${JSON.stringify({ manifests: [manifest2Json] }, null, 2)}\n`,
   );
   const manifestListMetadata = {
     ...metadata,
@@ -478,14 +569,9 @@ function generateIceberg() {
         ? {
             ...snapshot,
             manifests: [
-              {
-                path: "iceberg/warehouse/places/metadata/manifest-2-us.json",
-                files: manifest2.files.filter((file) => file.partition.country === "US"),
-              },
-              {
-                path: "iceberg/warehouse/places/metadata/manifest-2-ca.json",
-                files: manifest2.files.filter((file) => file.partition.country === "CA"),
-              },
+              { path: manifest2UsPath },
+              { path: manifest2CaPath },
+              { path: manifest2DeletesPath },
             ],
           }
         : snapshot,
@@ -497,13 +583,14 @@ function generateIceberg() {
   );
   writeJsonFixture(ICEBERG.plannedFilesGolden, {
     snapshotId: 2,
-    files: manifest2.files
+    files: manifest2Json.files
       .filter((file) => file.partition.country === "US")
       .map((file) => ({
         path: file.path,
         sequenceNumber: file.sequenceNumber,
         partition: file.partition,
         recordCount: file.recordCount,
+        fileSizeInBytes: file.fileSizeInBytes,
         projectedFieldIds: [1, 3],
         snapshotId: 2,
         ...(file.deleteFiles !== undefined
@@ -532,6 +619,324 @@ function generateIceberg() {
     ],
   });
 }
+
+function fixtureSize(path: string): number {
+  return statSync(fixturePath(path)).size;
+}
+
+function icebergManifestListSchema(): unknown {
+  return {
+    type: "record",
+    name: "manifest_file",
+    fields: [
+      { name: "manifest_path", type: "string" },
+      { name: "manifest_length", type: "long" },
+      { name: "partition_spec_id", type: "int" },
+      { name: "content", type: "int" },
+      { name: "sequence_number", type: "long" },
+      { name: "min_sequence_number", type: "long" },
+      { name: "added_snapshot_id", type: "long" },
+      { name: "added_files_count", type: "int" },
+      { name: "existing_files_count", type: "int" },
+      { name: "deleted_files_count", type: "int" },
+      { name: "added_rows_count", type: "long" },
+      { name: "existing_rows_count", type: "long" },
+      { name: "deleted_rows_count", type: "long" },
+      { name: "partitions", type: "null", default: null },
+    ],
+  };
+}
+
+function icebergManifestEntrySchema(): unknown {
+  return {
+    type: "record",
+    name: "manifest_entry",
+    fields: [
+      { name: "status", type: "int" },
+      { name: "snapshot_id", type: ["null", "long"], default: null },
+      { name: "sequence_number", type: ["null", "long"], default: null },
+      { name: "file_sequence_number", type: ["null", "long"], default: null },
+      {
+        name: "data_file",
+        type: {
+          type: "record",
+          name: "data_file",
+          fields: [
+            { name: "content", type: "int" },
+            { name: "file_path", type: "string" },
+            {
+              name: "file_format",
+              type: { type: "enum", name: "file_format", symbols: ["PARQUET"] },
+            },
+            {
+              name: "partition",
+              type: {
+                type: "record",
+                name: "partition",
+                fields: [
+                  { name: "country", type: ["null", "string"], default: null },
+                  { name: "date", type: ["null", "string"], default: null },
+                ],
+              },
+            },
+            { name: "record_count", type: "long" },
+            { name: "file_size_in_bytes", type: "long" },
+            {
+              name: "equality_ids",
+              type: ["null", { type: "array", items: "int" }],
+              default: null,
+            },
+          ],
+        },
+      },
+    ],
+  };
+}
+
+function icebergV1ManifestListSchema(): unknown {
+  return {
+    type: "record",
+    name: "manifest_file",
+    fields: [
+      { name: "manifest_path", type: "string" },
+      { name: "manifest_length", type: "long" },
+      { name: "partition_spec_id", type: "int" },
+      { name: "added_snapshot_id", type: "long" },
+      { name: "added_files_count", type: "int" },
+      { name: "existing_files_count", type: "int" },
+      { name: "deleted_files_count", type: "int" },
+      { name: "added_rows_count", type: "long" },
+      { name: "existing_rows_count", type: "long" },
+      { name: "deleted_rows_count", type: "long" },
+      { name: "partitions", type: "null", default: null },
+    ],
+  };
+}
+
+function icebergV1ManifestEntrySchema(): unknown {
+  return {
+    type: "record",
+    name: "manifest_entry",
+    fields: [
+      { name: "status", type: "int" },
+      { name: "snapshot_id", type: ["null", "long"], default: null },
+      {
+        name: "data_file",
+        type: {
+          type: "record",
+          name: "data_file",
+          fields: [
+            { name: "file_path", type: "string" },
+            {
+              name: "file_format",
+              type: { type: "enum", name: "file_format", symbols: ["PARQUET"] },
+            },
+            {
+              name: "partition",
+              type: {
+                type: "record",
+                name: "partition",
+                fields: [
+                  { name: "country", type: ["null", "string"], default: null },
+                  { name: "date", type: ["null", "string"], default: null },
+                ],
+              },
+            },
+            { name: "record_count", type: "long" },
+            { name: "file_size_in_bytes", type: "long" },
+          ],
+        },
+      },
+    ],
+  };
+}
+
+function avroDataManifestEntry(
+  file: {
+    path: string;
+    sequenceNumber: number;
+    partition: Record<string, string>;
+    recordCount: number;
+    fileSizeInBytes: number;
+  },
+  snapshotId: number,
+): Record<string, unknown> {
+  return {
+    status: 1,
+    snapshot_id: BigInt(snapshotId),
+    sequence_number: BigInt(file.sequenceNumber),
+    file_sequence_number: BigInt(file.sequenceNumber),
+    data_file: {
+      content: 0,
+      file_path: file.path,
+      file_format: "PARQUET",
+      partition: file.partition,
+      record_count: BigInt(file.recordCount),
+      file_size_in_bytes: BigInt(file.fileSizeInBytes),
+      equality_ids: null,
+    },
+  };
+}
+
+function avroV1DataManifestEntry(
+  file: {
+    path: string;
+    partition: Record<string, string>;
+    recordCount: number;
+    fileSizeInBytes: number;
+  },
+  snapshotId: number,
+): Record<string, unknown> {
+  return {
+    status: 1,
+    snapshot_id: BigInt(snapshotId),
+    data_file: {
+      file_path: file.path,
+      file_format: "PARQUET",
+      partition: file.partition,
+      record_count: BigInt(file.recordCount),
+      file_size_in_bytes: BigInt(file.fileSizeInBytes),
+    },
+  };
+}
+
+function avroDeleteManifestEntry(file: {
+  path: string;
+  content: 1 | 2;
+  partition: Record<string, string>;
+  recordCount: number;
+  fileSizeInBytes: number;
+  sequenceNumber: number;
+}): Record<string, unknown> {
+  return {
+    status: 1,
+    snapshot_id: 2n,
+    sequence_number: BigInt(file.sequenceNumber),
+    file_sequence_number: BigInt(file.sequenceNumber),
+    data_file: {
+      content: file.content,
+      file_path: file.path,
+      file_format: "PARQUET",
+      partition: file.partition,
+      record_count: BigInt(file.recordCount),
+      file_size_in_bytes: BigInt(file.fileSizeInBytes),
+      equality_ids: file.content === 2 ? [3] : null,
+    },
+  };
+}
+
+function avroV1ManifestListEntry(
+  path: string,
+  snapshotId: number,
+  fileCount: number,
+  rowCount: number,
+): Record<string, unknown> {
+  return {
+    manifest_path: path,
+    manifest_length: BigInt(fixtureSize(path)),
+    partition_spec_id: 0,
+    added_snapshot_id: BigInt(snapshotId),
+    added_files_count: fileCount,
+    existing_files_count: 0,
+    deleted_files_count: 0,
+    added_rows_count: BigInt(rowCount),
+    existing_rows_count: 0n,
+    deleted_rows_count: 0n,
+    partitions: null,
+  };
+}
+
+function avroManifestListEntry(
+  path: string,
+  content: 0 | 1,
+  snapshotId: number,
+  fileCount: number,
+  rowCount: number,
+): Record<string, unknown> {
+  return {
+    manifest_path: path,
+    manifest_length: BigInt(fixtureSize(path)),
+    partition_spec_id: 0,
+    content,
+    sequence_number: BigInt(snapshotId),
+    min_sequence_number: 1n,
+    added_snapshot_id: BigInt(snapshotId),
+    added_files_count: fileCount,
+    existing_files_count: 0,
+    deleted_files_count: 0,
+    added_rows_count: BigInt(rowCount),
+    existing_rows_count: 0n,
+    deleted_rows_count: 0n,
+    partitions: null,
+  };
+}
+
+async function writeAvroFixture(
+  path: string,
+  schema: unknown,
+  records: Record<string, unknown>[],
+): Promise<void> {
+  const bytes = await avroObjectContainer(schema, records);
+  const fullPath = fixturePath(path);
+  mkdirSync(dirname(fullPath), { recursive: true });
+  writeFileSync(fullPath, bytes);
+}
+
+async function avroObjectContainer(
+  schema: unknown,
+  records: Record<string, unknown>[],
+): Promise<Uint8Array> {
+  const type = avro.Type.forSchema(schema as avro.Schema, {
+    typeHook: (innerSchema: unknown) =>
+      innerSchema === "long" ||
+      (typeof innerSchema === "object" &&
+        innerSchema !== null &&
+        !Array.isArray(innerSchema) &&
+        "type" in innerSchema &&
+        innerSchema.type === "long")
+        ? avroBigIntLongType
+        : undefined,
+  });
+  const encoder = new avro.streams.BlockEncoder(type, {
+    codec: "null",
+    syncMarker: Buffer.from("laql-iceberg-avr", "utf8"),
+  });
+  const chunks: Uint8Array[] = [];
+  encoder.on("data", (chunk: Uint8Array) => chunks.push(chunk));
+  const done = new Promise<void>((resolve, reject) => {
+    encoder.on("end", resolve);
+    encoder.on("error", reject);
+  });
+  for (const record of records) encoder.write(record);
+  encoder.end();
+  await done;
+  const length = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+  const out = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
+const avroBigIntLongType = avro.types.LongType.__with({
+  fromBuffer: (bytes: Buffer) => bytes.readBigInt64LE(),
+  toBuffer: (value: bigint | number) => {
+    const bytes = Buffer.alloc(8);
+    bytes.writeBigInt64LE(BigInt(value));
+    return bytes;
+  },
+  fromJSON: (value: string | number | bigint) => BigInt(value),
+  toJSON: (value: bigint | number) => value.toString(),
+  isValid: (value: unknown) =>
+    typeof value === "bigint" || (typeof value === "number" && Number.isSafeInteger(value)),
+  compare: (left: bigint | number, right: bigint | number) => {
+    const leftBigInt = BigInt(left);
+    const rightBigInt = BigInt(right);
+    return leftBigInt === rightBigInt ? 0 : leftBigInt < rightBigInt ? -1 : 1;
+  },
+});
 
 function generateIcebergDeletes() {
   const equalityPath = fixturePath(ICEBERG.equalityDeleteFile);
@@ -563,7 +968,7 @@ generateWriteGolden();
 generateManifestGoldens();
 generateHive();
 generateIcebergDeletes();
-generateIceberg();
+await generateIceberg();
 console.log(`fixtures written to ${fixtureDataDir}`);
 
 function writeJsonFixture(name: string, value: unknown) {

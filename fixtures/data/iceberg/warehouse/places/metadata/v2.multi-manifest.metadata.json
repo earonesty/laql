@@ -69,27 +69,7 @@
       "schema-id": 1,
       "manifests": [
         {
-          "path": "iceberg/warehouse/places/metadata/manifest-1.json",
-          "files": [
-            {
-              "path": "iceberg/warehouse/places/data/date=2026-01-01/country=US/part-000.parquet",
-              "sequenceNumber": 1,
-              "partition": {
-                "country": "US",
-                "date": "2026-01-01"
-              },
-              "recordCount": 4
-            },
-            {
-              "path": "iceberg/warehouse/places/data/date=2026-01-02/country=CA/part-000.parquet",
-              "sequenceNumber": 2,
-              "partition": {
-                "country": "CA",
-                "date": "2026-01-02"
-              },
-              "recordCount": 4
-            }
-          ]
+          "path": "iceberg/warehouse/places/metadata/manifest-1.avro"
         }
       ]
     },
@@ -97,55 +77,16 @@
       "snapshot-id": 2,
       "timestamp-ms": 1767312000000,
       "schema-id": 2,
+      "manifest-list": "iceberg/warehouse/places/metadata/snap-2.manifest-list.avro",
       "manifests": [
         {
-          "path": "iceberg/warehouse/places/metadata/manifest-2-us.json",
-          "files": [
-            {
-              "path": "iceberg/warehouse/places/data/date=2026-01-01/country=US/part-000.parquet",
-              "sequenceNumber": 1,
-              "partition": {
-                "country": "US",
-                "date": "2026-01-01"
-              },
-              "recordCount": 4,
-              "deleteFiles": [
-                {
-                  "content": "position-delete",
-                  "path": "iceberg/warehouse/places/deletes/us-second.pos.parquet"
-                }
-              ]
-            },
-            {
-              "path": "iceberg/warehouse/places/data/date=2026-01-02/country=US/part-000.parquet",
-              "sequenceNumber": 3,
-              "partition": {
-                "country": "US",
-                "date": "2026-01-02"
-              },
-              "recordCount": 4
-            }
-          ]
+          "path": "iceberg/warehouse/places/metadata/manifest-2-us.avro"
         },
         {
-          "path": "iceberg/warehouse/places/metadata/manifest-2-ca.json",
-          "files": [
-            {
-              "path": "iceberg/warehouse/places/data/date=2026-01-02/country=CA/part-000.parquet",
-              "sequenceNumber": 2,
-              "partition": {
-                "country": "CA",
-                "date": "2026-01-02"
-              },
-              "recordCount": 4,
-              "deleteFiles": [
-                {
-                  "content": "equality-delete",
-                  "path": "iceberg/warehouse/places/deletes/country-ca.eq.parquet"
-                }
-              ]
-            }
-          ]
+          "path": "iceberg/warehouse/places/metadata/manifest-2-ca.avro"
+        },
+        {
+          "path": "iceberg/warehouse/places/metadata/manifest-2-deletes.avro"
         }
       ]
     }

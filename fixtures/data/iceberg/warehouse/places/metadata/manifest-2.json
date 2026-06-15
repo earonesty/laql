@@ -9,6 +9,7 @@
         "date": "2026-01-01"
       },
       "recordCount": 4,
+      "fileSizeInBytes": 257,
       "deleteFiles": [
         {
           "content": "position-delete",
@@ -24,6 +25,7 @@
         "date": "2026-01-02"
       },
       "recordCount": 4,
+      "fileSizeInBytes": 257,
       "deleteFiles": [
         {
           "content": "equality-delete",
@@ -38,7 +40,8 @@
         "country": "US",
         "date": "2026-01-02"
       },
-      "recordCount": 4
+      "recordCount": 4,
+      "fileSizeInBytes": 257
     }
   ]
 }

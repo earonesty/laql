@@ -8,7 +8,8 @@
         "country": "US",
         "date": "2026-01-01"
       },
-      "recordCount": 4
+      "recordCount": 4,
+      "fileSizeInBytes": 257
     },
     {
       "path": "iceberg/warehouse/places/data/date=2026-01-02/country=CA/part-000.parquet",
@@ -17,7 +18,8 @@
         "country": "CA",
         "date": "2026-01-02"
       },
-      "recordCount": 4
+      "recordCount": 4,
+      "fileSizeInBytes": 257
     }
   ]
 }

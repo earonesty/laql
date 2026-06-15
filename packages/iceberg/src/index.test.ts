@@ -59,35 +59,48 @@ const avroBigIntLongType = avro.types.LongType.__with({
 });
 
 beforeAll(async () => {
-  await store.put(ICEBERG.metadataFile, readFileSync(fixturePath(ICEBERG.metadataFile)));
-  await store.put(
+  await putIcebergWarehouse(store);
+});
+
+async function putIcebergWarehouse(target: ObjectStore): Promise<void> {
+  await target.put(ICEBERG.metadataFile, readFileSync(fixturePath(ICEBERG.metadataFile)));
+  await target.put(
     ICEBERG.manifestRefMetadataFile,
     readFileSync(fixturePath(ICEBERG.manifestRefMetadataFile)),
   );
-  await store.put(
+  await target.put(
     ICEBERG.manifestListMetadataFile,
     readFileSync(fixturePath(ICEBERG.manifestListMetadataFile)),
   );
-  await store.put(ICEBERG.manifestListFile, readFileSync(fixturePath(ICEBERG.manifestListFile)));
-  await store.put(
+  await target.put(ICEBERG.v1MetadataFile, readFileSync(fixturePath(ICEBERG.v1MetadataFile)));
+  await target.put(
+    ICEBERG.v1ManifestListFile,
+    readFileSync(fixturePath(ICEBERG.v1ManifestListFile)),
+  );
+  await target.put(ICEBERG.v1ManifestFile, readFileSync(fixturePath(ICEBERG.v1ManifestFile)));
+  await target.put(ICEBERG.manifestListFile, readFileSync(fixturePath(ICEBERG.manifestListFile)));
+  await target.put(
     ICEBERG.multiManifestMetadataFile,
     readFileSync(fixturePath(ICEBERG.multiManifestMetadataFile)),
   );
   for (const manifestFile of ICEBERG.manifestFiles) {
-    await store.put(manifestFile, readFileSync(fixturePath(manifestFile)));
+    await target.put(manifestFile, readFileSync(fixturePath(manifestFile)));
   }
-  await store.put(
+  for (const manifestFile of ICEBERG.legacyManifestFiles) {
+    await target.put(manifestFile, readFileSync(fixturePath(manifestFile)));
+  }
+  await target.put(
     ICEBERG.equalityDeleteFile,
     readFileSync(fixturePath(ICEBERG.equalityDeleteFile)),
   );
-  await store.put(
+  await target.put(
     ICEBERG.positionDeleteFile,
     readFileSync(fixturePath(ICEBERG.positionDeleteFile)),
   );
   for (const file of ICEBERG.dataFiles) {
-    await store.put(file, readFileSync(fixturePath(file)));
+    await target.put(file, readFileSync(fixturePath(file)));
   }
-});
+}
 
 async function* asyncGenerator<T>(values: T[]): AsyncIterable<T> {
   yield* values;
@@ -128,6 +141,7 @@ async function avroObjectContainer(schema: unknown, records: unknown[]): Promise
 describe("loadIcebergTable", () => {
   it("loads a table through the Iceberg REST catalog API", async () => {
     const restStore = memoryStore();
+    await putIcebergWarehouse(restStore);
     const metadata = JSON.parse(readFileSync(fixturePath(ICEBERG.metadataFile), "utf8")) as unknown;
     const calls: RestFetchCall[] = [];
     const fakeFetch = restFetch(calls, () =>
@@ -160,7 +174,7 @@ describe("loadIcebergTable", () => {
 
   it("loads the current metadata file from an object-store table location", async () => {
     const catalogStore = memoryStore();
-    await catalogStore.put(ICEBERG.metadataFile, readFileSync(fixturePath(ICEBERG.metadataFile)));
+    await putIcebergWarehouse(catalogStore);
     await catalogStore.put(
       "iceberg/warehouse/places/metadata/version-hint.text",
       new TextEncoder().encode("2\n"),
@@ -202,7 +216,7 @@ describe("loadIcebergTable", () => {
         }),
       ),
     );
-    await catalogStore.put(ICEBERG.metadataFile, readFileSync(fixturePath(ICEBERG.metadataFile)));
+    await putIcebergWarehouse(catalogStore);
 
     const table = await loadIcebergTableFromObjectStore({
       store: catalogStore,
@@ -273,6 +287,51 @@ describe("loadIcebergTable", () => {
     expect(ignoredDeletePlan).toMatchObject({
       deleteFilesPlanned: 0,
       deleteFilesIgnored: 1,
+    });
+  });
+
+  it("loads format-version 1 metadata for read-only planning", async () => {
+    const table = await loadIcebergTable({ store, metadataPath: ICEBERG.v1MetadataFile });
+    const plan = table.planFiles({
+      where: eq("country", "US"),
+      select: ["id", "country"],
+    });
+
+    expect(table.metadata["format-version"]).toBe(1);
+    expect(plan).toMatchObject({
+      snapshotId: 1,
+      schemaId: 1,
+      manifestsRead: 1,
+      manifestsSkipped: 0,
+      filesPlanned: 1,
+      filesSkipped: 1,
+      deleteFilesPlanned: 0,
+      deleteFilesIgnored: 0,
+    });
+    expect(plan.files).toEqual([
+      {
+        path: ICEBERG.dataFiles[0],
+        sequenceNumber: 0,
+        partition: { country: "US", date: "2026-01-01" },
+        recordCount: 4,
+        fileSizeInBytes: 257,
+        projectedFieldIds: [1, 3],
+        snapshotId: 1,
+      },
+    ]);
+    await expect(
+      table.appendFiles({
+        files: [
+          {
+            path: `${ICEBERG.tableLocation}/v1-append.parquet`,
+            recordCount: 1,
+            fileSizeInBytes: 1,
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({
+      code: "LAQL_VALIDATION_ERROR",
+      details: { formatVersion: 1 },
     });
   });
 
@@ -1340,7 +1399,7 @@ describe("loadIcebergTable", () => {
 
   it("appends files by writing a new snapshot and metadata file", async () => {
     const appendStore = memoryStore();
-    await appendStore.put(ICEBERG.metadataFile, readFileSync(fixturePath(ICEBERG.metadataFile)));
+    await putIcebergWarehouse(appendStore);
     const table = await loadIcebergTable({
       store: appendStore,
       metadataPath: ICEBERG.metadataFile,
@@ -1398,7 +1457,7 @@ describe("loadIcebergTable", () => {
 
   it("appends Iceberg data files from output manifest entries", async () => {
     const appendStore = memoryStore();
-    await appendStore.put(ICEBERG.metadataFile, readFileSync(fixturePath(ICEBERG.metadataFile)));
+    await putIcebergWarehouse(appendStore);
     const table = await loadIcebergTable({
       store: appendStore,
       metadataPath: ICEBERG.metadataFile,
@@ -1447,7 +1506,7 @@ describe("loadIcebergTable", () => {
 
   it("reads appended Parquet rows through Iceberg time travel", async () => {
     const appendStore = memoryStore();
-    await appendStore.put(ICEBERG.metadataFile, readFileSync(fixturePath(ICEBERG.metadataFile)));
+    await putIcebergWarehouse(appendStore);
     const dataPath = `${ICEBERG.tableLocation}/appends/date=2026-01-06/country=US/part-000.parquet`;
     const written = await writeParquet(appendStore, dataPath, {
       columnData: [
@@ -1506,7 +1565,7 @@ describe("loadIcebergTable", () => {
 
   it("appends files through the Iceberg REST catalog API", async () => {
     const appendStore = memoryStore();
-    await appendStore.put(ICEBERG.metadataFile, readFileSync(fixturePath(ICEBERG.metadataFile)));
+    await putIcebergWarehouse(appendStore);
     const table = await loadIcebergTable({
       store: appendStore,
       metadataPath: ICEBERG.metadataFile,
@@ -1583,7 +1642,7 @@ describe("loadIcebergTable", () => {
 
   it("falls back to the proposed metadata path when REST commit returns no body", async () => {
     const appendStore = memoryStore();
-    await appendStore.put(ICEBERG.metadataFile, readFileSync(fixturePath(ICEBERG.metadataFile)));
+    await putIcebergWarehouse(appendStore);
     const table = await loadIcebergTable({
       store: appendStore,
       metadataPath: ICEBERG.metadataFile,
@@ -1613,7 +1672,7 @@ describe("loadIcebergTable", () => {
 
   it("rejects output manifest append entries without Iceberg metadata", async () => {
     const appendStore = memoryStore();
-    await appendStore.put(ICEBERG.metadataFile, readFileSync(fixturePath(ICEBERG.metadataFile)));
+    await putIcebergWarehouse(appendStore);
     const table = await loadIcebergTable({
       store: appendStore,
       metadataPath: ICEBERG.metadataFile,
@@ -1661,6 +1720,7 @@ describe("loadIcebergTable", () => {
               manifests: [
                 {
                   path: "manifest-1.json",
+                  deleteFiles: [{ content: "position-delete", path: "deletes/a.pos.parquet" }],
                   files: [{ path: "data/a.parquet", sequenceNumber: 7, recordCount: 1 }],
                 },
               ],
@@ -1688,11 +1748,14 @@ describe("loadIcebergTable", () => {
     expect(appended.planFiles({ snapshotId: 2 }).files.map((file) => file.sequenceNumber)).toEqual([
       7, 8,
     ]);
+    expect(appended.metadata.snapshots.at(-1)?.manifests?.[0]?.deleteFiles).toEqual([
+      { content: "position-delete", path: "deletes/a.pos.parquet" },
+    ]);
   });
 
   it("turns failed catalog compare-and-swap into a commit conflict", async () => {
     const conflictStore = memoryStore();
-    await conflictStore.put(ICEBERG.metadataFile, readFileSync(fixturePath(ICEBERG.metadataFile)));
+    await putIcebergWarehouse(conflictStore);
     const table = await loadIcebergTable({
       store: conflictStore,
       metadataPath: ICEBERG.metadataFile,
@@ -1734,6 +1797,7 @@ describe("loadIcebergTable", () => {
 
   it("rejects stale object-store append commits", async () => {
     const conflictStore = memoryStore();
+    await putIcebergWarehouse(conflictStore);
     const metadata = JSON.parse(readFileSync(fixturePath(ICEBERG.metadataFile), "utf8")) as Record<
       string,
       unknown
@@ -1768,7 +1832,7 @@ describe("loadIcebergTable", () => {
 
   it("requires conditional writes for default object-store appends", async () => {
     const backingStore = memoryStore();
-    await backingStore.put(ICEBERG.metadataFile, readFileSync(fixturePath(ICEBERG.metadataFile)));
+    await putIcebergWarehouse(backingStore);
     const unsafeStore: ObjectStore = {
       get: (path) => backingStore.get(path),
       getRange: (path, range) => backingStore.getRange(path, range),
@@ -1799,7 +1863,7 @@ describe("loadIcebergTable", () => {
 
   it("treats version-hint compare-and-swap failure as an append conflict", async () => {
     const conflictStore = memoryStore();
-    await conflictStore.put(ICEBERG.metadataFile, readFileSync(fixturePath(ICEBERG.metadataFile)));
+    await putIcebergWarehouse(conflictStore);
     const table = await loadIcebergTable({
       store: conflictStore,
       metadataPath: ICEBERG.metadataFile,
@@ -1831,7 +1895,7 @@ describe("loadIcebergTable", () => {
 
   it("turns REST catalog commit conflicts into Iceberg commit conflicts", async () => {
     const conflictStore = memoryStore();
-    await conflictStore.put(ICEBERG.metadataFile, readFileSync(fixturePath(ICEBERG.metadataFile)));
+    await putIcebergWarehouse(conflictStore);
     const table = await loadIcebergTable({
       store: conflictStore,
       metadataPath: ICEBERG.metadataFile,
@@ -1903,7 +1967,7 @@ describe("loadIcebergTable", () => {
       code: "LAQL_OBJECT_NOT_FOUND",
     });
 
-    await store.put("bad.json", new TextEncoder().encode('{"format-version":1}'));
+    await store.put("bad.json", new TextEncoder().encode('{"format-version":3}'));
     await expect(loadIcebergTable({ store, metadataPath: "bad.json" })).rejects.toMatchObject({
       code: "LAQL_CATALOG_ERROR",
     });

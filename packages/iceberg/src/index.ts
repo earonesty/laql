@@ -8,7 +8,6 @@ import {
   type Row,
   stableStringify,
 } from "@laql/core";
-import avro from "avsc";
 
 export const PACKAGE = "@laql/iceberg" as const;
 
@@ -215,6 +214,7 @@ export interface Snapshot {
 export interface Manifest {
   path: string;
   files: ManifestFile[];
+  deleteFiles?: ManifestDeleteFile[];
 }
 
 export interface ManifestFile {
@@ -229,6 +229,7 @@ export interface ManifestFile {
 export interface ManifestDeleteFile {
   content: string;
   path: string;
+  partition?: Record<string, string>;
 }
 
 interface ConditionalObjectStore extends ObjectStore {
@@ -385,6 +386,13 @@ export class IcebergTable {
   async appendFiles(options: IcebergAppendOptions): Promise<IcebergAppendResult> {
     if (options.files.length === 0) {
       throw new LaQLError("LAQL_VALIDATION_ERROR", "Iceberg append requires at least one file");
+    }
+    if (this.metadata["format-version"] !== 2) {
+      throw new LaQLError(
+        "LAQL_VALIDATION_ERROR",
+        "Iceberg append requires format-version 2 metadata",
+        { formatVersion: this.metadata["format-version"] },
+      );
     }
     const currentSnapshot = this.snapshot();
     const nextSnapshotId =
@@ -906,7 +914,7 @@ async function hydrateMetadataManifests(
             validateManifestSourcedPath(snapshot["manifest-list"], tablePrefix),
           )
         : []);
-    snapshot.manifests = await Promise.all(
+    const manifests = await Promise.all(
       manifestReferences.map(async (manifest) => {
         const manifestPath = validateManifestSourcedPath(manifest.path, tablePrefix);
         if (Array.isArray(manifest.files))
@@ -914,8 +922,38 @@ async function hydrateMetadataManifests(
         return await readManifest(store, manifestPath, tablePrefix);
       }),
     );
+    snapshot.manifests = mergeDeleteManifests(manifests);
   }
   return hydrated;
+}
+
+function mergeDeleteManifests(manifests: Manifest[]): Manifest[] {
+  const deleteFiles = manifests.flatMap((manifest) => manifest.deleteFiles ?? []);
+  const dataManifests = manifests.filter((manifest) => manifest.files.length > 0);
+  if (deleteFiles.length === 0) return dataManifests;
+  return dataManifests.map((manifest) => ({
+    ...manifest,
+    files: manifest.files.map((file) => {
+      const applicable = deleteFiles.filter((deleteFile) => deleteFileMayApply(deleteFile, file));
+      if (applicable.length === 0) return file;
+      return {
+        ...file,
+        deleteFiles: [...(file.deleteFiles ?? []), ...applicable.map(publicDeleteFile)],
+      };
+    }),
+  }));
+}
+
+function deleteFileMayApply(deleteFile: ManifestDeleteFile, file: ManifestFile): boolean {
+  if (deleteFile.partition === undefined || Object.keys(deleteFile.partition).length === 0) {
+    return true;
+  }
+  const filePartition = file.partition ?? {};
+  return Object.entries(deleteFile.partition).every(([key, value]) => filePartition[key] === value);
+}
+
+function publicDeleteFile(deleteFile: ManifestDeleteFile): ManifestDeleteFile {
+  return { content: deleteFile.content, path: deleteFile.path };
 }
 
 async function readManifestList(store: ObjectStore, path: string): Promise<Manifest[]> {
@@ -968,6 +1006,7 @@ function validateAvroManifestList(records: unknown[], path: string): Manifest[] 
 
 function validateAvroManifest(records: unknown[], path: string): Manifest {
   const files: ManifestFile[] = [];
+  const deleteFiles: ManifestDeleteFile[] = [];
   for (const record of records) {
     if (!isRecord(record)) {
       throw new LaQLError("LAQL_CATALOG_ERROR", "Iceberg Avro manifest entry is invalid", {
@@ -986,12 +1025,19 @@ function validateAvroManifest(records: unknown[], path: string): Manifest {
       );
     }
     const content = typeof dataFile.content === "number" ? dataFile.content : 0;
-    if (content !== 0) continue;
     const recordCount = safeAvroNumber(dataFile.record_count);
     if (typeof dataFile.file_path !== "string" || recordCount === undefined) {
       throw new LaQLError("LAQL_CATALOG_ERROR", "Iceberg Avro data file has invalid fields", {
         path,
       });
+    }
+    if (content !== 0) {
+      deleteFiles.push({
+        content: avroDeleteContent(content, dataFile),
+        path: dataFile.file_path,
+        partition: avroPartitionValues(dataFile.partition),
+      });
+      continue;
     }
     const sequenceNumber =
       safeAvroNumber(record.sequence_number) ?? safeAvroNumber(record.file_sequence_number) ?? 0;
@@ -1007,7 +1053,23 @@ function validateAvroManifest(records: unknown[], path: string): Manifest {
     }
     files.push(file);
   }
-  return validateManifestPaths({ path, files }, path);
+  const manifest: Manifest = { path, files };
+  if (deleteFiles.length > 0) manifest.deleteFiles = deleteFiles;
+  return validateManifestPaths(manifest, path);
+}
+
+function avroDeleteContent(content: number, dataFile: Record<string, unknown>): string {
+  if (
+    content === 1 &&
+    (String(dataFile.file_format).toLowerCase() === "puffin" ||
+      dataFile.content_offset !== undefined ||
+      dataFile.content_size_in_bytes !== undefined)
+  ) {
+    return "deletion-vector";
+  }
+  if (content === 1) return "position-delete";
+  if (content === 2) return "equality-delete";
+  return `unsupported-delete-${content}`;
 }
 
 function avroPartitionValues(value: unknown): Record<string, string> {
@@ -1039,30 +1101,29 @@ function avroObjectContainer(bytes: Uint8Array): boolean {
   );
 }
 
-const avroBigIntLongType = avro.types.LongType.__with({
-  fromBuffer: (bytes: AvroLongBuffer) => bytes.readBigInt64LE(),
-  toBuffer: (value: bigint | number) => {
-    const bytes = Buffer.alloc(8);
-    bytes.writeBigInt64LE(BigInt(value));
-    return bytes;
-  },
-  fromJSON: (value: string | number | bigint) => BigInt(value),
-  toJSON: (value: bigint | number) => value.toString(),
-  isValid: (value: unknown) =>
-    typeof value === "bigint" || (typeof value === "number" && Number.isSafeInteger(value)),
-  compare: (left: bigint | number, right: bigint | number) => {
-    const leftBigInt = BigInt(left);
-    const rightBigInt = BigInt(right);
-    return leftBigInt === rightBigInt ? 0 : leftBigInt < rightBigInt ? -1 : 1;
-  },
-});
-
-function avroLongTypeHook(schema: unknown): avro.Type | undefined {
-  if (schema === "long" || (isRecord(schema) && schema.type === "long")) return avroBigIntLongType;
-  return undefined;
-}
-
 async function decodeAvroObjectContainer(bytes: Uint8Array): Promise<unknown[]> {
+  const avro = await loadAvro();
+  const avroBigIntLongType = avro.types.LongType.__with({
+    fromBuffer: (buffer: AvroLongBuffer) => buffer.readBigInt64LE(),
+    toBuffer: (value: bigint | number) => {
+      const buffer = Buffer.alloc(8);
+      buffer.writeBigInt64LE(BigInt(value));
+      return buffer;
+    },
+    fromJSON: (value: string | number | bigint) => BigInt(value),
+    toJSON: (value: bigint | number) => value.toString(),
+    isValid: (value: unknown) =>
+      typeof value === "bigint" || (typeof value === "number" && Number.isSafeInteger(value)),
+    compare: (left: bigint | number, right: bigint | number) => {
+      const leftBigInt = BigInt(left);
+      const rightBigInt = BigInt(right);
+      return leftBigInt === rightBigInt ? 0 : leftBigInt < rightBigInt ? -1 : 1;
+    },
+  });
+  const avroLongTypeHook = (schema: unknown): unknown =>
+    schema === "long" || (isRecord(schema) && schema.type === "long")
+      ? avroBigIntLongType
+      : undefined;
   const decoder = new avro.streams.BlockDecoder({
     parseHook: (schema) => avro.Type.forSchema(schema, { typeHook: avroLongTypeHook }),
   }) as AvroBlockDecoder;
@@ -1074,6 +1135,34 @@ async function decodeAvroObjectContainer(bytes: Uint8Array): Promise<unknown[]> 
   });
   decoder.end(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
   return done;
+}
+
+async function loadAvro(): Promise<{
+  types: { LongType: { __with(methods: Record<string, unknown>): unknown } };
+  Type: {
+    forSchema(schema: unknown, options: { typeHook: (schema: unknown) => unknown }): unknown;
+  };
+  streams: { BlockDecoder: new (options: { parseHook: (schema: unknown) => unknown }) => unknown };
+}> {
+  const module = (await import("avsc")) as {
+    default?: {
+      types: { LongType: { __with(methods: Record<string, unknown>): unknown } };
+      Type: {
+        forSchema(schema: unknown, options: { typeHook: (schema: unknown) => unknown }): unknown;
+      };
+      streams: {
+        BlockDecoder: new (options: { parseHook: (schema: unknown) => unknown }) => unknown;
+      };
+    };
+    types: { LongType: { __with(methods: Record<string, unknown>): unknown } };
+    Type: {
+      forSchema(schema: unknown, options: { typeHook: (schema: unknown) => unknown }): unknown;
+    };
+    streams: {
+      BlockDecoder: new (options: { parseHook: (schema: unknown) => unknown }) => unknown;
+    };
+  };
+  return module.default ?? module;
 }
 
 interface AvroBlockDecoder {
@@ -1121,6 +1210,9 @@ function validateManifestPaths(manifest: Manifest, path: string, tablePrefix = "
     for (const deleteFile of file.deleteFiles ?? []) {
       validateManifestSourcedPath(deleteFile.path, tablePrefix);
     }
+  }
+  for (const deleteFile of manifest.deleteFiles ?? []) {
+    validateManifestSourcedPath(deleteFile.path, tablePrefix);
   }
   return { ...manifest, path };
 }
@@ -1386,7 +1478,7 @@ function cloneRefs(
 }
 
 function cloneManifest(manifest: Manifest): Manifest {
-  return {
+  const cloned: Manifest = {
     path: manifest.path,
     files: manifest.files.map((file) => {
       const cloned: ManifestFile = {
@@ -1402,6 +1494,10 @@ function cloneManifest(manifest: Manifest): Manifest {
       return cloned;
     }),
   };
+  if (manifest.deleteFiles !== undefined) {
+    cloned.deleteFiles = manifest.deleteFiles.map((deleteFile) => ({ ...deleteFile }));
+  }
+  return cloned;
 }
 
 function cloneManifestOrReference(manifest: Manifest): Manifest {
@@ -1424,10 +1520,10 @@ function sortStringRecord(record: Record<string, string>): Record<string, string
 function validateMetadata(value: unknown): MetadataFile {
   if (!isRecord(value))
     throw new LaQLError("LAQL_CATALOG_ERROR", "Iceberg metadata must be an object");
-  if (value["format-version"] !== 2) {
+  if (value["format-version"] !== 1 && value["format-version"] !== 2) {
     throw new LaQLError(
       "LAQL_CATALOG_ERROR",
-      "Only Iceberg format-version 2 metadata is supported",
+      "Only Iceberg format-version 1 and 2 metadata is supported for reads",
       {
         formatVersion: value["format-version"],
       },
@@ -1445,7 +1541,7 @@ function validateMetadata(value: unknown): MetadataFile {
 function isMetadataFile(value: unknown): value is MetadataFile {
   if (!isRecord(value)) return false;
   return (
-    value["format-version"] === 2 &&
+    (value["format-version"] === 1 || value["format-version"] === 2) &&
     typeof value["table-uuid"] === "string" &&
     typeof value.location === "string" &&
     typeof value["current-snapshot-id"] === "number" &&

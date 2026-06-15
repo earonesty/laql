@@ -35,6 +35,9 @@ importers:
 
   fixtures:
     dependencies:
+      avsc:
+        specifier: ^5.7.9
+        version: 5.7.9
       hyparquet-writer:
         specifier: ^0.15.0
         version: 0.15.6

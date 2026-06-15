@@ -1,18 +1,8 @@
 {
-  "format-version": 2,
+  "format-version": 1,
   "table-uuid": "00000000-0000-4000-8000-000000000001",
   "location": "iceberg/warehouse/places",
-  "current-snapshot-id": 2,
-  "refs": {
-    "main": {
-      "type": "branch",
-      "snapshot-id": 2
-    },
-    "previous": {
-      "type": "tag",
-      "snapshot-id": 1
-    }
-  },
+  "current-snapshot-id": 1,
   "schemas": [
     {
       "schema-id": 1,
@@ -67,17 +57,8 @@
       "snapshot-id": 1,
       "timestamp-ms": 1767225600000,
       "schema-id": 1,
-      "manifests": [
-        {
-          "path": "iceberg/warehouse/places/metadata/manifest-1.avro"
-        }
-      ]
-    },
-    {
-      "snapshot-id": 2,
-      "timestamp-ms": 1767312000000,
-      "schema-id": 2,
-      "manifest-list": "iceberg/warehouse/places/metadata/snap-2.manifest-list.avro"
+      "manifest-list": "iceberg/warehouse/places/metadata/snap-1.v1.manifest-list.avro"
     }
-  ]
+  ],
+  "current-schema-id": 1
 }
