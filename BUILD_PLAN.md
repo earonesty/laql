@@ -256,9 +256,10 @@ Q5  phase 6 closure: aggregation, sort, bounded memory operators
     - finish resumable top-k/sort state and spill-backed global operators
     - finish memory/spill/output-row budget enforcement
     - landed: aggregate output-row budgets apply to finished groups instead of input
-      rows; grouped aggregate scans request predicate, group, and aggregate columns
-    - remaining: audit process-restart resume coverage for aggregate/top-k/sort operator
-      state and spill budget failures before advancing
+      rows; grouped aggregate scans request predicate, group, and aggregate columns;
+      aggregate/top-k/sort resume from serialized bytes and spill refs; operator-level
+      spill budget typed failures
+    - remaining: none known after audit; advance to Q6 unless a final Q5 proof gap is found
     - exit: aggregation and bounded sort resume across process restarts without exceeding
       configured budgets except through typed failures
 
