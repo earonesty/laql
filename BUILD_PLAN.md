@@ -295,9 +295,8 @@ Q7  phase 8 closure: additive tracks
       object planning before scan/explain; geo/H3 fixture row-group pushdown is proven
       for bbox, h3_in, and exact-radius h3_within predicates; join helpers cover
       bounded broadcast/lookup, left/semi/anti, typed unsafe-plan errors, and scalar key
-      matching
-    - remaining order:
-      1. make docs/recipes runnable against fixtures
+      matching; every docs/recipes file has a fixture-backed runnable harness
+    - remaining: none known after audit; advance to Q8 unless a final Q7 proof gap is found
     - exit: every VISION SQL example parses/runs where applicable, CLI snapshots are stable,
       index planning is covered, and docs recipes run against fixtures
 

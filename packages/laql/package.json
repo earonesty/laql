@@ -42,5 +42,8 @@
     "@laql/parquet": "workspace:*",
     "@laql/r2": "workspace:*",
     "@laql/s3": "workspace:*"
+  },
+  "devDependencies": {
+    "@laql/fixtures": "workspace:*"
   }
 }

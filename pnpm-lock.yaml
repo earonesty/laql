@@ -93,6 +93,10 @@ importers:
       '@laql/s3':
         specifier: workspace:*
         version: link:../s3
+    devDependencies:
+      '@laql/fixtures':
+        specifier: workspace:*
+        version: link:../../fixtures
 
   packages/parquet:
     dependencies:

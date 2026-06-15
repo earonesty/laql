@@ -3,10 +3,16 @@
 Use the H3 fixture with the `h3_within` predicate:
 
 ```ts
-import { col, fn, lit } from "@laql/core";
+import { readFile } from "node:fs/promises";
+import { col, fn, lit, memoryStore } from "@laql/core";
+import { createLake } from "laql";
 
+const store = memoryStore();
+await store.put("data/h3.parquet", await readFile("fixtures/data/h3.parquet"));
+
+const lake = createLake({ store });
 const rows = await lake
-  .path("h3.parquet")
+  .path("data/h3.parquet")
   .where(fn("h3_within", col("h3_8"), lit("8829a1d757fffff"), lit(1)))
   .toArray();
 ```

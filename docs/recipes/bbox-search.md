@@ -3,12 +3,18 @@
 Use bbox predicates for coarse geospatial filtering:
 
 ```ts
-import { col, fn, lit } from "@laql/core";
+import { readFile } from "node:fs/promises";
+import { col, fn, lit, memoryStore } from "@laql/core";
+import { createLake } from "laql";
 
-const queryBbox = JSON.stringify([0, 0, 10, 10]);
+const store = memoryStore();
+await store.put("data/geo.parquet", await readFile("fixtures/data/geo.parquet"));
+
+const lake = createLake({ store });
+const queryBbox = fn("st_bbox", lit(-118.5), lit(34), lit(-118), lit(34.3));
 const rows = await lake
-  .path("geo.parquet")
-  .where(fn("st_intersects", col("bbox"), lit(queryBbox)))
+  .path("data/geo.parquet")
+  .where(fn("st_intersects", col("geom"), queryBbox))
   .toArray();
 ```
 
