@@ -185,6 +185,106 @@ no gaming     placeholder modules stay tiny so they don't pad the denominator.
 
 ---
 
+## Execution queue
+
+The end goal is still **finish every phase in this file**. Do not treat that as one
+unbounded work item. Work through the queue below in order, committing and pushing each
+verified slice before starting the next slice.
+
+Slices may be large when the code naturally moves together. A slice is acceptable when it
+has all of these properties:
+
+```txt
+1. its scope is named before editing starts
+2. its exit check is concrete enough to run in this repo
+3. it leaves the branch releasable
+4. `pnpm check` passes
+5. the verified diff is committed and pushed
+```
+
+If a slice cannot pass `pnpm check`, either fix it in the same slice or revert only that
+slice's own changes before choosing a smaller next slice. Do not mark the overall goal
+blocked just because later queue items remain.
+
+### Queue order
+
+```txt
+Q0  plan hygiene
+    - keep this queue current after each substantial commit
+    - move newly discovered requirements into the earliest dependent queue item
+
+Q1  phase 1/2 closure: plain Parquet reads and pruning
+    - audit current read/pruning implementation against phase 1 and phase 2 exits
+    - add any missing fixture/golden coverage for row-group streaming, task inputs,
+      projection+where column reads, and exact explain counts
+    - exit: selective hive query proves fewer bytes/ranges than full scan, and stable
+      task input goldens cover the same query twice
+
+Q2  phase 3 closure: Iceberg reads
+    - finish metadata-chain and manifest-reference behavior
+    - add manifest-list/manifest pruning counters if missing from explain/plans
+    - lock deterministic data-file/task order with goldens
+    - add conformance harness shape for external Iceberg reference warehouses
+    - exit: time-travel fixture query applies deletes, prunes manifests, and produces
+      stable planned files and row groups
+
+Q3  phase 4 closure: runtime drivers and Worker ergonomics
+    - audit HTTP/R2/S3 stores, Range and etag behavior, cache adapters, policy, budgets,
+      substrate hooks, and umbrella runtime subpaths
+    - expand workerd fixture lane where needed
+    - exit: Node and workerd fixture lanes pass with caller-provided queue/checkpoint
+      substrate and budget/policy coverage
+
+Q4  phase 5 closure: task manifests, bookmarks, queue-safe retry
+    - complete deterministic task and output manifest formats
+    - complete bookmark validation/signing/resume flows for reads and write tasks
+    - complete retry-state machine coverage across every transition
+    - exit: sliced/resumed execution is byte-identical to unsliced execution, and every
+      replayed task transition produces one logical completion
+
+Q5  phase 6 closure: aggregation, sort, bounded memory operators
+    - finish aggregate operators and maxGroups failure behavior
+    - finish resumable top-k/sort state and spill-backed global operators
+    - finish memory/spill/output-row budget enforcement
+    - exit: aggregation and bounded sort resume across process restarts without exceeding
+      configured budgets except through typed failures
+
+Q6  phase 7 closure: writes
+    - finish Parquet write options, deterministic output planning, partition policies,
+      output-manifest fan-in, Iceberg append commit behavior, validation, and CTAS chain
+    - add fake REST conflict/retry coverage and real-catalog conformance lane shape
+    - exit: append to fixture warehouse, read back through time travel, survive mid-write
+      resume, and prove retries create one logical output manifest entry/file set
+
+Q7  phase 8 closure: additive tracks
+    - finish geo/H3 pushdown, SQL examples and round-trips, sidecar indexes, CLI snapshots,
+      joins, and runnable docs/recipes
+    - exit: every VISION SQL example parses/runs where applicable, CLI snapshots are stable,
+      index planning is covered, and docs recipes run against fixtures
+
+Q8  final release hardening
+    - update BUILD_PLAN phase status markers
+    - run full local gate plus conformance lanes available in the repo
+    - verify package exports, docs, and examples
+    - exit: no known unchecked phase deliverables remain
+```
+
+### Selecting the next slice
+
+For each work session:
+
+```txt
+1. run `git status --short`
+2. read the first queue item whose exit is not satisfied
+3. choose the largest coherent slice inside that queue item that can be verified now
+4. state the slice and exit check
+5. implement, test with `pnpm check`, commit, push
+6. repeat from step 1
+```
+
+If the current queue item appears complete, prove it with tests or docs before advancing.
+If proof is missing, the proof is the next slice.
+
 ## Phases
 
 Phases ship in order; each leaves `main` releasable. Research items are listed with the
