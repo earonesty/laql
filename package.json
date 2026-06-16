@@ -28,6 +28,7 @@
     "fixtures:external": "pnpm --filter @laql/fixtures fetch:external",
     "fixtures:iceberg": "pnpm --filter @laql/fixtures generate:iceberg",
     "bench": "pnpm build && node bench/run.mjs",
+    "bench:duckdb": "pnpm build && node bench/duckdb-compare.mjs",
     "check:changeset": "node scripts/check-changeset.mjs",
     "changeset": "changeset",
     "version": "changeset version",
