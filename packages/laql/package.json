@@ -1,6 +1,6 @@
 {
   "name": "laql",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "LaQL: lightweight TypeScript query engine for Iceberg + Parquet on object storage",
   "keywords": [
     "lakehouse",
@@ -34,7 +34,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "prepack": "pnpm -w build"
+    "build": "tsup",
+    "prepack": "pnpm -w build && pnpm --filter laql build"
   },
   "repository": {
     "type": "git",
@@ -49,14 +50,23 @@
     "access": "public"
   },
   "dependencies": {
+    "@turf/boolean-contains": "^7.2.0",
+    "@turf/boolean-intersects": "^7.2.0",
+    "avsc": "^5.7.9",
+    "aws4fetch": "^1.0.20",
+    "fast-xml-parser": "^5.9.0",
+    "h3-js": "^4.4.0",
+    "hyparquet": "^1.26.0",
+    "hyparquet-writer": "^0.15.6"
+  },
+  "devDependencies": {
     "@laql/core": "workspace:*",
+    "@laql/fixtures": "workspace:*",
     "@laql/http": "workspace:*",
     "@laql/iceberg": "workspace:*",
     "@laql/parquet": "workspace:*",
     "@laql/r2": "workspace:*",
-    "@laql/s3": "workspace:*"
-  },
-  "devDependencies": {
-    "@laql/fixtures": "workspace:*"
+    "@laql/s3": "workspace:*",
+    "tsup": "^8.5.0"
   }
 }

@@ -9,7 +9,6 @@
     { "path": "packages/s3" },
     { "path": "packages/geo" },
     { "path": "packages/sql" },
-    { "path": "packages/cli" },
-    { "path": "packages/laql" }
+    { "path": "packages/cli" }
   ]
 }

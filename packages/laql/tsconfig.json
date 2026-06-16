@@ -2,16 +2,12 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "rootDir": "src",
-    "outDir": "dist"
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": true,
+    "ignoreDeprecations": "6.0"
   },
-  "references": [
-    { "path": "../core" },
-    { "path": "../http" },
-    { "path": "../iceberg" },
-    { "path": "../parquet" },
-    { "path": "../r2" },
-    { "path": "../s3" }
-  ],
   "include": ["src"],
   "exclude": ["src/**/*.test.ts", "src/**/*.workerd.ts"]
 }
