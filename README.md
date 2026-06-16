@@ -79,12 +79,12 @@ can depend only on what you need:
 
 ## Documentation
 
-- [Introduction](./docs/introduction.md) and [query language](./docs/query-language.md)
+- [Introduction](./docs/introduction.md), [query language](./docs/query-language.md), and [JSON query API](./docs/json-query-api.md)
 - Querying: [Parquet](./docs/querying-parquet.md), [Iceberg](./docs/querying-iceberg.md), [partitioning](./docs/partitioning.md)
 - Writing: [Parquet](./docs/writing-parquet.md), [Iceberg (append-only)](./docs/writing-iceberg.md)
 - [Compatibility matrix](./docs/compatibility.md) and [unsupported-but-detected](./docs/unsupported.md)
 - [Iceberg catalogs](./docs/catalogs.md), [Parquet types](./docs/parquet-types.md), [error codes](./docs/errors.md)
-- [Cloudflare Workers](./docs/cloudflare-workers.md), [performance](./docs/performance.md), [security](./docs/security.md)
+- [Cloudflare Workers](./docs/cloudflare-workers.md), [performance](./docs/performance.md), [caching](./docs/cache.md), [security](./docs/security.md)
 - [SQL dialect](./docs/sql-dialect.md), [CLI](./docs/cli.md), [geospatial](./docs/geospatial.md), [H3](./docs/h3.md)
 - [Recipes](./docs/recipes) and runnable [examples](./examples)
 
