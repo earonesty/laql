@@ -115,6 +115,8 @@ function fileMayMatch(file: SidecarFileIndex, expr: Expr | undefined): boolean {
     case "column":
     case "null-check":
     case "like":
+    case "arithmetic":
+    case "case":
     case "call":
       return callMayMatch(file, expr);
     case "not":

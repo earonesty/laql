@@ -119,5 +119,16 @@ function collectColumns(expr: Expr, columns: Set<string>): void {
     case "call":
       for (const arg of expr.args) collectColumns(arg, columns);
       return;
+    case "arithmetic":
+      collectColumns(expr.left, columns);
+      collectColumns(expr.right, columns);
+      return;
+    case "case":
+      for (const branch of expr.whens) {
+        collectColumns(branch.when, columns);
+        collectColumns(branch.value, columns);
+      }
+      if (expr.else !== undefined) collectColumns(expr.else, columns);
+      return;
   }
 }

@@ -1,5 +1,5 @@
 import { LaQLError } from "./errors.js";
-import { encodeJsonLine, jsonSafeValue, matches } from "./evaluator.js";
+import { encodeJsonLine, evaluate, jsonSafeValue, matches } from "./evaluator.js";
 import type { Expr } from "./expr.js";
 import { col, eq, gt, gte, isIn, isNotNull, isNull, lt, lte, ne, notIn } from "./expr.js";
 import {
@@ -85,7 +85,9 @@ export interface ScanTaskPlan {
 export interface PathQueryInit {
   source: string;
   select?: string[];
+  projections?: Record<string, Expr>;
   where?: Expr;
+  distinct?: boolean;
   orderBy?: OrderByTerm[];
   limit?: number;
   offset?: number;
@@ -135,12 +137,17 @@ export type AggregateOp =
 export interface AggregateExpr {
   op: AggregateOp;
   column?: string;
+  expr?: Expr;
 }
 
 export type AggregateSpec = Record<string, AggregateExpr>;
 
 export interface AggregateOptions {
   maxGroups?: number;
+  having?: Expr;
+  orderBy?: OrderByTerm[];
+  limit?: number;
+  offset?: number;
   operatorState?: Uint8Array | AggregateOperatorState | { spillRef: string };
   spill?: SpillAdapter;
   spillId?: string;
@@ -248,6 +255,7 @@ export interface JsonQueryV1 {
   from: string;
   select?: string[];
   where?: JsonExpr;
+  distinct?: boolean;
   orderBy?: JsonOrderByTerm[];
   limit?: number;
   offset?: number;
@@ -367,8 +375,16 @@ export class QueryBuilder {
     return new QueryBuilder(this.lake, { ...this.init, select: columns });
   }
 
+  project(projections: Record<string, Expr>): QueryBuilder {
+    return new QueryBuilder(this.lake, { ...this.init, projections });
+  }
+
   where(expr: Expr): QueryBuilder {
     return new QueryBuilder(this.lake, { ...this.init, where: expr });
+  }
+
+  distinct(enabled = true): QueryBuilder {
+    return new QueryBuilder(this.lake, { ...this.init, distinct: enabled });
   }
 
   orderBy(terms: OrderByTerm[]): QueryBuilder {
@@ -557,9 +573,15 @@ export class QueryResult {
     const startedAt = config.now();
     let offsetSkipped = 0;
     let returned = 0;
+    const distinct = config.distinct === true ? new Set<string>() : undefined;
     const { planned: paths, skipped: skippedFiles } = await this.planObjects();
     stats.filesSkipped = skippedFiles;
-    const columns = projectedReadColumns(config.select, config.where);
+    const columns = projectedReadColumns(
+      config.select,
+      config.where,
+      undefined,
+      config.projections,
+    );
     for (const object of paths) {
       stats.filesPlanned += 1;
       stats.filesRead += 1;
@@ -586,12 +608,16 @@ export class QueryResult {
           enforceBudget(config.budget, stats, config.now, startedAt);
           if (!matches(config.where, row)) continue;
           stats.rowsMatched += 1;
+          const projected = project(row, config.select, config.projections);
+          if (distinct !== undefined && !addDistinctRow(distinct, projected, config.budget)) {
+            continue;
+          }
           if (offsetSkipped < (config.offset ?? 0)) {
             offsetSkipped += 1;
             continue;
           }
           if (config.limit !== undefined && returned >= config.limit) break;
-          out.push(project(row, config.select));
+          out.push(projected);
           returned += 1;
           stats.rowsReturned += 1;
           enforceBudget(config.budget, stats, config.now, startedAt);
@@ -619,6 +645,9 @@ export class QueryResult {
     if (config.limit === undefined) {
       throw new LaQLError("LAQL_TYPE_ERROR", "topKWithState requires limit");
     }
+    if (config.distinct === true) {
+      throw new LaQLError("LAQL_TYPE_ERROR", "topKWithState does not support distinct queries");
+    }
     const orderBy = normalizeOrderBy(config.orderBy);
     const topK = (config.offset ?? 0) + config.limit;
     const matched = await topKRowsFromState(orderBy, config.offset ?? 0, config.limit, options);
@@ -629,7 +658,9 @@ export class QueryResult {
     matched.sort((left, right) => compareRows(left, right, orderBy));
     const start = config.offset ?? 0;
     const end = start + config.limit;
-    const rows = matched.slice(start, end).map((row) => project(row, config.select));
+    const rows = matched
+      .slice(start, end)
+      .map((row) => project(row, config.select, config.projections));
     for (const _row of rows) {
       this.stats.rowsReturned += 1;
       enforceBudget(config.budget, this.stats, config.now, startedAt);
@@ -652,6 +683,9 @@ export class QueryResult {
     if (config.orderBy === undefined) {
       throw new LaQLError("LAQL_TYPE_ERROR", "sortWithState requires orderBy");
     }
+    if (config.distinct === true) {
+      throw new LaQLError("LAQL_TYPE_ERROR", "sortWithState does not support distinct queries");
+    }
     const orderBy = normalizeOrderBy(config.orderBy);
     const runs = await sortRunsFromState(orderBy, options);
     const startedAt = config.now();
@@ -659,7 +693,9 @@ export class QueryResult {
     const matched = mergeSortRuns(runs, orderBy);
     const start = config.offset ?? 0;
     const end = config.limit === undefined ? matched.length : start + config.limit;
-    const rows = matched.slice(start, end).map((row) => project(row, config.select));
+    const rows = matched
+      .slice(start, end)
+      .map((row) => project(row, config.select, config.projections));
     for (const _row of rows) {
       this.stats.rowsReturned += 1;
       enforceBudget(config.budget, this.stats, config.now, startedAt);
@@ -797,7 +833,10 @@ export class QueryResult {
         estimateAggregateOperatorMemoryBytes(groupColumns, spec, groups),
       );
     }
-    const rows = [...groups.values()].map((group) => group.finish());
+    const rows = applyAggregateResultOptions(
+      [...groups.values()].map((group) => group.finish()),
+      options,
+    );
     for (const _row of rows) {
       this.stats.rowsReturned += 1;
       enforceBudget(this.config.budget, this.stats, this.config.now, startedAt);
@@ -823,16 +862,28 @@ export class QueryResult {
     const config = this.config;
     const { stats } = this;
     const matched: Row[] = [];
-    const topK = config.limit === undefined ? undefined : (config.offset ?? 0) + config.limit;
+    const topK =
+      config.distinct === true || config.limit === undefined
+        ? undefined
+        : (config.offset ?? 0) + config.limit;
     const startedAt = config.now();
     await this.collectOrderedMatches(matched, topK, startedAt);
     matched.sort((left, right) => compareRows(left, right, config.orderBy ?? []));
-    const start = config.offset ?? 0;
-    const end = config.limit === undefined ? matched.length : start + config.limit;
     const batchSize = config.batchSize ?? 4096;
     let batch: Row[] = [];
-    for (const row of matched.slice(start, end)) {
-      batch.push(project(row, config.select));
+    let offsetSkipped = 0;
+    let returned = 0;
+    const distinct = config.distinct === true ? new Set<string>() : undefined;
+    for (const row of matched) {
+      const projected = project(row, config.select, config.projections);
+      if (distinct !== undefined && !addDistinctRow(distinct, projected, config.budget)) continue;
+      if (offsetSkipped < (config.offset ?? 0)) {
+        offsetSkipped += 1;
+        continue;
+      }
+      if (config.limit !== undefined && returned >= config.limit) break;
+      batch.push(projected);
+      returned += 1;
       stats.rowsReturned += 1;
       enforceBudget(config.budget, stats, config.now, startedAt);
       if (batch.length >= batchSize) {
@@ -855,7 +906,7 @@ export class QueryResult {
     const { planned: paths, skipped: skippedFiles } = await this.planObjects();
     stats.filesSkipped = skippedFiles;
     const orderBy = config.orderBy ?? [];
-    const columns = projectedReadColumns(config.select, config.where, orderBy);
+    const columns = projectedReadColumns(config.select, config.where, orderBy, config.projections);
     for (const object of paths) {
       stats.filesPlanned += 1;
       stats.filesRead += 1;
@@ -900,7 +951,7 @@ export class QueryResult {
     const { stats } = this;
     const { planned: paths, skipped: skippedFiles } = await this.planObjects();
     stats.filesSkipped = skippedFiles;
-    const columns = projectedReadColumns(config.select, config.where, orderBy);
+    const columns = projectedReadColumns(config.select, config.where, orderBy, config.projections);
     const runCapacity = config.budget.maxBufferedRows ?? Number.POSITIVE_INFINITY;
     const currentRun: Row[] = [];
     for (const object of paths) {
@@ -943,7 +994,13 @@ export class QueryResult {
   async explain(): Promise<ExplainResult> {
     const { planned, skipped } = await this.planObjects();
     const tasks = await this.tasksFromObjects(planned);
-    const projectedColumns = projectedReadColumns(this.config.select, this.config.where) ?? [];
+    const projectedColumns =
+      projectedReadColumns(
+        this.config.select,
+        this.config.where,
+        undefined,
+        this.config.projections,
+      ) ?? [];
     const json: ExplainJson = {
       queryId: this.stats.queryId,
       filesPlanned: tasks.length,
@@ -967,7 +1024,12 @@ export class QueryResult {
 
   private async tasksFromObjects(objects: ObjectInfo[]): Promise<TaskInput[]> {
     const config = this.config;
-    const projectedColumns = projectedReadColumns(config.select, config.where, config.orderBy);
+    const projectedColumns = projectedReadColumns(
+      config.select,
+      config.where,
+      config.orderBy,
+      config.projections,
+    );
     const tasks: TaskInput[] = [];
     for (const object of objects) {
       const partitionValues = config.hive ? parseHivePartitions(object.path) : {};
@@ -1202,7 +1264,8 @@ function createAggregateState(aggregate: AggregateExpr): AggregateState {
 class CountState implements AggregateState {
   constructor(private count = 0) {}
 
-  add(_value: unknown): void {
+  add(value: unknown): void {
+    if (value === null || value === undefined) return;
     this.count += 1;
   }
 
@@ -1791,7 +1854,10 @@ function snapshotValue(value: unknown): AggregateSnapshotValue {
 
 function aggregateValue(row: Row, alias: string, aggregate: AggregateExpr | undefined): unknown {
   if (!aggregate) throw new LaQLError("LAQL_VALIDATION_ERROR", `Missing aggregate ${alias}`);
-  if (aggregate.op === "count" && aggregate.column === undefined) return true;
+  if (aggregate.op === "count" && aggregate.column === undefined && aggregate.expr === undefined) {
+    return true;
+  }
+  if (aggregate.expr !== undefined) return evaluate(aggregate.expr, row);
   if (aggregate.column === undefined) {
     throw new LaQLError("LAQL_TYPE_ERROR", `${aggregate.op} requires a column`, { aggregate });
   }
@@ -1822,7 +1888,27 @@ function validateAggregateRequest(
   ) {
     throw new LaQLError("LAQL_TYPE_ERROR", "maxGroups must be a positive integer");
   }
+  if (options.orderBy !== undefined) normalizeOrderBy(options.orderBy);
+  if (options.limit !== undefined && (!Number.isInteger(options.limit) || options.limit < 0)) {
+    throw new LaQLError("LAQL_TYPE_ERROR", "aggregate limit must be a non-negative integer");
+  }
+  if (options.offset !== undefined && (!Number.isInteger(options.offset) || options.offset < 0)) {
+    throw new LaQLError("LAQL_TYPE_ERROR", "aggregate offset must be a non-negative integer");
+  }
   for (const aggregate of Object.values(spec)) validateAggregateExpr(aggregate);
+}
+
+function applyAggregateResultOptions(rows: Row[], options: AggregateOptions): Row[] {
+  let out = rows;
+  if (options.having !== undefined) out = out.filter((row) => matches(options.having, row));
+  if (options.orderBy !== undefined) {
+    const orderBy = normalizeOrderBy(options.orderBy);
+    out = [...out].sort((left, right) => compareRows(left, right, orderBy));
+  }
+  const offset = options.offset ?? 0;
+  if (options.limit !== undefined) return out.slice(offset, offset + options.limit);
+  if (offset > 0) return out.slice(offset);
+  return out;
 }
 
 function validateAggregateExpr(aggregate: AggregateExpr): void {
@@ -1841,8 +1927,15 @@ function validateAggregateExpr(aggregate: AggregateExpr): void {
   if (!ops.includes(aggregate.op)) {
     throw new LaQLError("LAQL_TYPE_ERROR", `Unsupported aggregate ${aggregate.op}`, { aggregate });
   }
-  if (aggregate.op !== "count" && aggregate.column === undefined) {
-    throw new LaQLError("LAQL_TYPE_ERROR", `${aggregate.op} requires a column`, { aggregate });
+  if (aggregate.column !== undefined && aggregate.expr !== undefined) {
+    throw new LaQLError("LAQL_TYPE_ERROR", "aggregate cannot specify both column and expr", {
+      aggregate,
+    });
+  }
+  if (aggregate.op !== "count" && aggregate.column === undefined && aggregate.expr === undefined) {
+    throw new LaQLError("LAQL_TYPE_ERROR", `${aggregate.op} requires a column or expression`, {
+      aggregate,
+    });
   }
 }
 
@@ -1862,6 +1955,10 @@ export function parseJsonQuery(input: unknown): PathQueryInit {
     init.select = input.select;
   }
   if (input.where !== undefined) init.where = parseJsonExpr(input.where);
+  if (input.distinct !== undefined) {
+    if (typeof input.distinct !== "boolean") throwParse("JSON query distinct must be a boolean");
+    init.distinct = input.distinct;
+  }
   if (input.orderBy !== undefined) {
     if (!Array.isArray(input.orderBy)) throwParse("JSON query orderBy must be an array");
     init.orderBy = normalizeOrderBy(input.orderBy.map(parseJsonOrderByTerm));
@@ -2018,6 +2115,9 @@ function validateQueryInit(init: PathQueryInit): void {
     throw new LaQLError("LAQL_TYPE_ERROR", "batchSize must be a positive integer");
   }
   if (init.orderBy !== undefined) normalizeOrderBy(init.orderBy);
+  if (init.distinct !== undefined && typeof init.distinct !== "boolean") {
+    throw new LaQLError("LAQL_TYPE_ERROR", "distinct must be a boolean");
+  }
 }
 
 function applyQueryPolicy(init: PathQueryInit, policy: QueryPolicy): PathQueryInit {
@@ -2046,7 +2146,9 @@ function applyQueryPolicy(init: PathQueryInit, policy: QueryPolicy): PathQueryIn
 function cloneBookmarkQuery(init: PathQueryInit): BookmarkQuery {
   const query: BookmarkQuery = { source: init.source };
   if (init.select !== undefined) query.select = [...init.select];
+  if (init.projections !== undefined) query.projections = init.projections;
   if (init.where !== undefined) query.where = init.where;
+  if (init.distinct !== undefined) query.distinct = init.distinct;
   if (init.orderBy !== undefined) {
     query.orderBy = init.orderBy.map((term) => {
       const queryTerm: NonNullable<BookmarkQuery["orderBy"]>[number] = { column: term.column };
@@ -2100,6 +2202,7 @@ function validatePolicyColumns(
   const requested = new Set<string>();
   for (const column of init.select ?? []) requested.add(column);
   for (const term of init.orderBy ?? []) requested.add(term.column);
+  for (const expr of Object.values(init.projections ?? {})) collectExprColumns(expr, requested);
   collectExprColumns(effectiveWhere, requested);
   for (const column of requested) {
     if (!allowed.has(column)) {
@@ -2163,10 +2266,12 @@ function projectedReadColumns(
   select: string[] | undefined,
   where: Expr | undefined,
   orderBy: OrderByTerm[] | undefined = undefined,
+  projections: Record<string, Expr> | undefined = undefined,
 ): string[] | undefined {
   const columns = new Set<string>();
   for (const column of select ?? []) columns.add(column);
   for (const term of orderBy ?? []) columns.add(term.column);
+  for (const expr of Object.values(projections ?? {})) collectExprColumns(expr, columns);
   collectExprColumns(where, columns);
   return columns.size === 0 ? undefined : [...columns].sort();
 }
@@ -2180,6 +2285,7 @@ function aggregateReadColumns(
   for (const column of groupColumns) columns.add(column);
   for (const aggregate of Object.values(spec)) {
     if (aggregate.column !== undefined) columns.add(aggregate.column);
+    if (aggregate.expr !== undefined) collectExprColumns(aggregate.expr, columns);
   }
   collectExprColumns(where, columns);
   return columns.size === 0 ? undefined : [...columns].sort();
@@ -2221,19 +2327,44 @@ function collectExprColumns(expr: Expr | undefined, columns: Set<string>): void 
     case "call":
       for (const arg of expr.args) collectExprColumns(arg, columns);
       return;
+    case "arithmetic":
+      collectExprColumns(expr.left, columns);
+      collectExprColumns(expr.right, columns);
+      return;
+    case "case":
+      for (const branch of expr.whens) {
+        collectExprColumns(branch.when, columns);
+        collectExprColumns(branch.value, columns);
+      }
+      collectExprColumns(expr.else, columns);
+      return;
   }
 }
 
-function project(row: Row, select: string[] | undefined): Row {
-  if (!select) return row;
+function project(
+  row: Row,
+  select: string[] | undefined,
+  projections: Record<string, Expr> | undefined,
+): Row {
+  if (!select && !projections) return row;
   const out: Row = {};
-  for (const column of select) {
+  for (const column of select ?? []) {
     if (!(column in row)) {
       throw new LaQLError("LAQL_UNKNOWN_COLUMN", `Unknown column ${column}`, { column });
     }
     out[column] = row[column];
   }
+  for (const [alias, expr] of Object.entries(projections ?? {})) out[alias] = evaluate(expr, row);
   return out;
+}
+
+function addDistinctRow(seen: Set<string>, row: Row, budget: QueryBudget): boolean {
+  const key = stableStringify(jsonSafeValue(row));
+  if (seen.has(key)) return false;
+  seen.add(key);
+  enforceBufferedRowsBudget(budget, seen.size);
+  enforceOperatorMemoryBudget(budget, estimateOperatorMemoryBytes([...seen]));
+  return true;
 }
 
 function normalizeOrderBy(terms: OrderByTerm[]): OrderByTerm[] {
@@ -2403,6 +2534,8 @@ function partitionEval(expr: Expr, partitions: Record<string, string>): Partitio
     case "null-check":
     case "like":
     case "call":
+    case "arithmetic":
+    case "case":
       return expressionIsPartitionOnly(expr, partitions) ? matches(expr, partitions) : "unknown";
     case "not": {
       const value = partitionEval(expr.operand, partitions);

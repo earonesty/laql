@@ -6,444 +6,724 @@ import {
   type OrderByTerm,
   type PathQueryInit,
 } from "@laql/core";
+import { parse } from "pgsql-ast-parser";
 
 export interface SqlQueryAst extends PathQueryInit {
   groupBy?: string[];
   aggregates?: AggregateSpec;
   having?: Expr;
+  join?: SqlJoinAst;
+  subqueryJoin?: SqlSubqueryJoinAst;
+  cte?: SqlCteAst;
+  scalarSubqueries?: Record<string, SqlScalarSubqueryAst>;
 }
 
-type TokenKind = "identifier" | "number" | "string" | "operator" | "punct" | "keyword" | "eof";
-
-interface Token {
-  kind: TokenKind;
-  value: string;
+export interface SqlJoinAst {
+  leftAlias: string;
+  source: string;
+  alias: string;
+  type: "inner" | "left";
+  leftKey: string[];
+  rightKey: string[];
 }
 
-const KEYWORDS = new Set([
-  "and",
-  "as",
-  "between",
-  "by",
-  "false",
-  "from",
-  "group",
-  "having",
-  "ilike",
-  "in",
-  "is",
-  "like",
-  "limit",
-  "not",
-  "null",
-  "offset",
-  "or",
-  "order",
-  "asc",
-  "desc",
-  "first",
-  "last",
-  "nulls",
-  "select",
-  "true",
-  "where",
-]);
+export interface SqlSubqueryJoinAst {
+  source: string;
+  type: "semi" | "anti";
+  leftKey: string[];
+  rightKey: string[];
+  where?: Expr;
+}
 
-const CLAUSE_KEYWORDS = new Set([
-  "from",
-  "select",
-  "where",
-  "group",
-  "having",
-  "order",
-  "limit",
-  "offset",
-]);
+export interface SqlCteAst {
+  name: string;
+  query: SqlQueryAst;
+}
 
-const MAX_TOKENS = 10_000;
-const MAX_PARSE_DEPTH = 128;
+export interface SqlScalarSubqueryAst {
+  query: SqlQueryAst;
+  column: string;
+}
+
+const MAX_SQL_LENGTH = 128_000;
+const MAX_AST_DEPTH = 128;
+
+type PgNode = Record<string, unknown>;
+
+interface SqlParseContext {
+  scalarSubqueries: Record<string, SqlScalarSubqueryAst>;
+  nextScalarSubqueryId: number;
+}
 
 export function parseSql(sql: string): SqlQueryAst {
-  const parser = new Parser(tokenize(sql));
-  return parser.parseQuery();
+  if (sql.length > MAX_SQL_LENGTH) {
+    throwParse(`SQL input length exceeds ${MAX_SQL_LENGTH}`);
+  }
+
+  let statements: unknown[];
+  try {
+    statements = parse(sql) as unknown[];
+  } catch (error) {
+    if (error instanceof Error) throwParse(error.message);
+    throwParse("Invalid SQL");
+  }
+
+  if (statements.length !== 1) throwUnsupported("Only one SELECT statement is supported");
+  const statement = asNode(statements[0], "statement");
+  assertAstDepth(statement);
+  if (statement.type === "with") return withStatementToAst(statement);
+  if (statement.type !== "select") throwUnsupported("Only SELECT statements are supported");
+
+  return selectStatementToAst(statement);
 }
 
 export function formatSql(ast: SqlQueryAst): string {
-  const clauses = [`from ${formatIdentifier(ast.source)}`];
   const select = [...(ast.select ?? [])];
-  for (const [alias, aggregate] of Object.entries(ast.aggregates ?? {})) {
-    const args = aggregate.column === undefined ? "" : formatIdentifier(aggregate.column);
-    select.push(`${aggregate.op}(${args}) as ${formatIdentifier(alias)}`);
+  for (const [alias, expr] of Object.entries(ast.projections ?? {})) {
+    select.push(`${formatExpr(expr, ast)} as ${formatIdentifier(alias)}`);
   }
-  if (select.length > 0) clauses.push(`select ${select.join(", ")}`);
-  if (ast.where) clauses.push(`where ${formatExpr(ast.where)}`);
+  for (const [alias, aggregate] of Object.entries(ast.aggregates ?? {})) {
+    select.push(`${formatAggregate(aggregate)} as ${formatIdentifier(alias)}`);
+  }
+
+  const clauses = [
+    `select ${ast.distinct === true ? "distinct " : ""}${select.length > 0 ? select.join(", ") : "*"}`,
+  ];
+  clauses.push(`from ${formatIdentifier(ast.source)}${formatJoin(ast.source, ast.join)}`);
+  const where = formatWhere(ast.where, ast.subqueryJoin, ast);
+  if (where !== undefined) clauses.push(`where ${where}`);
   if (ast.groupBy && ast.groupBy.length > 0) {
     clauses.push(`group by ${ast.groupBy.map(formatIdentifier).join(", ")}`);
   }
-  if (ast.having) clauses.push(`having ${formatExpr(ast.having)}`);
+  if (ast.having) clauses.push(`having ${formatExpr(ast.having, ast)}`);
   if (ast.orderBy && ast.orderBy.length > 0) {
     clauses.push(`order by ${ast.orderBy.map(formatOrderByTerm).join(", ")}`);
   }
   if (ast.limit !== undefined) clauses.push(`limit ${ast.limit}`);
   if (ast.offset !== undefined) clauses.push(`offset ${ast.offset}`);
-  return clauses.join("\n");
+  const sql = clauses.join("\n");
+  if (ast.cte === undefined) return sql;
+  return `with ${formatIdentifier(ast.cte.name)} as (${formatSql(ast.cte.query)})\n${sql}`;
 }
 
-class Parser {
-  private index = 0;
-  private depth = 0;
+function withStatementToAst(statement: PgNode): SqlQueryAst {
+  const bindings = optionalArray(statement.bind);
+  if (bindings.length !== 1) throwUnsupported("Only one CTE is supported");
+  const binding = asNode(bindings[0], "CTE binding");
+  const name = nameNodeToString(binding.alias);
+  const inner = asNode(binding.statement, "CTE statement");
+  if (inner.type !== "select") throwUnsupported("Only SELECT CTEs are supported");
+  const cteQuery = selectStatementToAst(inner);
+  validateCteQuery(cteQuery);
+  const outer = asNode(statement.in, "CTE outer query");
+  if (outer.type !== "select") throwUnsupported("Only SELECT after WITH is supported");
+  const ast = selectStatementToAst(outer);
+  ast.cte = { name, query: cteQuery };
+  return ast;
+}
 
-  constructor(private readonly tokens: Token[]) {}
+function validateCteQuery(ast: SqlQueryAst): void {
+  if (
+    ast.join !== undefined ||
+    ast.subqueryJoin !== undefined ||
+    ast.scalarSubqueries !== undefined ||
+    ast.cte !== undefined
+  ) {
+    throwUnsupported("Nested CTE joins and subqueries are not supported");
+  }
+}
 
-  parseQuery(): SqlQueryAst {
-    const query: Partial<SqlQueryAst> = {};
+function selectStatementToAst(statement: PgNode): SqlQueryAst {
+  rejectPresent(statement, "with", "CTEs are not supported");
+  rejectPresent(statement, "windows", "Window functions are not supported");
 
-    while (!this.peek("eof")) {
-      if (this.matchKeyword("from")) {
-        if (query.source !== undefined) throwParse("FROM may only appear once");
-        query.source = this.expectIdentifierLike("source");
-      } else if (this.matchKeyword("select")) {
-        const selected = this.parseSelectList();
-        if (selected.select.length > 0) query.select = selected.select;
-        if (Object.keys(selected.aggregates).length > 0) query.aggregates = selected.aggregates;
-      } else if (this.matchKeyword("where")) {
-        query.where = this.parseExprUntil(CLAUSE_KEYWORDS);
-      } else if (this.matchKeyword("group")) {
-        this.expectKeyword("by");
-        query.groupBy = this.parseIdentifierList();
-      } else if (this.matchKeyword("having")) {
-        query.having = this.parseExprUntil(CLAUSE_KEYWORDS);
-      } else if (this.matchKeyword("order")) {
-        this.expectKeyword("by");
-        query.orderBy = this.parseOrderBy();
-      } else if (this.matchKeyword("limit")) {
-        query.limit = this.expectNonNegativeInteger("limit");
-      } else if (this.matchKeyword("offset")) {
-        query.offset = this.expectNonNegativeInteger("offset");
-      } else {
-        throwParse(`Unexpected token ${this.current().value}`);
-      }
+  const from = optionalArray(statement.from);
+  if (from.length !== 1 && from.length !== 2) {
+    throwUnsupported("SELECT must have exactly one FROM table or one bounded JOIN");
+  }
+  const leftSource = sourceTable(from[0]);
+  const ast: SqlQueryAst = { source: leftSource.source };
+  const scope = new SqlScope(leftSource);
+  const context = newSqlParseContext();
+  if (from.length === 2) {
+    const join = joinToAst(from[1], leftSource);
+    ast.join = join;
+    scope.add({ source: join.source, alias: join.alias });
+  }
+  if (statement.distinct !== undefined) {
+    if (statement.distinct !== "distinct") {
+      throwUnsupported("Only SELECT DISTINCT is supported");
     }
-
-    if (query.source === undefined) throwParse("Expected FROM");
-    return query as SqlQueryAst;
+    ast.distinct = true;
   }
 
-  private parseSelectList(): { select: string[]; aggregates: AggregateSpec } {
-    const select: string[] = [];
-    const aggregates: AggregateSpec = {};
-    while (!this.atClauseBoundary()) {
-      const first = this.expectIdentifierLike("select expression");
-      if (this.matchPunct("(")) {
-        const args = this.parseCallArgs();
-        const alias = this.matchKeyword("as")
-          ? this.expectIdentifierLike("aggregate alias")
-          : first;
-        aggregates[alias] = { op: aggregateOp(first), ...(args[0] ? { column: args[0] } : {}) };
-      } else {
-        const alias = this.matchKeyword("as") ? this.expectIdentifierLike("select alias") : first;
-        select.push(alias === first ? first : `${first} as ${alias}`);
-      }
-      if (!this.matchPunct(",")) break;
+  const columns = optionalArray(statement.columns);
+  if (columns.length === 0) throwUnsupported("SELECT requires at least one projection");
+  const select: string[] = [];
+  const projections: Record<string, Expr> = {};
+  const aggregates: AggregateSpec = {};
+
+  for (const column of columns) {
+    const item = asNode(column, "select item");
+    const expr = asNode(item.expr, "select expression");
+    if (isWildcard(expr)) {
+      if (item.alias !== undefined) throwUnsupported("Aliases on SELECT * are not supported");
+      select.push("*");
+      continue;
     }
-    return { select, aggregates };
-  }
-
-  private parseCallArgs(): string[] {
-    if (this.matchPunct(")")) return [];
-    const args: string[] = [];
-    do {
-      args.push(this.expectIdentifierLike("function argument"));
-    } while (this.matchPunct(","));
-    this.expectPunct(")");
-    return args;
-  }
-
-  private parseIdentifierList(): string[] {
-    const columns: string[] = [];
-    do {
-      columns.push(this.expectIdentifierLike("column"));
-    } while (this.matchPunct(","));
-    return columns;
-  }
-
-  private parseOrderBy(): OrderByTerm[] {
-    const terms: OrderByTerm[] = [];
-    do {
-      const term: OrderByTerm = { column: this.expectIdentifierLike("order column") };
-      if (this.matchKeyword("asc")) term.direction = "asc";
-      else if (this.matchKeyword("desc")) term.direction = "desc";
-      if (this.matchKeyword("nulls")) {
-        if (this.matchKeyword("first")) term.nulls = "first";
-        else if (this.matchKeyword("last")) term.nulls = "last";
-        else throwParse("Expected FIRST or LAST after NULLS");
-      }
-      terms.push(term);
-    } while (this.matchPunct(","));
-    return terms;
-  }
-
-  private parseExprUntil(boundaries: Set<string>): Expr {
-    const stop = () =>
-      this.peek("eof") ||
-      (this.current().kind === "keyword" && boundaries.has(this.current().value));
-    const expr = this.parseOr(stop);
-    if (!stop()) throwParse(`Unexpected token ${this.current().value}`);
-    return expr;
-  }
-
-  private parseOr(stop: () => boolean): Expr {
-    const operands = [this.parseAnd(stop)];
-    while (!stop() && this.matchKeyword("or")) operands.push(this.parseAnd(stop));
-    return operands.length === 1
-      ? (operands[0] ?? literal(null))
-      : { kind: "logical", op: "or", operands };
-  }
-
-  private parseAnd(stop: () => boolean): Expr {
-    const operands = [this.parseNot(stop)];
-    while (!stop() && this.matchKeyword("and")) operands.push(this.parseNot(stop));
-    return operands.length === 1
-      ? (operands[0] ?? literal(null))
-      : { kind: "logical", op: "and", operands };
-  }
-
-  private parseNot(stop: () => boolean): Expr {
-    if (this.matchKeyword("not")) {
-      this.enterDepth();
-      try {
-        return { kind: "not", operand: this.parseNot(stop) };
-      } finally {
-        this.exitDepth();
-      }
+    if (expr.type === "call" && isAggregateCall(expr)) {
+      const alias = aliasName(item.alias) ?? functionName(expr.function);
+      aggregates[alias] = aggregateCallToSpec(expr, scope);
+      continue;
     }
-    return this.parsePredicate(stop);
+    if (expr.type === "ref") {
+      const name = scope.refName(expr);
+      const alias = aliasName(item.alias);
+      if (alias === undefined || alias === name) select.push(name);
+      else projections[alias] = { kind: "column", name };
+      continue;
+    }
+    const alias = aliasName(item.alias);
+    if (alias === undefined) {
+      throwUnsupported("Computed projections require an explicit alias");
+    }
+    projections[alias] = exprToLaql(expr, scope, context);
   }
 
-  private parsePredicate(stop: () => boolean): Expr {
-    const left = this.parsePrimary(stop);
-    if (this.matchKeyword("between")) {
-      const low = this.parsePrimary(stop);
-      this.expectKeyword("and");
-      return { kind: "between", target: left, low, high: this.parsePrimary(stop) };
-    }
-    if (this.matchKeyword("not")) {
-      if (this.matchKeyword("in")) return this.parseIn(left, true, stop);
-      if (this.matchKeyword("like")) return this.parseLike(left, true, false, stop);
-      throwParse("Expected IN or LIKE after NOT");
-    }
-    if (this.matchKeyword("in")) return this.parseIn(left, false, stop);
-    if (this.matchKeyword("like")) return this.parseLike(left, false, false, stop);
-    if (this.matchKeyword("ilike")) return this.parseLike(left, false, true, stop);
-    if (this.matchKeyword("is")) {
-      const negated = this.matchKeyword("not");
-      this.expectKeyword("null");
-      return { kind: "null-check", negated, target: left };
-    }
-    if (this.current().kind === "operator") {
-      const op = compareOp(this.advance().value);
-      return { kind: "compare", op, left, right: this.parsePrimary(stop) };
-    }
-    return left;
-  }
+  if (select.length > 0) ast.select = select;
+  if (Object.keys(projections).length > 0) ast.projections = projections;
+  if (Object.keys(aggregates).length > 0) ast.aggregates = aggregates;
 
-  private parseIn(left: Expr, negated: boolean, stop: () => boolean): Expr {
-    this.expectPunct("(");
-    const values: Expr[] = [];
-    do {
-      values.push(this.parsePrimary(stop));
-    } while (this.matchPunct(","));
-    this.expectPunct(")");
-    return { kind: "in", negated, target: left, values };
+  if (statement.where !== undefined) {
+    const where = whereToAst(asNode(statement.where, "WHERE"), scope, context);
+    if (where.where !== undefined) ast.where = where.where;
+    if (where.subqueryJoin !== undefined) ast.subqueryJoin = where.subqueryJoin;
   }
-
-  private parseLike(
-    left: Expr,
-    negated: boolean,
-    caseInsensitive: boolean,
-    stop: () => boolean,
-  ): Expr {
-    const pattern = this.parsePrimary(stop);
-    if (pattern.kind !== "literal" || typeof pattern.value !== "string") {
-      throwParse("LIKE pattern must be a string literal");
-    }
-    const expr: Expr = { kind: "like", caseInsensitive, target: left, pattern: pattern.value };
-    return negated ? { kind: "not", operand: expr } : expr;
-  }
-
-  private parsePrimary(stop: () => boolean): Expr {
-    if (stop()) throwParse("Expected expression");
-    if (this.matchPunct("(")) {
-      this.enterDepth();
-      try {
-        const expr = this.parseOr(() => this.peekPunct(")"));
-        this.expectPunct(")");
-        return expr;
-      } finally {
-        this.exitDepth();
-      }
-    }
-    const token = this.advance();
-    if (token.kind === "identifier" || token.kind === "keyword") {
-      if (token.value === "true") return literal(true);
-      if (token.value === "false") return literal(false);
-      if (token.value === "null") return literal(null);
-      if (this.matchPunct("(")) {
-        this.enterDepth();
-        try {
-          const args: Expr[] = [];
-          if (!this.matchPunct(")")) {
-            do {
-              args.push(this.parseOr(() => this.peekPunct(",") || this.peekPunct(")")));
-            } while (this.matchPunct(","));
-            this.expectPunct(")");
-          }
-          return { kind: "call", fn: token.value, args };
-        } finally {
-          this.exitDepth();
-        }
-      }
-      return { kind: "column", name: token.value };
-    }
-    if (token.kind === "string") return literal(token.value);
-    if (token.kind === "number") return literal(Number(token.value));
-    throwParse(`Expected expression, received ${token.value}`);
-  }
-
-  private expectIdentifierLike(label: string): string {
-    const token = this.advance();
-    if (token.kind !== "identifier" && token.kind !== "keyword" && token.kind !== "string") {
-      throwParse(`Expected ${label}`);
-    }
-    return token.value;
-  }
-
-  private expectNonNegativeInteger(label: string): number {
-    const token = this.advance();
-    if (
-      token.kind !== "number" ||
-      !Number.isInteger(Number(token.value)) ||
-      Number(token.value) < 0
-    ) {
-      throwParse(`${label} must be a non-negative integer`);
-    }
-    return Number(token.value);
-  }
-
-  private atClauseBoundary(): boolean {
-    return (
-      this.peek("eof") ||
-      (this.current().kind === "keyword" && CLAUSE_KEYWORDS.has(this.current().value))
+  if (statement.groupBy !== undefined) {
+    ast.groupBy = optionalArray(statement.groupBy).map((expr) =>
+      scope.refName(asNode(expr, "GROUP BY expression")),
     );
   }
-
-  private expectKeyword(value: string): void {
-    if (!this.matchKeyword(value)) throwParse(`Expected ${value.toUpperCase()}`);
+  if (statement.having !== undefined) {
+    ast.having = exprToLaql(asNode(statement.having, "HAVING"), scope, context);
+  }
+  if (statement.orderBy !== undefined) {
+    ast.orderBy = optionalArray(statement.orderBy).map((term) => orderByToTerm(term, scope));
   }
 
-  private matchKeyword(value: string): boolean {
-    if (this.current().kind === "keyword" && this.current().value === value) {
-      this.index += 1;
-      return true;
-    }
-    return false;
+  const limit = statement.limit;
+  if (limit !== undefined) {
+    const node = asNode(limit, "LIMIT");
+    if (node.limit !== undefined) ast.limit = nonNegativeInteger(node.limit, "LIMIT");
+    if (node.offset !== undefined) ast.offset = nonNegativeInteger(node.offset, "OFFSET");
+  }
+  if (Object.keys(context.scalarSubqueries).length > 0) {
+    ast.scalarSubqueries = context.scalarSubqueries;
   }
 
-  private expectPunct(value: string): void {
-    if (!this.matchPunct(value)) throwParse(`Expected ${value}`);
-  }
+  return ast;
+}
 
-  private matchPunct(value: string): boolean {
-    if (this.peekPunct(value)) {
-      this.index += 1;
-      return true;
-    }
-    return false;
-  }
+function newSqlParseContext(): SqlParseContext {
+  return { scalarSubqueries: {}, nextScalarSubqueryId: 0 };
+}
 
-  private peekPunct(value: string): boolean {
-    return this.current().kind === "punct" && this.current().value === value;
-  }
-
-  private peek(kind: TokenKind): boolean {
-    return this.current().kind === kind;
-  }
-
-  private current(): Token {
-    return this.tokens[this.index] ?? { kind: "eof", value: "" };
-  }
-
-  private advance(): Token {
-    const token = this.current();
-    this.index += 1;
-    return token;
-  }
-
-  private enterDepth(): void {
-    this.depth += 1;
-    if (this.depth > MAX_PARSE_DEPTH) {
-      throwParse(`SQL expression nesting exceeds ${MAX_PARSE_DEPTH}`);
-    }
-  }
-
-  private exitDepth(): void {
-    this.depth -= 1;
+function exprToLaql(
+  expr: PgNode,
+  scope = SqlScope.empty(),
+  context: SqlParseContext = newSqlParseContext(),
+): Expr {
+  switch (expr.type) {
+    case "ref":
+      return { kind: "column", name: scope.refName(expr) };
+    case "string":
+    case "integer":
+    case "numeric":
+    case "boolean":
+      return literal(expr.value as string | number | boolean);
+    case "null":
+      return literal(null);
+    case "unary":
+      return unaryToExpr(expr, scope, context);
+    case "binary":
+      return binaryToExpr(expr, scope, context);
+    case "ternary":
+      return ternaryToExpr(expr, scope, context);
+    case "case":
+      return caseToExpr(expr, scope, context);
+    case "select":
+      return scalarSubqueryToExpr(expr, context);
+    case "call":
+      if ("over" in expr && expr.over !== undefined) {
+        throwUnsupported("Window functions are not supported");
+      }
+      return {
+        kind: "call",
+        fn: functionName(expr.function),
+        args: optionalArray(expr.args).map((arg) =>
+          exprToLaql(asNode(arg, "function argument"), scope, context),
+        ),
+      };
+    default:
+      throwUnsupported(`Unsupported SQL expression ${String(expr.type)}`);
   }
 }
 
-function tokenize(input: string): Token[] {
-  const tokens: Token[] = [];
-  const pushToken = (token: Token) => {
-    tokens.push(token);
-    if (tokens.length > MAX_TOKENS) throwParse(`SQL token count exceeds ${MAX_TOKENS}`);
-  };
-  let index = 0;
-  while (index < input.length) {
-    const char = input[index] ?? "";
-    if (/\s/u.test(char)) {
-      index += 1;
-      continue;
-    }
-    if (char === "'") {
-      const end = input.indexOf("'", index + 1);
-      if (end === -1) throwParse("Unterminated string literal");
-      pushToken({ kind: "string", value: input.slice(index + 1, end) });
-      index = end + 1;
-      continue;
-    }
-    if (/[(),]/u.test(char)) {
-      pushToken({ kind: "punct", value: char });
-      index += 1;
-      continue;
-    }
-    const two = input.slice(index, index + 2);
-    if (["<=", ">=", "<>", "!="].includes(two)) {
-      pushToken({ kind: "operator", value: two });
-      index += 2;
-      continue;
-    }
-    if (/[=<>]/u.test(char)) {
-      pushToken({ kind: "operator", value: char });
-      index += 1;
-      continue;
-    }
-    const number = /^-?[0-9]+(?:\.[0-9]+)?/u.exec(input.slice(index));
-    if (number) {
-      pushToken({ kind: "number", value: number[0] });
-      index += number[0].length;
-      continue;
-    }
-    const identifier = /^[A-Za-z_][A-Za-z0-9_.*:/=-]*/u.exec(input.slice(index));
-    if (identifier) {
-      const value = identifier[0].toLowerCase();
-      pushToken({ kind: KEYWORDS.has(value) ? "keyword" : "identifier", value });
-      index += identifier[0].length;
-      continue;
-    }
-    throwParse(`Unexpected character ${char}`);
+function binaryToExpr(
+  expr: PgNode,
+  scope = SqlScope.empty(),
+  context: SqlParseContext = newSqlParseContext(),
+): Expr {
+  const op = String(expr.op).toUpperCase();
+  const left = exprToLaql(asNode(expr.left, "left expression"), scope, context);
+  const right = asNode(expr.right, "right expression");
+
+  if (op === "AND" || op === "OR") {
+    const operands = flattenLogical(
+      op.toLowerCase() as "and" | "or",
+      left,
+      exprToLaql(right, scope, context),
+    );
+    return { kind: "logical", op: op.toLowerCase() as "and" | "or", operands };
   }
-  pushToken({ kind: "eof", value: "" });
-  return tokens;
+  if (op === "IN" || op === "NOT IN") {
+    if (right.type !== "list") throwUnsupported("IN subqueries are not supported");
+    return {
+      kind: "in",
+      negated: op === "NOT IN",
+      target: left,
+      values: optionalArray(right.expressions).map((value) =>
+        exprToLaql(asNode(value, "IN value"), scope, context),
+      ),
+    };
+  }
+  if (op === "LIKE" || op === "NOT LIKE" || op === "ILIKE" || op === "NOT ILIKE") {
+    const pattern = exprToLaql(right, scope, context);
+    if (pattern.kind !== "literal" || typeof pattern.value !== "string") {
+      throwUnsupported("LIKE pattern must be a string literal");
+    }
+    const like: Expr = {
+      kind: "like",
+      caseInsensitive: op.includes("ILIKE"),
+      target: left,
+      pattern: pattern.value,
+    };
+    return op.startsWith("NOT ") ? { kind: "not", operand: like } : like;
+  }
+  if (["+", "-", "*", "/", "%"].includes(op)) {
+    return {
+      kind: "arithmetic",
+      op: arithmeticOp(op),
+      left,
+      right: exprToLaql(right, scope, context),
+    };
+  }
+
+  return { kind: "compare", op: compareOp(op), left, right: exprToLaql(right, scope, context) };
+}
+
+function whereToAst(
+  expr: PgNode,
+  scope: SqlScope,
+  context: SqlParseContext,
+): { where?: Expr; subqueryJoin?: SqlSubqueryJoinAst } {
+  const predicates = flattenWhereConjuncts(expr);
+  let subqueryJoin: SqlSubqueryJoinAst | undefined;
+  const residual: PgNode[] = [];
+  for (const predicate of predicates) {
+    const extracted = maybeSubqueryJoin(predicate, scope);
+    if (extracted === undefined) {
+      residual.push(predicate);
+      continue;
+    }
+    if (subqueryJoin !== undefined) throwUnsupported("Only one IN subquery is supported");
+    subqueryJoin = extracted;
+  }
+  const out: { where?: Expr; subqueryJoin?: SqlSubqueryJoinAst } = {};
+  if (residual.length === 1) out.where = exprToLaql(residual[0] as PgNode, scope, context);
+  else if (residual.length > 1) {
+    out.where = {
+      kind: "logical",
+      op: "and",
+      operands: residual.map((predicate) => exprToLaql(predicate, scope, context)),
+    };
+  }
+  if (subqueryJoin !== undefined) out.subqueryJoin = subqueryJoin;
+  return out;
+}
+
+function maybeSubqueryJoin(expr: PgNode, scope: SqlScope): SqlSubqueryJoinAst | undefined {
+  if (expr.type !== "binary") return undefined;
+  const op = String(expr.op).toUpperCase();
+  if (op !== "IN" && op !== "NOT IN") return undefined;
+  const right = asNode(expr.right, "IN right side");
+  if (right.type !== "select") return undefined;
+  return subqueryJoinToAst(asNode(expr.left, "IN left side"), right, scope, op === "NOT IN");
+}
+
+function subqueryJoinToAst(
+  left: PgNode,
+  subquery: PgNode,
+  outerScope: SqlScope,
+  negated: boolean,
+): SqlSubqueryJoinAst {
+  rejectPresent(subquery, "groupBy", "Grouped IN subqueries are not supported");
+  rejectPresent(subquery, "having", "HAVING in IN subqueries is not supported");
+  rejectPresent(subquery, "orderBy", "ORDER BY in IN subqueries is not supported");
+  rejectPresent(subquery, "limit", "LIMIT in IN subqueries is not supported");
+  const from = optionalArray(subquery.from);
+  if (from.length !== 1) throwUnsupported("IN subqueries must select from one table");
+  const source = sourceTable(from[0]);
+  const subqueryScope = new SqlScope(source);
+  const leftKey = subqueryLeftKeys(left, outerScope);
+  const rightKey = optionalArray(subquery.columns).map((column) => {
+    const item = asNode(column, "IN subquery select item");
+    return subqueryScope.refName(asNode(item.expr, "IN subquery key"));
+  });
+  if (leftKey.length !== rightKey.length || leftKey.length === 0) {
+    throwUnsupported("IN subquery key counts must match");
+  }
+  const out: SqlSubqueryJoinAst = {
+    source: source.source,
+    type: negated ? "anti" : "semi",
+    leftKey,
+    rightKey,
+  };
+  if (subquery.where !== undefined) {
+    out.where = exprToLaql(asNode(subquery.where, "IN subquery WHERE"), subqueryScope);
+  }
+  return out;
+}
+
+function subqueryLeftKeys(expr: PgNode, scope: SqlScope): string[] {
+  if (expr.type === "list") {
+    return optionalArray(expr.expressions).map((value) =>
+      scope.refName(asNode(value, "IN left key")),
+    );
+  }
+  return [scope.refName(expr)];
+}
+
+function flattenWhereConjuncts(expr: PgNode): PgNode[] {
+  if (expr.type === "binary" && String(expr.op).toUpperCase() === "AND") {
+    return [
+      ...flattenWhereConjuncts(asNode(expr.left, "WHERE predicate")),
+      ...flattenWhereConjuncts(asNode(expr.right, "WHERE predicate")),
+    ];
+  }
+  return [expr];
+}
+
+function scalarSubqueryToExpr(subquery: PgNode, context: SqlParseContext): Expr {
+  const query = selectStatementToAst(subquery);
+  const outputColumns = scalarSubqueryOutputColumns(query);
+  if (outputColumns.length !== 1) {
+    throwUnsupported("Scalar subqueries must return exactly one column");
+  }
+  if (query.aggregates === undefined && query.limit !== 1) {
+    throwUnsupported("Scalar subqueries must be aggregate queries or use LIMIT 1");
+  }
+  const id = `scalar_${context.nextScalarSubqueryId}`;
+  context.nextScalarSubqueryId += 1;
+  context.scalarSubqueries[id] = { query, column: outputColumns[0] as string };
+  return { kind: "call", fn: "__laql_scalar_subquery", args: [{ kind: "literal", value: id }] };
+}
+
+function scalarSubqueryOutputColumns(query: SqlQueryAst): string[] {
+  return [
+    ...(query.select ?? []).filter((column) => column !== "*"),
+    ...Object.keys(query.projections ?? {}),
+    ...Object.keys(query.aggregates ?? {}),
+  ];
+}
+
+function unaryToExpr(
+  expr: PgNode,
+  scope = SqlScope.empty(),
+  context: SqlParseContext = newSqlParseContext(),
+): Expr {
+  const op = String(expr.op).toUpperCase();
+  const operand = exprToLaql(asNode(expr.operand, "unary operand"), scope, context);
+  if (op === "NOT") return { kind: "not", operand };
+  if (op === "IS NULL") return { kind: "null-check", negated: false, target: operand };
+  if (op === "IS NOT NULL") return { kind: "null-check", negated: true, target: operand };
+  if (op === "-") {
+    return { kind: "arithmetic", op: "mul", left: literal(-1), right: operand };
+  }
+  throwUnsupported(`Unsupported unary operator ${op}`);
+}
+
+function caseToExpr(
+  expr: PgNode,
+  scope = SqlScope.empty(),
+  context: SqlParseContext = newSqlParseContext(),
+): Expr {
+  if (expr.value !== null && expr.value !== undefined) {
+    throwUnsupported("Simple CASE expressions are not supported yet");
+  }
+  const whens = optionalArray(expr.whens).map((branch) => {
+    const node = asNode(branch, "CASE branch");
+    return {
+      when: exprToLaql(asNode(node.when, "CASE WHEN expression"), scope, context),
+      value: exprToLaql(asNode(node.value, "CASE THEN expression"), scope, context),
+    };
+  });
+  const out: Expr = { kind: "case", whens };
+  if (expr.else !== undefined) {
+    out.else = exprToLaql(asNode(expr.else, "CASE ELSE expression"), scope, context);
+  }
+  return out;
+}
+
+function ternaryToExpr(
+  expr: PgNode,
+  scope = SqlScope.empty(),
+  context: SqlParseContext = newSqlParseContext(),
+): Expr {
+  const op = String(expr.op).toUpperCase();
+  if (op !== "BETWEEN" && op !== "NOT BETWEEN") {
+    throwUnsupported(`Unsupported ternary operator ${op}`);
+  }
+  const between: Expr = {
+    kind: "between",
+    target: exprToLaql(asNode(expr.value, "BETWEEN target"), scope, context),
+    low: exprToLaql(asNode(expr.lo, "BETWEEN low value"), scope, context),
+    high: exprToLaql(asNode(expr.hi, "BETWEEN high value"), scope, context),
+  };
+  return op === "NOT BETWEEN" ? { kind: "not", operand: between } : between;
+}
+
+function aggregateCallToSpec(expr: PgNode, scope = SqlScope.empty()): AggregateSpec[string] {
+  if ("over" in expr && expr.over !== undefined) {
+    throwUnsupported("Window functions are not supported");
+  }
+  let op = aggregateOp(functionName(expr.function));
+  const args = optionalArray(expr.args);
+  if (expr.distinct !== undefined) {
+    if (expr.distinct !== "distinct")
+      throwUnsupported("Only DISTINCT aggregate arguments are supported");
+    if (op !== "count") throwUnsupported("Only COUNT(DISTINCT x) is supported");
+    if (args.length !== 1 || isWildcard(asNode(args[0], "COUNT DISTINCT argument"))) {
+      throwUnsupported("COUNT(DISTINCT *) is not supported");
+    }
+    op = "count_distinct";
+  }
+  if (
+    op === "count" &&
+    (args.length === 0 || (args.length === 1 && isWildcard(asNode(args[0], "COUNT argument"))))
+  ) {
+    return { op };
+  }
+  if (args.length !== 1) throwUnsupported(`${op} requires exactly one argument`);
+  const arg = asNode(args[0], "aggregate argument");
+  if (arg.type === "ref") return { op, column: scope.refName(arg) };
+  return { op, expr: exprToLaql(arg, scope) };
+}
+
+function isAggregateCall(expr: PgNode): boolean {
+  if (expr.type !== "call") return false;
+  return isAggregateOp(functionName(expr.function));
+}
+
+function isAggregateOp(op: string): op is AggregateOp {
+  return [
+    "count",
+    "sum",
+    "avg",
+    "min",
+    "max",
+    "count_distinct",
+    "approx_count_distinct",
+    "first",
+    "last",
+    "any",
+  ].includes(op);
+}
+
+function orderByToTerm(value: unknown, scope = SqlScope.empty()): OrderByTerm {
+  const node = asNode(value, "ORDER BY term");
+  const term: OrderByTerm = { column: scope.refName(asNode(node.by, "ORDER BY expression")) };
+  if (node.order !== undefined) {
+    const order = String(node.order).toLowerCase();
+    if (order !== "asc" && order !== "desc") throwUnsupported(`Unsupported ORDER BY ${order}`);
+    term.direction = order;
+  }
+  if (node.nulls !== undefined) {
+    const nulls = String(node.nulls).toLowerCase();
+    if (nulls !== "first" && nulls !== "last") {
+      throwUnsupported(`Unsupported ORDER BY NULLS ${nulls}`);
+    }
+    term.nulls = nulls;
+  }
+  return term;
+}
+
+interface SourceTable {
+  source: string;
+  alias: string;
+}
+
+class SqlScope {
+  private readonly aliases = new Map<string, SourceTable>();
+
+  static empty(): SqlScope {
+    return new SqlScope();
+  }
+
+  constructor(source?: SourceTable) {
+    if (source !== undefined) this.add(source);
+  }
+
+  add(source: SourceTable): void {
+    this.aliases.set(source.source, source);
+    this.aliases.set(source.alias, source);
+  }
+
+  refName(expr: PgNode): string {
+    if (expr.type !== "ref" || typeof expr.name !== "string") {
+      throwUnsupported("Only column references are supported here");
+    }
+    if (expr.table === undefined) return expr.name;
+    const qualifier = nameNodeToString(expr.table);
+    const source = this.aliases.get(qualifier);
+    if (source === undefined) throwUnsupported(`Unknown SQL table qualifier ${qualifier}`);
+    if (this.aliases.size <= 2) return expr.name;
+    return `${source.alias}.${expr.name}`;
+  }
+}
+
+function sourceTable(value: unknown): SourceTable {
+  const node = asNode(value, "FROM item");
+  if (node.type !== "table") throwUnsupported("Only table FROM sources are supported");
+  if (node.join !== undefined) throwUnsupported("Unexpected JOIN position");
+  const source = nameNodeToString(node.name);
+  return { source, alias: aliasName(node.name) ?? source };
+}
+
+function joinToAst(value: unknown, left: SourceTable): SqlJoinAst {
+  const node = asNode(value, "JOIN source");
+  if (node.type !== "table") throwUnsupported("Only table JOIN sources are supported");
+  const join = asNode(node.join, "JOIN");
+  const joinType = String(join.type).toUpperCase();
+  if (joinType !== "INNER JOIN" && joinType !== "LEFT JOIN") {
+    throwUnsupported(`Unsupported JOIN type ${joinType}`);
+  }
+  const right = sourceTable({ ...node, join: undefined });
+  if (join.using !== undefined) {
+    const using = optionalArray(join.using);
+    if (using.length === 0) throwUnsupported("JOIN USING requires at least one column");
+    const keys = using.map(nameNodeToString);
+    return {
+      source: right.source,
+      leftAlias: left.alias,
+      alias: right.alias,
+      type: joinType === "LEFT JOIN" ? "left" : "inner",
+      leftKey: keys.map((key) => `${left.alias}.${key}`),
+      rightKey: keys.map((key) => `${right.alias}.${key}`),
+    };
+  }
+  const on = asNode(join.on, "JOIN ON");
+  const { leftKey, rightKey } = joinKeysFromPredicate(on, left, right);
+  return {
+    source: right.source,
+    leftAlias: left.alias,
+    alias: right.alias,
+    type: joinType === "LEFT JOIN" ? "left" : "inner",
+    leftKey,
+    rightKey,
+  };
+}
+
+function qualifiedJoinKey(expr: PgNode, left: SourceTable, right: SourceTable): string {
+  if (expr.type !== "ref" || typeof expr.name !== "string" || expr.table === undefined) {
+    throwUnsupported("JOIN keys must be qualified column references");
+  }
+  const qualifier = nameNodeToString(expr.table);
+  if (qualifier === left.alias || qualifier === left.source) return `${left.alias}.${expr.name}`;
+  if (qualifier === right.alias || qualifier === right.source) return `${right.alias}.${expr.name}`;
+  throwUnsupported(`Unknown JOIN qualifier ${qualifier}`);
+}
+
+function joinKeysFromPredicate(
+  expr: PgNode,
+  left: SourceTable,
+  right: SourceTable,
+): { leftKey: string[]; rightKey: string[] } {
+  const conjuncts = flattenJoinConjuncts(expr);
+  const leftKey: string[] = [];
+  const rightKey: string[] = [];
+  for (const conjunct of conjuncts) {
+    if (String(conjunct.op) !== "=") throwUnsupported("Only equi-joins are supported");
+    const first = qualifiedJoinKey(asNode(conjunct.left, "JOIN left key"), left, right);
+    const second = qualifiedJoinKey(asNode(conjunct.right, "JOIN right key"), left, right);
+    if (first.startsWith(`${left.alias}.`) && second.startsWith(`${right.alias}.`)) {
+      leftKey.push(first);
+      rightKey.push(second);
+    } else if (second.startsWith(`${left.alias}.`) && first.startsWith(`${right.alias}.`)) {
+      leftKey.push(second);
+      rightKey.push(first);
+    } else {
+      throwUnsupported("JOIN ON must compare left table key to right table key");
+    }
+  }
+  return { leftKey, rightKey };
+}
+
+function flattenJoinConjuncts(expr: PgNode): PgNode[] {
+  if (expr.type === "binary" && String(expr.op).toUpperCase() === "AND") {
+    return [
+      ...flattenJoinConjuncts(asNode(expr.left, "JOIN predicate")),
+      ...flattenJoinConjuncts(asNode(expr.right, "JOIN predicate")),
+    ];
+  }
+  return [expr];
+}
+
+function nameNodeToString(value: unknown): string {
+  if (typeof value === "string") return value;
+  const node = asNode(value, "name");
+  const name = node.name;
+  if (typeof name !== "string") throwUnsupported("Unsupported qualified name");
+  return name;
+}
+
+function aliasName(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    const node = value as Record<string, unknown>;
+    if (typeof node.alias === "string") return node.alias;
+  }
+  return nameNodeToString(value);
+}
+
+function functionName(value: unknown): string {
+  return nameNodeToString(value).toLowerCase();
+}
+
+function isWildcard(expr: PgNode): boolean {
+  return expr.type === "ref" && expr.name === "*";
+}
+
+function optionalArray(value: unknown): unknown[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throwUnsupported("Expected SQL AST array");
+  return value;
+}
+
+function nonNegativeInteger(value: unknown, label: string): number {
+  const node = asNode(value, label);
+  const parsed = node.value;
+  if (typeof parsed !== "number" || !Number.isInteger(parsed) || parsed < 0) {
+    throwUnsupported(`${label} must be a non-negative integer`);
+  }
+  return parsed;
+}
+
+function flattenLogical(op: "and" | "or", left: Expr, right: Expr): Expr[] {
+  return [
+    ...(left.kind === "logical" && left.op === op ? left.operands : [left]),
+    ...(right.kind === "logical" && right.op === op ? right.operands : [right]),
+  ];
 }
 
 function compareOp(op: string): "eq" | "ne" | "lt" | "lte" | "gt" | "gte" {
@@ -462,55 +742,81 @@ function compareOp(op: string): "eq" | "ne" | "lt" | "lte" | "gt" | "gte" {
     case ">=":
       return "gte";
     default:
-      throwParse(`Unsupported comparison operator ${op}`);
+      throwUnsupported(`Unsupported comparison operator ${op}`);
+  }
+}
+
+function arithmeticOp(op: string): "add" | "sub" | "mul" | "div" | "mod" {
+  switch (op) {
+    case "+":
+      return "add";
+    case "-":
+      return "sub";
+    case "*":
+      return "mul";
+    case "/":
+      return "div";
+    case "%":
+      return "mod";
+    default:
+      throwUnsupported(`Unsupported arithmetic operator ${op}`);
   }
 }
 
 function aggregateOp(op: string): AggregateOp {
-  switch (op) {
-    case "count":
-    case "sum":
-    case "avg":
-    case "min":
-    case "max":
-    case "count_distinct":
-    case "approx_count_distinct":
-    case "first":
-    case "last":
-    case "any":
-      return op;
-    default:
-      throwParse(`Unsupported aggregate ${op}`);
-  }
+  if (isAggregateOp(op)) return op;
+  throwUnsupported(`Unsupported aggregate ${op}`);
 }
 
 function literal(value: string | number | boolean | null): Expr {
   return { kind: "literal", value };
 }
 
-function formatExpr(expr: Expr): string {
+function formatExpr(expr: Expr, ast?: SqlQueryAst): string {
   switch (expr.kind) {
     case "literal":
       return formatLiteral(expr.value);
     case "column":
       return formatIdentifier(expr.name);
     case "compare":
-      return `${formatExpr(expr.left)} ${formatCompareOp(expr.op)} ${formatExpr(expr.right)}`;
+      return `${formatExpr(expr.left, ast)} ${formatCompareOp(expr.op)} ${formatExpr(expr.right, ast)}`;
     case "between":
-      return `${formatExpr(expr.target)} between ${formatExpr(expr.low)} and ${formatExpr(expr.high)}`;
+      return `${formatExpr(expr.target, ast)} between ${formatExpr(expr.low, ast)} and ${formatExpr(expr.high, ast)}`;
     case "in":
-      return `${formatExpr(expr.target)}${expr.negated ? " not" : ""} in (${expr.values.map(formatExpr).join(", ")})`;
+      return `${formatExpr(expr.target, ast)}${expr.negated ? " not" : ""} in (${expr.values.map((value) => formatExpr(value, ast)).join(", ")})`;
     case "null-check":
-      return `${formatExpr(expr.target)} is${expr.negated ? " not" : ""} null`;
+      return `${formatExpr(expr.target, ast)} is${expr.negated ? " not" : ""} null`;
     case "logical":
-      return expr.operands.map((operand) => `(${formatExpr(operand)})`).join(` ${expr.op} `);
+      return expr.operands.map((operand) => `(${formatExpr(operand, ast)})`).join(` ${expr.op} `);
     case "not":
-      return `not (${formatExpr(expr.operand)})`;
+      return `not (${formatExpr(expr.operand, ast)})`;
     case "like":
       return `${formatExpr(expr.target)} ${expr.caseInsensitive ? "ilike" : "like"} ${formatLiteral(expr.pattern)}`;
     case "call":
-      return `${formatIdentifier(expr.fn)}(${expr.args.map(formatExpr).join(", ")})`;
+      if (expr.fn === "__laql_scalar_subquery") return formatScalarSubqueryExpr(expr, ast);
+      return `${formatIdentifier(expr.fn)}(${expr.args.map((arg) => formatExpr(arg, ast)).join(", ")})`;
+    case "arithmetic":
+      return `${formatExpr(expr.left, ast)} ${formatArithmeticOp(expr.op)} ${formatExpr(expr.right, ast)}`;
+    case "case":
+      return `case ${expr.whens
+        .map(
+          (branch) => `when ${formatExpr(branch.when, ast)} then ${formatExpr(branch.value, ast)}`,
+        )
+        .join(" ")}${expr.else === undefined ? "" : ` else ${formatExpr(expr.else, ast)}`} end`;
   }
+}
+
+function formatScalarSubqueryExpr(
+  expr: Extract<Expr, { kind: "call" }>,
+  ast: SqlQueryAst | undefined,
+): string {
+  const id = expr.args[0];
+  if (id?.kind !== "literal" || typeof id.value !== "string") {
+    throwUnsupported("Invalid scalar subquery placeholder");
+  }
+  const subquery = ast?.scalarSubqueries?.[id.value];
+  if (subquery === undefined) throwUnsupported("Missing scalar subquery metadata");
+  return `(${formatSql(subquery.query)})`;
 }
 
 function formatOrderByTerm(term: OrderByTerm): string {
@@ -518,6 +824,57 @@ function formatOrderByTerm(term: OrderByTerm): string {
   if (term.direction) parts.push(term.direction);
   if (term.nulls) parts.push("nulls", term.nulls);
   return parts.join(" ");
+}
+
+function formatJoin(leftSource: string, join: SqlJoinAst | undefined): string {
+  if (join === undefined) return "";
+  const leftAlias = join.leftAlias === leftSource ? "" : ` ${formatIdentifier(join.leftAlias)}`;
+  const source = formatIdentifier(join.source);
+  const alias = join.alias === join.source ? "" : ` ${formatIdentifier(join.alias)}`;
+  const type = join.type === "left" ? "left join" : "join";
+  const on = join.leftKey
+    .map((leftKey, index) => {
+      const rightKey = join.rightKey[index];
+      if (rightKey === undefined) throwUnsupported("JOIN key counts must match");
+      return `${formatIdentifier(leftKey)} = ${formatIdentifier(rightKey)}`;
+    })
+    .join(" and ");
+  return `${leftAlias} ${type} ${source}${alias} on ${on}`;
+}
+
+function formatWhere(
+  where: Expr | undefined,
+  subqueryJoin: SqlSubqueryJoinAst | undefined,
+  ast?: SqlQueryAst,
+): string | undefined {
+  const parts: string[] = [];
+  if (where !== undefined) parts.push(formatExpr(where, ast));
+  if (subqueryJoin !== undefined) parts.push(formatSubqueryJoin(subqueryJoin));
+  return parts.length === 0 ? undefined : parts.map((part) => `(${part})`).join(" and ");
+}
+
+function formatSubqueryJoin(subqueryJoin: SqlSubqueryJoinAst): string {
+  const left =
+    subqueryJoin.leftKey.length === 1
+      ? formatIdentifier(subqueryJoin.leftKey[0] ?? "")
+      : `(${subqueryJoin.leftKey.map(formatIdentifier).join(", ")})`;
+  const right =
+    subqueryJoin.rightKey.length === 1
+      ? formatIdentifier(subqueryJoin.rightKey[0] ?? "")
+      : subqueryJoin.rightKey.map(formatIdentifier).join(", ");
+  const where = subqueryJoin.where === undefined ? "" : ` where ${formatExpr(subqueryJoin.where)}`;
+  return `${left} ${subqueryJoin.type === "anti" ? "not in" : "in"} (select ${right} from ${formatIdentifier(subqueryJoin.source)}${where})`;
+}
+
+function formatAggregate(aggregate: AggregateSpec[string]): string {
+  const arg =
+    aggregate.expr !== undefined
+      ? formatExpr(aggregate.expr)
+      : aggregate.column === undefined
+        ? "*"
+        : formatIdentifier(aggregate.column);
+  if (aggregate.op === "count_distinct") return `count(distinct ${arg})`;
+  return `${aggregate.op}(${arg})`;
 }
 
 function formatCompareOp(op: "eq" | "ne" | "lt" | "lte" | "gt" | "gte"): string {
@@ -537,6 +894,21 @@ function formatCompareOp(op: "eq" | "ne" | "lt" | "lte" | "gt" | "gte"): string 
   }
 }
 
+function formatArithmeticOp(op: "add" | "sub" | "mul" | "div" | "mod"): string {
+  switch (op) {
+    case "add":
+      return "+";
+    case "sub":
+      return "-";
+    case "mul":
+      return "*";
+    case "div":
+      return "/";
+    case "mod":
+      return "%";
+  }
+}
+
 function formatLiteral(value: string | number | boolean | bigint | null): string {
   if (value === null) return "null";
   if (typeof value === "string") return `'${value.replaceAll("'", "''")}'`;
@@ -546,11 +918,38 @@ function formatLiteral(value: string | number | boolean | bigint | null): string
 
 function formatIdentifier(value: string): string {
   if (!/^[A-Za-z_][A-Za-z0-9_.*:/=-]*$/u.test(value)) {
-    throwParse(`Identifier ${value} cannot be represented in the small SQL dialect`);
+    throwUnsupported(`Identifier ${value} cannot be represented in the SQL dialect`);
   }
   return value;
 }
 
+function assertAstDepth(value: unknown, depth = 0): void {
+  if (depth > MAX_AST_DEPTH) throwParse(`SQL AST nesting exceeds ${MAX_AST_DEPTH}`);
+  if (value === null || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    for (const item of value) assertAstDepth(item, depth + 1);
+    return;
+  }
+  for (const child of Object.values(value as Record<string, unknown>)) {
+    assertAstDepth(child, depth + 1);
+  }
+}
+
+function rejectPresent(node: PgNode, key: string, message: string): void {
+  if (node[key] !== undefined) throwUnsupported(message);
+}
+
+function asNode(value: unknown, label: string): PgNode {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throwUnsupported(`Expected ${label}`);
+  }
+  return value as PgNode;
+}
+
 function throwParse(message: string): never {
   throw new LaQLError("LAQL_PARSE_ERROR", message);
+}
+
+function throwUnsupported(message: string): never {
+  throw new LaQLError("LAQL_SQL_UNSUPPORTED", message);
 }

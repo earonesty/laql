@@ -1,7 +1,7 @@
 {
   "name": "@laql/s3",
-  "version": "0.0.1",
-  "description": "LaQL S3-compatible object store adapter",
+  "version": "0.0.2",
+  "description": "lakeql S3-compatible object store adapter",
   "keywords": [
     "s3",
     "object-storage",
@@ -30,18 +30,16 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/earonesty/laql.git",
+    "url": "https://github.com/earonesty/lakeql.git",
     "directory": "packages/s3"
   },
   "engines": {
     "node": ">=22"
   },
-  "publishConfig": {
-    "access": "public"
-  },
   "dependencies": {
     "@laql/core": "workspace:*",
     "aws4fetch": "^1.0.20",
     "fast-xml-parser": "^5.9.0"
-  }
+  },
+  "private": true
 }

@@ -1,7 +1,7 @@
 {
   "name": "@laql/cli",
-  "version": "0.0.1",
-  "description": "LaQL command line: query, explain, inspect, write, compact",
+  "version": "0.0.2",
+  "description": "lakeql command line: query, explain, inspect, write, compact",
   "keywords": [
     "lakehouse",
     "parquet",
@@ -15,7 +15,7 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "laql": "./dist/bin.js"
+    "lakeql": "./dist/bin.js"
   },
   "exports": {
     ".": {
@@ -33,14 +33,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/earonesty/laql.git",
+    "url": "https://github.com/earonesty/lakeql.git",
     "directory": "packages/cli"
   },
   "engines": {
     "node": ">=22"
-  },
-  "publishConfig": {
-    "access": "public"
   },
   "dependencies": {
     "@laql/core": "workspace:*",
@@ -49,5 +46,6 @@
   },
   "devDependencies": {
     "@laql/fixtures": "workspace:*"
-  }
+  },
+  "private": true
 }

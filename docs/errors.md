@@ -5,6 +5,7 @@ LaQL throws `LaQLError` with stable `code`, `message`, and optional `details`.
 Common codes include:
 
 - `LAQL_PARSE_ERROR`
+- `LAQL_SQL_UNSUPPORTED`
 - `LAQL_TYPE_ERROR`
 - `LAQL_VALIDATION_ERROR`
 - `LAQL_OBJECT_NOT_FOUND`

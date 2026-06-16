@@ -4,7 +4,7 @@ Command-line interface for querying, inspecting, writing, and compacting LaQL la
 
 ## Ownership
 
-This package owns the `laql` executable. It is a Node-only interface over the core query engine,
+This package owns the `lakeql` executable. It is a Node-only interface over the core query engine,
 the Parquet adapter, and the small SQL dialect parser.
 
 ## Commands

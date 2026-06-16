@@ -5,7 +5,9 @@ export type Row = Record<string, unknown>;
 export interface BookmarkQuery {
   source: string;
   select?: string[];
+  projections?: Record<string, Expr>;
   where?: Expr;
+  distinct?: boolean;
   orderBy?: {
     column: string;
     direction?: "asc" | "desc";

@@ -65,6 +65,24 @@ export interface CallExpr {
   args: Expr[];
 }
 
+export interface ArithmeticExpr {
+  kind: "arithmetic";
+  op: "add" | "sub" | "mul" | "div" | "mod";
+  left: Expr;
+  right: Expr;
+}
+
+export interface CaseWhenExpr {
+  when: Expr;
+  value: Expr;
+}
+
+export interface CaseExpr {
+  kind: "case";
+  whens: CaseWhenExpr[];
+  else?: Expr;
+}
+
 export type Expr =
   | LiteralExpr
   | ColumnExpr
@@ -75,7 +93,9 @@ export type Expr =
   | LogicalExpr
   | NotExpr
   | LikeExpr
-  | CallExpr;
+  | CallExpr
+  | ArithmeticExpr
+  | CaseExpr;
 
 /** A value accepted where a column is expected: a column name or any expression. */
 export type ColumnInput = string | Expr;
@@ -185,4 +205,24 @@ export function ilike(column: ColumnInput, pattern: string): LikeExpr {
 /** Generic function-call expression; named functions (h3_*, st_*) build on this. */
 export function fn(name: string, ...args: ValueInput[]): CallExpr {
   return { kind: "call", fn: name, args: args.map(toValue) };
+}
+
+export function add(left: ValueInput, right: ValueInput): ArithmeticExpr {
+  return { kind: "arithmetic", op: "add", left: toValue(left), right: toValue(right) };
+}
+
+export function sub(left: ValueInput, right: ValueInput): ArithmeticExpr {
+  return { kind: "arithmetic", op: "sub", left: toValue(left), right: toValue(right) };
+}
+
+export function mul(left: ValueInput, right: ValueInput): ArithmeticExpr {
+  return { kind: "arithmetic", op: "mul", left: toValue(left), right: toValue(right) };
+}
+
+export function div(left: ValueInput, right: ValueInput): ArithmeticExpr {
+  return { kind: "arithmetic", op: "div", left: toValue(left), right: toValue(right) };
+}
+
+export function mod(left: ValueInput, right: ValueInput): ArithmeticExpr {
+  return { kind: "arithmetic", op: "mod", left: toValue(left), right: toValue(right) };
 }

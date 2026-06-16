@@ -102,6 +102,117 @@ describe("Lake query runtime", () => {
     expect(scanner.requestedColumns[0]).toEqual(["id", "region"]);
   });
 
+  it("deduplicates projected rows for distinct queries", async () => {
+    const { lake } = await makeLake({
+      rowsByPath: {
+        table: [
+          { id: 1, region: "west" },
+          { id: 2, region: "west" },
+          { id: 3, region: "east" },
+        ],
+      },
+    });
+
+    await expect(lake.path("table").select(["region"]).distinct().toArray()).resolves.toEqual([
+      { region: "west" },
+      { region: "east" },
+    ]);
+  });
+
+  it("evaluates computed projections and reads their source columns", async () => {
+    const { lake, scanner } = await makeLake({
+      rowsByPath: {
+        table: [{ id: 1, amount: 12, region: "west" }],
+      },
+    });
+
+    await expect(
+      lake
+        .path("table")
+        .select(["id"])
+        .project({
+          doubled: {
+            kind: "arithmetic",
+            op: "mul",
+            left: { kind: "column", name: "amount" },
+            right: { kind: "literal", value: 2 },
+          },
+          bucket: {
+            kind: "case",
+            whens: [{ when: gt("amount", 10), value: { kind: "literal", value: "large" } }],
+            else: { kind: "literal", value: "small" },
+          },
+        })
+        .toArray(),
+    ).resolves.toEqual([{ id: 1, doubled: 24, bucket: "large" }]);
+    expect(scanner.requestedColumns[0]).toEqual(["amount", "id"]);
+  });
+
+  it("applies distinct before offset and limit for ordered queries", async () => {
+    const { lake } = await makeLake({
+      rowsByPath: {
+        table: [
+          { id: 3, region: "west" },
+          { id: 1, region: "east" },
+          { id: 2, region: "east" },
+          { id: 4, region: "north" },
+        ],
+      },
+    });
+
+    await expect(
+      lake
+        .path("table")
+        .select(["region"])
+        .distinct()
+        .orderBy([{ column: "region" }])
+        .offset(1)
+        .limit(1)
+        .toArray(),
+    ).resolves.toEqual([{ region: "north" }]);
+  });
+
+  it("enforces operator budgets for distinct queries", async () => {
+    const { lake } = await makeLake({
+      budget: { maxBufferedRows: 1 },
+      rowsByPath: {
+        table: [
+          { id: 1, region: "west" },
+          { id: 2, region: "east" },
+        ],
+      },
+    });
+
+    await expect(lake.path("table").select(["region"]).distinct().toArray()).rejects.toMatchObject({
+      code: "LAQL_BUDGET_EXCEEDED",
+      details: { metric: "buffered rows", limit: 1 },
+    });
+  });
+
+  it("rejects distinct queries for stateful sort and top-k operators", async () => {
+    const { lake } = await makeLake({
+      rowsByPath: {
+        table: [{ id: 1, region: "west" }],
+      },
+    });
+
+    await expect(
+      lake
+        .path("table")
+        .distinct()
+        .orderBy([{ column: "id" }])
+        .limit(1)
+        .topKWithState(),
+    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+    await expect(
+      lake
+        .path("table")
+        .distinct()
+        .orderBy([{ column: "id" }])
+        .sortWithState(),
+    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+  });
+
   it("supports first, count, batches, NDJSON, JSON, and CSV streams", async () => {
     const { lake } = await makeLake({
       rowsByPath: {
@@ -370,6 +481,9 @@ describe("Lake query runtime", () => {
       limit: 0,
       offset: 0,
     });
+    expect(parseJsonQuery({ version: 1, from: "t", distinct: true })).toMatchObject({
+      distinct: true,
+    });
     expect(parseJsonQuery({ version: 1, from: "t", where: { lte: ["a", 1] } }).where).toMatchObject(
       {
         kind: "compare",
@@ -413,6 +527,7 @@ describe("Lake query runtime", () => {
     expect(() => parseJsonQuery({ version: 1, from: "t", select: [1] })).toThrow(/select must be/u);
     expect(() => parseJsonQuery({ version: 1, from: "t", limit: -1 })).toThrow(/limit/u);
     expect(() => parseJsonQuery({ version: 1, from: "t", offset: 1.5 })).toThrow(/offset/u);
+    expect(() => parseJsonQuery({ version: 1, from: "t", distinct: "yes" })).toThrow(/distinct/u);
     expect(() => parseJsonQuery({ version: 1, from: "t", where: { nope: 1 } })).toThrow(
       /Unsupported/u,
     );
@@ -1195,6 +1310,90 @@ describe("Lake query runtime", () => {
       code: "LAQL_BUDGET_EXCEEDED",
       details: { metric: "output rows", limit: 1, actual: 2 },
     });
+  });
+
+  it("aggregates expressions and counts only non-null column values", async () => {
+    const { lake } = await makeLake({
+      rowsByPath: {
+        table: [
+          { region: "west", amount: 10, id: 1 },
+          { region: "west", amount: null, id: 2 },
+          { region: "west", amount: 20, id: 1 },
+          { region: "east", amount: 7, id: 3 },
+        ],
+      },
+    });
+
+    await expect(
+      lake
+        .path("table")
+        .groupBy(["region"])
+        .aggregate({
+          rows: { op: "count" },
+          amountRows: { op: "count", column: "amount" },
+          doubledTotal: {
+            op: "sum",
+            expr: {
+              kind: "arithmetic",
+              op: "mul",
+              left: { kind: "column", name: "amount" },
+              right: { kind: "literal", value: 2 },
+            },
+          },
+          nonZeroIdBuckets: {
+            op: "count_distinct",
+            expr: {
+              kind: "case",
+              whens: [
+                {
+                  when: {
+                    kind: "compare",
+                    op: "gt",
+                    left: { kind: "column", name: "amount" },
+                    right: { kind: "literal", value: 0 },
+                  },
+                  value: { kind: "column", name: "id" },
+                },
+              ],
+            },
+          },
+        }),
+    ).resolves.toEqual([
+      { region: "west", rows: 3, amountRows: 2, doubledTotal: 60, nonZeroIdBuckets: 1 },
+      { region: "east", rows: 1, amountRows: 1, doubledTotal: 14, nonZeroIdBuckets: 1 },
+    ]);
+  });
+
+  it("applies having, ordering, offset, and limit inside aggregate execution", async () => {
+    const { lake } = await makeLake({
+      rowsByPath: {
+        table: [
+          { region: "west", amount: 10 },
+          { region: "west", amount: 20 },
+          { region: "east", amount: 7 },
+          { region: "north", amount: 12 },
+          { region: "north", amount: 8 },
+        ],
+      },
+    });
+
+    await expect(
+      lake
+        .path("table")
+        .groupBy(["region"])
+        .aggregate(
+          {
+            rows: { op: "count" },
+            total: { op: "sum", column: "amount" },
+          },
+          {
+            having: gt("total", 10),
+            orderBy: [{ column: "total", direction: "desc" }],
+            offset: 1,
+            limit: 1,
+          },
+        ),
+    ).resolves.toEqual([{ region: "north", rows: 2, total: 20 }]);
   });
 
   it("projects predicate, group, and aggregate columns for grouped aggregates", async () => {

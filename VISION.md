@@ -1850,7 +1850,7 @@ laql query \
   --catalog iceberg-rest \
   --catalog-url "$ICEBERG_REST_URL" \
   --table places \
-  --sql "from places select id, name where state = 'CA' limit 10"
+  --sql "select id, name from places where state = 'CA' limit 10"
 ```
 
 Query Parquet path:
@@ -1858,7 +1858,7 @@ Query Parquet path:
 ```sh
 laql query \
   --path "r2://data/events/date=2026-06-10/*.parquet" \
-  --sql "select user_id, ts where event = 'signup' limit 100"
+  --sql "select user_id, ts from input where event = 'signup' limit 100"
 ```
 
 Explain:
@@ -1866,7 +1866,7 @@ Explain:
 ```sh
 laql explain \
   --table places \
-  --sql "from places select id where h3_within(h3_8, '8829a1d757fffff', 2)"
+  --sql "select id from places where h3_within(h3_8, '8829a1d757fffff', 2)"
 ```
 
 Inspect Parquet:

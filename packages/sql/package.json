@@ -1,7 +1,7 @@
 {
   "name": "@laql/sql",
-  "version": "0.0.1",
-  "description": "LaQL SQL dialect: parser and SQL-to-AST compiler",
+  "version": "0.0.2",
+  "description": "lakeql SQL dialect: parser and SQL-to-AST compiler",
   "keywords": [
     "sql",
     "parser",
@@ -30,16 +30,15 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/earonesty/laql.git",
+    "url": "https://github.com/earonesty/lakeql.git",
     "directory": "packages/sql"
   },
   "engines": {
     "node": ">=22"
   },
-  "publishConfig": {
-    "access": "public"
-  },
   "dependencies": {
-    "@laql/core": "workspace:*"
-  }
+    "@laql/core": "workspace:*",
+    "pgsql-ast-parser": "^12.0.2"
+  },
+  "private": true
 }

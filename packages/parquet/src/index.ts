@@ -1324,6 +1324,8 @@ export function rowGroupMayMatch(rowGroup: RowGroup, expr: Expr | undefined): bo
     case "column":
     case "null-check":
     case "like":
+    case "arithmetic":
+    case "case":
       return true;
     case "call":
       return callMayMatch(rowGroup, expr);

@@ -3,25 +3,26 @@ import { stableStringify } from "./manifest.js";
 import type { Row } from "./types.js";
 
 export type JoinType = "inner" | "left" | "semi" | "anti";
+export type JoinKey = string | string[];
 
 export interface BroadcastJoinOptions {
-  leftKey: string;
-  rightKey: string;
+  leftKey: JoinKey;
+  rightKey: JoinKey;
   maxRightRows: number;
   type?: JoinType;
   rightPrefix?: string;
 }
 
 export interface LookupJoinOptions {
-  leftKey: string;
-  rightKey: string;
+  leftKey: JoinKey;
+  rightKey: JoinKey;
   maxRightRows: number;
   type?: JoinType;
   rightPrefix?: string;
 }
 
 export type LookupJoinFunction = (
-  key: string | number | boolean | bigint | null,
+  key: string | number | boolean | bigint | null | (string | number | boolean | bigint | null)[],
   leftRow: Row,
 ) => AsyncIterable<Row> | Iterable<Row> | Promise<AsyncIterable<Row> | Iterable<Row>>;
 
@@ -113,7 +114,15 @@ function validateJoinOptions(
   options: BroadcastJoinOptions | LookupJoinOptions,
   strategy: string,
 ): void {
-  if (!options.leftKey || !options.rightKey) {
+  const leftKeys = normalizeJoinKeys(options.leftKey, "leftKey", strategy);
+  const rightKeys = normalizeJoinKeys(options.rightKey, "rightKey", strategy);
+  if (leftKeys.length !== rightKeys.length) {
+    throw new LaQLError("LAQL_TYPE_ERROR", `${strategy} join key counts must match`, {
+      leftKey: options.leftKey,
+      rightKey: options.rightKey,
+    });
+  }
+  if (leftKeys.length === 0) {
     throw new LaQLError("LAQL_TYPE_ERROR", `${strategy} join requires leftKey and rightKey`);
   }
   if (!Number.isInteger(options.maxRightRows) || options.maxRightRows < 1) {
@@ -135,11 +144,29 @@ function validateJoinOptions(
   }
 }
 
-function joinKey(row: Row, column: string): string {
+function normalizeJoinKeys(key: JoinKey, label: string, strategy: string): string[] {
+  const keys = Array.isArray(key) ? key : [key];
+  if (keys.some((column) => typeof column !== "string" || column.length === 0)) {
+    throw new LaQLError("LAQL_TYPE_ERROR", `${strategy} join ${label} must contain column names`, {
+      [label]: key,
+    });
+  }
+  return keys;
+}
+
+function joinKey(row: Row, column: JoinKey): string {
   return stableStringify(joinValue(row, column));
 }
 
-function joinValue(row: Row, column: string): string | number | boolean | bigint | null {
+function joinValue(
+  row: Row,
+  column: JoinKey,
+): string | number | boolean | bigint | null | (string | number | boolean | bigint | null)[] {
+  if (Array.isArray(column)) return column.map((key) => scalarJoinValue(row, key));
+  return scalarJoinValue(row, column);
+}
+
+function scalarJoinValue(row: Row, column: string): string | number | boolean | bigint | null {
   if (!(column in row)) {
     throw new LaQLError("LAQL_UNKNOWN_COLUMN", `Unknown join key ${column}`, { column });
   }
@@ -159,8 +186,10 @@ function joinValue(row: Row, column: string): string | number | boolean | bigint
 function mergeRows(left: Row, right: Row, options: BroadcastJoinOptions | LookupJoinOptions): Row {
   const out: Row = { ...left };
   const prefix = options.rightPrefix ?? "right.";
+  const leftKeys = normalizeJoinKeys(options.leftKey, "leftKey", "Merge");
+  const rightKeys = normalizeJoinKeys(options.rightKey, "rightKey", "Merge");
   for (const [key, value] of Object.entries(right)) {
-    if (key === options.rightKey && options.leftKey === options.rightKey) continue;
+    if (rightKeys.includes(key) && leftKeys.includes(key)) continue;
     const outKey = key in out ? `${prefix}${key}` : key;
     out[outKey] = value;
   }

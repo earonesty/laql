@@ -16,5 +16,5 @@ Fixture equivalent:
 
 ```sh
 pnpm build
-node packages/cli/dist/bin.js query --path fixtures/data/sales.parquet --sql "select store_id, amount limit 2" --format json
+node packages/cli/dist/bin.js query --path fixtures/data/sales.parquet --sql "select store_id, amount from input limit 2" --format json
 ```

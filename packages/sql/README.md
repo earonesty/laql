@@ -13,5 +13,7 @@ core `PathQueryInit` query ASTs and formats those ASTs back to SQL.
 - `formatSql(ast)` formats a `SqlQueryAst`.
 - `SqlQueryAst` extends the core path-query shape with optional `groupBy`, aggregates, and `having`.
 
-The parser is deliberately bounded and rejects unsupported joins, CTEs, subqueries, and broader SQL
-grammar with `LAQL_PARSE_ERROR`. See `docs/sql-dialect.md` for the supported syntax.
+The parser uses `pgsql-ast-parser`, keeps LaQL's own size/depth guards, and rejects unsupported
+join forms, complex CTEs, unsupported subqueries, and broader SQL execution with
+`LAQL_SQL_UNSUPPORTED`. Invalid SQL still throws `LAQL_PARSE_ERROR`. See
+`docs/sql-dialect.md` for the supported syntax.

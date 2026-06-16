@@ -20,11 +20,12 @@ This plan has two tracks that must move together:
 
 ## Where we are today
 
-**Parser (`@laql/sql`)** — hand-rolled, deliberately bounded (`MAX_TOKENS`,
-`MAX_PARSE_DEPTH`), **non-standard FROM-first** dialect
-(`from t select a where … group by … order by … limit …`). Produces
-`SqlQueryAst` (`select`, `where`, `orderBy`, `offset`, `limit`, `groupBy`,
-`aggregates`, `having`). CLI + playground only; not in the edge library bundle.
+**Parser (`@laql/sql`)** — `pgsql-ast-parser` behind the existing `parseSql()`
+entry point, with LaQL-owned input-length / AST-depth guards. Supports standard
+`SELECT … FROM … WHERE … GROUP BY … HAVING … ORDER BY … LIMIT … OFFSET …` for
+the existing engine-facing AST (`select`, `where`, `orderBy`, `offset`,
+`limit`, `groupBy`, `aggregates`, `having`). CLI + playground only; not in the
+edge library bundle.
 
 **Engine (`@laql/core`)** — already executes more than the dialect exposes:
 
@@ -43,13 +44,20 @@ This plan has two tracks that must move together:
 
 **Gaps** that block "pretty damn good":
 
-- Non-standard syntax (FROM-first) reads as a toy.
-- `HAVING` is parsed into the AST but **not wired into the engine**.
-- No computed projections (`SELECT a + b AS c`), `DISTINCT`, or `CASE`.
-- Joins unreachable from SQL/builder.
-- No subqueries / CTEs / window functions.
-- `ORDER BY`/`LIMIT` over aggregated results is done **client-side in the
-  playground**, not in the engine.
+- `HAVING`, aggregate expressions (`SUM(a * b)`),
+  `COUNT(DISTINCT x)`, global aggregates, multiple group keys, and aggregate
+  `ORDER BY`/`LIMIT`/`OFFSET` are wired through core execution and the SQL CLI.
+- Computed scalar projections, arithmetic, and searched `CASE WHEN` are wired
+  through parser, core query execution, CLI, and the DuckDB reference lane.
+- Bounded two-table SQL `INNER JOIN` / `LEFT JOIN` over named CLI tables is
+  wired through `broadcastJoin`, including multi-key `ON` / `USING`, safe
+  side-filter/projection pushdown, and SQL-compatible left-join null handling;
+  broader join forms are rejected.
+- Scoped `IN` / `NOT IN` subqueries over named CLI tables are wired as bounded
+  semi/anti joins, and non-recursive single-table CTEs are materialized in the
+  CLI; uncorrelated scalar subqueries in `SELECT` and `WHERE` are wired for
+  aggregate or `LIMIT 1` forms. Nested CTEs, correlated subqueries, and window
+  functions remain open.
 
 ---
 
@@ -130,11 +138,14 @@ unsupported syntax throws a documented code.
 ### Phase 1 — Expression & projection completeness
 Make `SELECT`/`WHERE` genuinely expressive.
 
-- Computed projections with aliases (`SELECT amount * qty AS total`).
-- `CASE WHEN … THEN … ELSE … END`.
-- `SELECT DISTINCT`.
-- Arithmetic / string / boolean operators in expressions; fill obvious scalar
-  function gaps surfaced by the conformance suite.
+- Computed projections with aliases (`SELECT amount * qty AS total`) are wired
+  for scalar expressions.
+- `CASE WHEN … THEN … ELSE … END` is wired; simple `CASE <expr>` remains out of
+  scope for now.
+- `SELECT DISTINCT` is wired through parser, core query execution, CLI, and the
+  DuckDB reference lane.
+- Arithmetic operators are wired; fill remaining obvious scalar/operator gaps
+  surfaced by the conformance suite.
 - `count(*)` and qualified columns.
 
 **Acceptance:** parametric expression suite (nulls, types, operators, `CASE`,
@@ -143,35 +154,42 @@ Make `SELECT`/`WHERE` genuinely expressive.
 ### Phase 2 — Aggregation depth
 Finish what the engine half-supports.
 
-- **Wire `HAVING` into the engine** (currently AST-only).
-- Aggregate over expressions (`SUM(a * b)`), `COUNT(DISTINCT x)`, multiple group
-  keys, global aggregates (no `GROUP BY`).
-- Push `ORDER BY` / `LIMIT` / `OFFSET` over aggregated results **into the
-  engine** (remove the playground's client-side fallback).
+- `HAVING` is wired into core aggregate execution.
+- Aggregate over expressions (`SUM(a * b)`), `COUNT(DISTINCT x)`, multiple
+  group keys, and global aggregates (no `GROUP BY`) are wired and covered by
+  the DuckDB reference lane.
+- `ORDER BY` / `LIMIT` / `OFFSET` over aggregated results are wired into core
+  aggregate execution.
 - Expose every engine aggregate op through SQL.
 
-**Acceptance:** group/having/order/limit combinations match DuckDB; the
-playground no longer post-processes aggregates.
+**Acceptance:** group/having/order/limit combinations match DuckDB; the SQL CLI
+no longer post-processes non-distinct aggregate ordering/windowing.
 
 ### Phase 3 — Joins in the query path (the big jump)
 Surface the join primitives that already exist.
 
-- SQL `JOIN` → `broadcastJoin` / `lookupJoin` (`INNER/LEFT/SEMI/ANTI`).
-- Start with **equi-joins, broadcast** (small right side), with a size guard →
-  `LAQL_JOIN_TOO_LARGE` when the build side exceeds the budget. Document the
-  bound clearly; this is the edge-safe join story, not a general hash join.
-- Join planning: filter/projection pushdown into each side before the join.
-- `USING` / `ON` equality keys; multiple keys.
+- SQL `INNER JOIN` / `LEFT JOIN` → `broadcastJoin` is wired for one bounded
+  equi-join over named CLI tables, including multi-key `ON` predicates.
+- The build side has a `--join-max-right-rows` guard and fails with
+  `LAQL_BUDGET_EXCEEDED` when exceeded. This is the edge-safe join story, not a
+  general hash join.
+- `SEMI/ANTI` are exposed through scoped `IN` / `NOT IN` subqueries;
+  `lookupJoin` remains helper-only.
+- Join planning pushes side-qualified `WHERE` conjuncts and conservative
+  side projections into each source scan before the bounded broadcast join.
+- `USING` and `ON` equality keys are wired, including multiple keys.
 
-**Acceptance:** join shapes (inner/left/semi/anti, single & multi-key) match
-DuckDB on fixtures; oversized build side rejects with the documented code; the
-compatibility matrix states the join bounds.
+**Acceptance:** supported join shapes match DuckDB on fixtures; oversized build
+side rejects with the documented code; the compatibility matrix states the join
+bounds.
 
 ### Phase 4 — Subqueries & CTEs (scoped, non-recursive)
-- `WITH name AS (…)` non-recursive CTEs as named subplans.
-- `IN (subquery)` → semi-join; `NOT IN` → anti-join.
-- Scalar subqueries in `SELECT`/`WHERE` where the result is provably ≤1 row
-  (else typed error).
+- Non-recursive single-table `WITH name AS (…)` CTEs are materialized as named
+  subplans in the CLI, including computed/distinct and aggregate CTE bodies.
+- `IN (subquery)` → semi-join and `NOT IN` → anti-join are wired for scoped
+  named-table subqueries, including tuple keys and subquery filters.
+- Scalar subqueries in `SELECT` and `WHERE` are wired when the result is
+  provably ≤1 row through an aggregate query or `LIMIT 1` (else typed error).
 - Explicitly reject recursive/correlated forms.
 
 **Acceptance:** CTE + `IN`-subquery shapes match DuckDB; recursive/correlated

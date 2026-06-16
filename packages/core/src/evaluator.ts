@@ -63,6 +63,13 @@ export function evaluate(expr: Expr, row: Row): EvalValue {
         expr.fn,
         expr.args.map((arg) => evaluate(arg, row)),
       );
+    case "arithmetic":
+      return arithmetic(expr.op, evaluate(expr.left, row), evaluate(expr.right, row));
+    case "case":
+      for (const branch of expr.whens) {
+        if (toSqlBoolean(evaluate(branch.when, row)) === true) return evaluate(branch.value, row);
+      }
+      return expr.else === undefined ? null : evaluate(expr.else, row);
   }
 }
 
@@ -139,6 +146,32 @@ function compare(op: "eq" | "ne" | "lt" | "lte" | "gt" | "gte", left: EvalValue,
       return order > 0;
     case "gte":
       return order >= 0;
+  }
+}
+
+function arithmetic(
+  op: "add" | "sub" | "mul" | "div" | "mod",
+  left: EvalValue,
+  right: EvalValue,
+): EvalValue {
+  if (left === null || right === null) return null;
+  if (typeof left !== "number" || typeof right !== "number") {
+    throw new LaQLError("LAQL_TYPE_ERROR", "Arithmetic expressions require numeric values", {
+      leftType: typeof left,
+      rightType: typeof right,
+    });
+  }
+  switch (op) {
+    case "add":
+      return left + right;
+    case "sub":
+      return left - right;
+    case "mul":
+      return left * right;
+    case "div":
+      return left / right;
+    case "mod":
+      return left % right;
   }
 }
 

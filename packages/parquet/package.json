@@ -1,7 +1,7 @@
 {
   "name": "@laql/parquet",
-  "version": "0.0.1",
-  "description": "LaQL Parquet adapter: hyparquet reads, hyparquet-writer writes, pruning, projection",
+  "version": "0.0.2",
+  "description": "lakeql Parquet adapter: hyparquet reads, hyparquet-writer writes, pruning, projection",
   "keywords": [
     "parquet",
     "lakehouse",
@@ -30,14 +30,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/earonesty/laql.git",
+    "url": "https://github.com/earonesty/lakeql.git",
     "directory": "packages/parquet"
   },
   "engines": {
     "node": ">=22"
-  },
-  "publishConfig": {
-    "access": "public"
   },
   "dependencies": {
     "@laql/core": "workspace:*",
@@ -46,5 +43,6 @@
   },
   "devDependencies": {
     "@laql/fixtures": "workspace:*"
-  }
+  },
+  "private": true
 }

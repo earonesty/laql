@@ -6,7 +6,7 @@ Run from the repository root:
 pnpm build
 node packages/cli/dist/bin.js query \
   --path fixtures/data/sales.parquet \
-  --sql "select store_id, amount where region = 'west' order by amount asc limit 2" \
+  --sql "select store_id, amount from input where region = 'west' order by amount asc limit 2" \
   --format csv
 ```
 

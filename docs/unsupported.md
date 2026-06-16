@@ -16,7 +16,7 @@ These are stable rejection surfaces callers can catch by `LaQLError.code`.
 | Parquet microsecond/nanosecond timestamps | Parquet schema validation | `LAQL_UNSUPPORTED_PARQUET_FEATURE` | Prevents silent truncation when decoded into millisecond `Date` values. |
 | Unsafe Iceberg manifest paths | Manifest validation | `LAQL_CATALOG_ERROR` | Absolute paths and traversal outside the table root are rejected. |
 | Parquet struct columns | Parquet schema validation | `LAQL_UNSUPPORTED_PARQUET_FEATURE` | Struct groups are rejected before scan/planning so nested data is not silently flattened. |
-| Unsupported SQL syntax outside the documented subset | SQL parse | `LAQL_PARSE_ERROR` | Joins, subqueries, CTEs, and broad SQL grammar are intentionally out of scope. |
+| Unsupported SQL syntax outside the documented subset | SQL AST mapping | `LAQL_SQL_UNSUPPORTED` | Broad join forms, unsupported subqueries, nested or recursive CTEs, simple `CASE <expr>` forms, and broad SQL execution are intentionally out of scope. |
 
 Use `ignore-deletes` or `ignore-unsupported-deletes` only when the application explicitly accepts
 raw file scans that may not reflect logical table deletes. These read modes do not bypass metadata

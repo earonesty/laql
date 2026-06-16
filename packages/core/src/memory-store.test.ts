@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { LaQLError } from "./errors.js";
 import { memoryStore } from "./memory-store.js";
 import type { ObjectStore } from "./store.js";
-import { throwIfAborted, withObjectStoreReadControls } from "./store.js";
+import { readControlSignal, throwIfAborted, withObjectStoreReadControls } from "./store.js";
 
 const enc = new TextEncoder();
 
@@ -151,6 +151,23 @@ describe("MemoryObjectStore", () => {
     expect(withObjectStoreReadControls(store, {})).toBe(store);
   });
 
+  it("builds timeout-aware read control signals", () => {
+    const timeoutOnly = readControlSignal({ maxElapsedMs: 1_000 });
+    expect(timeoutOnly).toBeInstanceOf(AbortSignal);
+
+    const alreadyAborted = new AbortController();
+    alreadyAborted.abort("done");
+    expect(readControlSignal({ signal: alreadyAborted.signal, maxElapsedMs: 1_000 })).toBe(
+      alreadyAborted.signal,
+    );
+
+    const caller = new AbortController();
+    const combined = readControlSignal({ signal: caller.signal, maxElapsedMs: 1_000 });
+    caller.abort(new Error("caller aborted"));
+    expect(combined?.aborted).toBe(true);
+    expect(combined?.reason).toBeInstanceOf(Error);
+  });
+
   it("validates maxConcurrentReads", () => {
     expect(() => withObjectStoreReadControls(memoryStore(), { maxConcurrentReads: 0 })).toThrow(
       LaQLError,
@@ -205,6 +222,10 @@ describe("MemoryObjectStore", () => {
     const controller = new AbortController();
     const controlled = withObjectStoreReadControls(store, { signal: controller.signal });
 
+    await expect(controlled.get("a")).resolves.toEqual(enc.encode("a"));
+    await expect(controlled.getRange("a", { offset: 0, length: 1 })).resolves.toEqual(
+      enc.encode("a"),
+    );
     expect(await controlled.head("a")).toMatchObject({ size: 1 });
     const listed = [];
     for await (const object of controlled.list("")) listed.push(object.path);

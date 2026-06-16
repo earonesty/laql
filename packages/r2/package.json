@@ -1,7 +1,7 @@
 {
   "name": "@laql/r2",
-  "version": "0.0.1",
-  "description": "LaQL Cloudflare R2 object store adapter",
+  "version": "0.0.2",
+  "description": "lakeql Cloudflare R2 object store adapter",
   "keywords": [
     "cloudflare",
     "r2",
@@ -30,16 +30,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/earonesty/laql.git",
+    "url": "https://github.com/earonesty/lakeql.git",
     "directory": "packages/r2"
   },
   "engines": {
     "node": ">=22"
   },
-  "publishConfig": {
-    "access": "public"
-  },
   "dependencies": {
     "@laql/core": "workspace:*"
-  }
+  },
+  "private": true
 }

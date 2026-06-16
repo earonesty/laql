@@ -68,6 +68,88 @@ describe("evaluate", () => {
     expect(matches(ilike("city", "%angeles"), row)).toBe(true);
   });
 
+  it("evaluates arithmetic and searched CASE expressions", () => {
+    expect(
+      evaluate(
+        {
+          kind: "arithmetic",
+          op: "add",
+          left: { kind: "literal", value: 5 },
+          right: { kind: "literal", value: 2 },
+        },
+        row,
+      ),
+    ).toBe(7);
+    expect(
+      evaluate(
+        {
+          kind: "arithmetic",
+          op: "sub",
+          left: { kind: "literal", value: 5 },
+          right: { kind: "literal", value: 2 },
+        },
+        row,
+      ),
+    ).toBe(3);
+    expect(
+      evaluate(
+        {
+          kind: "arithmetic",
+          op: "mul",
+          left: { kind: "column", name: "amount" },
+          right: { kind: "literal", value: 2 },
+        },
+        row,
+      ),
+    ).toBe(24.69);
+    expect(
+      evaluate(
+        {
+          kind: "arithmetic",
+          op: "div",
+          left: { kind: "literal", value: 5 },
+          right: { kind: "literal", value: 2 },
+        },
+        row,
+      ),
+    ).toBe(2.5);
+    expect(
+      evaluate(
+        {
+          kind: "arithmetic",
+          op: "mod",
+          left: { kind: "literal", value: 5 },
+          right: { kind: "literal", value: 2 },
+        },
+        row,
+      ),
+    ).toBe(1);
+    expect(
+      evaluate(
+        {
+          kind: "case",
+          whens: [
+            {
+              when: gt("amount", 10),
+              value: { kind: "literal", value: "large" },
+            },
+          ],
+          else: { kind: "literal", value: "small" },
+        },
+        row,
+      ),
+    ).toBe("large");
+    expect(
+      evaluate(
+        {
+          kind: "case",
+          whens: [{ when: lt("amount", 10), value: { kind: "literal", value: "small" } }],
+        },
+        row,
+      ),
+    ).toBeNull();
+  });
+
   it("supports the phase 1 scalar function families", () => {
     expect(evaluate(fn("lower", col("city")), row)).toBe("los angeles");
     expect(evaluate(fn("upper", col("city")), row)).toBe("LOS ANGELES");
@@ -180,17 +262,58 @@ describe("evaluate", () => {
   });
 
   it("returns null from null-propagating functions", () => {
+    expect(
+      evaluate(
+        {
+          kind: "arithmetic",
+          op: "add",
+          left: { kind: "column", name: "maybe" },
+          right: { kind: "literal", value: 1 },
+        },
+        row,
+      ),
+    ).toBeNull();
+    expect(evaluate(isIn("city", ["Seattle", null]), row)).toBeNull();
     expect(evaluate(fn("lower", lit(null)), row)).toBeNull();
+    expect(evaluate(fn("upper", lit(null)), row)).toBeNull();
+    expect(evaluate(fn("trim", lit(null)), row)).toBeNull();
     expect(evaluate(fn("substr", lit(null), 0, 1), row)).toBeNull();
+    expect(evaluate(fn("substr", col("city"), lit(null), 1), row)).toBeNull();
+    expect(evaluate(fn("substr", col("city"), 0, lit(null)), row)).toBeNull();
     expect(evaluate(fn("replace", col("city"), lit(null), "x"), row)).toBeNull();
+    expect(evaluate(fn("replace", lit(null), "x", "y"), row)).toBeNull();
+    expect(evaluate(fn("replace", col("city"), "x", lit(null)), row)).toBeNull();
+    expect(evaluate(fn("nullif", lit(null), "x"), row)).toBeNull();
+    expect(evaluate(fn("cast", lit(null), "number"), row)).toBeNull();
+    expect(evaluate(fn("cast", "not-a-number", "number"), row)).toBeNull();
     expect(evaluate(fn("year", lit(null)), row)).toBeNull();
     expect(evaluate(fn("date_trunc", "day", lit(null)), row)).toBeNull();
+    expect(evaluate(fn("date_trunc", lit(null), col("date")), row)).toBeNull();
     expect(evaluate(fn("round", lit(null)), row)).toBeNull();
+    expect(evaluate(fn("round", col("amount"), lit(null)), row)).toBe(12);
+    expect(evaluate(fn("floor", lit(null)), row)).toBeNull();
+    expect(evaluate(fn("ceil", lit(null)), row)).toBeNull();
+    expect(evaluate(fn("abs", lit(null)), row)).toBeNull();
     expect(evaluate(fn("least", 1, lit(null)), row)).toBeNull();
+    expect(evaluate(fn("greatest", 1, lit(null)), row)).toBeNull();
+    expect(evaluate(fn("st_x", lit(null)), row)).toBeNull();
+    expect(evaluate(fn("st_y", lit(null)), row)).toBeNull();
     expect(evaluate(fn("st_intersects", lit(null), col("geom")), row)).toBeNull();
+    expect(evaluate(fn("st_contains", lit(null), col("geom")), row)).toBeNull();
+    expect(evaluate(fn("st_within", lit(null), col("geom")), row)).toBeNull();
+    expect(evaluate(fn("st_disjoint", lit(null), col("geom")), row)).toBeNull();
+    expect(evaluate(fn("st_distance", lit(null), col("geom")), row)).toBeNull();
+    expect(evaluate(fn("st_area", lit(null)), row)).toBeNull();
     expect(evaluate(fn("st_length", lit(null)), row)).toBeNull();
+    expect(evaluate(fn("st_centroid", lit(null)), row)).toBeNull();
+    expect(evaluate(fn("st_envelope", lit(null)), row)).toBeNull();
     expect(evaluate(fn("h3_in", lit(null), JSON.stringify(["8829a1d757fffff"])), row)).toBeNull();
+    expect(evaluate(fn("h3_in", col("h3_8"), lit(null)), row)).toBeNull();
     expect(evaluate(fn("h3_within", lit(null), "8829a1d757fffff", 1), row)).toBeNull();
+    expect(evaluate(fn("h3_within", col("h3_8"), lit(null), 1), row)).toBeNull();
+    expect(evaluate(fn("h3_within", col("h3_8"), "8829a1d757fffff", lit(null)), row)).toBeNull();
+    expect(evaluate(fn("h3_parent", lit(null), 7), row)).toBeNull();
+    expect(evaluate(fn("h3_parent", col("h3_8"), lit(null)), row)).toBeNull();
   });
 
   it("throws typed errors for unknown columns and functions", () => {

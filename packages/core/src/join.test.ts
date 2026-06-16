@@ -26,6 +26,22 @@ describe("broadcastJoin", () => {
     ]);
   });
 
+  it("joins bounded right-side rows by composite scalar keys", async () => {
+    await expect(
+      broadcastJoin(
+        [
+          { region: "west", id: 1, name: "a" },
+          { region: "west", id: 2, name: "b" },
+        ],
+        [
+          { region: "west", id: 1, color: "red" },
+          { region: "east", id: 1, color: "wrong-region" },
+        ],
+        { leftKey: ["region", "id"], rightKey: ["region", "id"], maxRightRows: 2 },
+      ),
+    ).resolves.toEqual([{ region: "west", id: 1, name: "a", color: "red" }]);
+  });
+
   it("matches null, boolean, and bigint scalar keys deterministically", async () => {
     await expect(
       broadcastJoin(
@@ -115,6 +131,13 @@ describe("broadcastJoin", () => {
       }),
     ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
     await expect(
+      broadcastJoin([{ id: 1 }], [{ id: 1 }], {
+        leftKey: ["id", "tenant"],
+        rightKey: ["id"],
+        maxRightRows: 1,
+      }),
+    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+    await expect(
       broadcastJoin([{ id: 1 }], [{ missing: 1 }], {
         leftKey: "id",
         rightKey: "id",
@@ -163,6 +186,31 @@ describe("lookupJoin", () => {
       ),
     ).resolves.toEqual([{ id: 1, name: "a", color: "red" }]);
     expect(calls).toEqual([1, 2]);
+  });
+
+  it("passes composite lookup keys as arrays", async () => {
+    const calls: unknown[] = [];
+    const lookup: LookupJoinFunction = (key) => {
+      calls.push(key);
+      return Array.isArray(key) && key[0] === "west" && key[1] === 1
+        ? [{ region: "west", id: 1, color: "red" }]
+        : [];
+    };
+
+    await expect(
+      lookupJoin(
+        [
+          { region: "west", id: 1, name: "a" },
+          { region: "west", id: 2, name: "b" },
+        ],
+        lookup,
+        { leftKey: ["region", "id"], rightKey: ["region", "id"], maxRightRows: 2 },
+      ),
+    ).resolves.toEqual([{ region: "west", id: 1, name: "a", color: "red" }]);
+    expect(calls).toEqual([
+      ["west", 1],
+      ["west", 2],
+    ]);
   });
 
   it("passes scalar lookup keys without string coercion", async () => {
