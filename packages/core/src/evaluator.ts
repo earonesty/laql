@@ -1,11 +1,118 @@
-import { booleanContains } from "@turf/boolean-contains";
-import { booleanIntersects } from "@turf/boolean-intersects";
-import { cellToParent, gridDisk, isValidCell, latLngToCell } from "h3-js";
 import { LakeqlError } from "./errors.js";
 import type { Expr, Scalar } from "./expr.js";
 import type { Row } from "./types.js";
 
 export type SqlBoolean = boolean | null;
+
+// --- Lazy geospatial backend -------------------------------------------------
+//
+// The heavy geospatial libraries (@turf/* ~1MB, h3-js ~6.5MB) used to be
+// statically imported here. Because the evaluator is on every query's hot path,
+// that pulled turf + h3-js into the bundle of *every* consumer — even one that
+// only runs `SELECT … FROM parquet`. They now live in `./geo-backend.ts`, which
+// is dynamically imported (see `ensureGeoBackendForExprs`) the first time a
+// query uses a spatial function that needs exact geometry or H3 indexing. Pure
+// bbox/JSON spatial helpers (st_point, st_bbox, st_distance, st_area, h3_in, …)
+// need no backend and keep working with zero extra deps.
+
+/** External geometry/H3 primitives the evaluator can't compute from bbox math alone. */
+export interface GeoBackend {
+  booleanContains(a: GeoJsonGeometry, b: GeoJsonGeometry): boolean;
+  booleanIntersects(a: GeoJsonGeometry, b: GeoJsonGeometry): boolean;
+  cellToParent(cell: string, res: number): string;
+  gridDisk(origin: string, k: number): string[];
+  isValidCell(cell: string): boolean;
+  latLngToCell(lat: number, lon: number, res: number): string;
+}
+
+// Spatial functions whose evaluation requires the external backend. The rest of
+// the st_*/h3_* surface is pure and never triggers a load.
+const GEO_BACKEND_FUNCTIONS: ReadonlySet<string> = new Set([
+  "st_intersects",
+  "st_disjoint",
+  "st_contains",
+  "st_within",
+  "h3_within",
+  "h3_cell",
+  "h3_parent",
+]);
+
+let geoBackend: GeoBackend | null = null;
+
+/** Install the backend. Called by `./geo-backend.ts` once its libraries load. */
+export function setGeoBackend(backend: GeoBackend): void {
+  geoBackend = backend;
+}
+
+function requireGeoBackend(): GeoBackend {
+  if (geoBackend === null) {
+    throw new LakeqlError(
+      "LAKEQL_GEO_BACKEND_MISSING",
+      "Spatial function requires the geo backend. Query execution loads it " +
+        "automatically; when calling evaluate() directly, await loadGeoBackend() first.",
+    );
+  }
+  return geoBackend;
+}
+
+/** Force-load the geo backend (idempotent). Exposed for direct evaluate() callers. */
+export async function loadGeoBackend(): Promise<void> {
+  if (geoBackend !== null) return;
+  const module = await import("./geo-backend.js");
+  module.installGeoBackend();
+}
+
+/**
+ * Load the geo backend iff any of `exprs` uses a backend-requiring spatial
+ * function. Cheap no-op once the backend is installed or when no geo is present,
+ * so query execution can call it unconditionally.
+ */
+export async function ensureGeoBackendForExprs(exprs: Iterable<Expr | undefined>): Promise<void> {
+  if (geoBackend !== null) return;
+  for (const expr of exprs) {
+    if (exprNeedsGeoBackend(expr)) {
+      await loadGeoBackend();
+      return;
+    }
+  }
+}
+
+function exprNeedsGeoBackend(expr: Expr | undefined): boolean {
+  if (!expr) return false;
+  switch (expr.kind) {
+    case "literal":
+    case "column":
+      return false;
+    case "compare":
+    case "arithmetic":
+      return exprNeedsGeoBackend(expr.left) || exprNeedsGeoBackend(expr.right);
+    case "in":
+      return exprNeedsGeoBackend(expr.target) || expr.values.some(exprNeedsGeoBackend);
+    case "between":
+      return (
+        exprNeedsGeoBackend(expr.target) ||
+        exprNeedsGeoBackend(expr.low) ||
+        exprNeedsGeoBackend(expr.high)
+      );
+    case "null-check":
+    case "like":
+      return exprNeedsGeoBackend(expr.target);
+    case "logical":
+      return expr.operands.some(exprNeedsGeoBackend);
+    case "not":
+      return exprNeedsGeoBackend(expr.operand);
+    case "call":
+      return (
+        GEO_BACKEND_FUNCTIONS.has(expr.fn.toLowerCase()) || expr.args.some(exprNeedsGeoBackend)
+      );
+    case "case":
+      return (
+        expr.whens.some(
+          (branch) => exprNeedsGeoBackend(branch.when) || exprNeedsGeoBackend(branch.value),
+        ) || exprNeedsGeoBackend(expr.else)
+      );
+  }
+}
 
 type EvalValue = Scalar;
 
@@ -407,19 +514,20 @@ function spatialPredicate(name: string, args: EvalValue[], op: SpatialOp): EvalV
   const b = toGeometry(parseGeometry(right, name), name);
   const ea = envelopeOf(a);
   const eb = envelopeOf(b);
+  const geo = requireGeoBackend();
   switch (op) {
     case "intersects":
       // Disjoint envelopes cannot intersect; otherwise check the real geometry.
-      return bboxIntersects(ea, eb) && booleanIntersects(a, b);
+      return bboxIntersects(ea, eb) && geo.booleanIntersects(a, b);
     case "disjoint":
       // Disjoint envelopes are definitely disjoint; otherwise check the real geometry.
-      return !bboxIntersects(ea, eb) || !booleanIntersects(a, b);
+      return !bboxIntersects(ea, eb) || !geo.booleanIntersects(a, b);
     case "contains":
       // `a` can only contain `b` if `a`'s envelope contains `b`'s.
-      return bboxContains(ea, eb) && booleanContains(a, b);
+      return bboxContains(ea, eb) && geo.booleanContains(a, b);
     case "within":
       // `a` within `b` is `b` contains `a`; requires `b`'s envelope to contain `a`'s.
-      return bboxContains(eb, ea) && booleanContains(b, a);
+      return bboxContains(eb, ea) && geo.booleanContains(b, a);
   }
 }
 
@@ -435,7 +543,7 @@ function envelopeOf(geometry: GeoJsonGeometry): BBox {
   }
 }
 
-type GeoJsonGeometry =
+export type GeoJsonGeometry =
   | { type: "Point"; coordinates: [number, number] }
   | { type: "LineString"; coordinates: [number, number][] }
   | { type: "Polygon"; coordinates: [number, number][][] };
@@ -558,7 +666,7 @@ function h3Within(args: EvalValue[]): EvalValue {
   if (typeof k !== "number" || !Number.isInteger(k) || k < 0) {
     throw new LakeqlError("LAKEQL_TYPE_ERROR", "h3_within() expects a non-negative integer radius");
   }
-  return gridDisk(origin, k).includes(cell);
+  return requireGeoBackend().gridDisk(origin, k).includes(cell);
 }
 
 function h3Cell(args: EvalValue[]): EvalValue {
@@ -572,7 +680,7 @@ function h3Cell(args: EvalValue[]): EvalValue {
   if (typeof res !== "number" || !Number.isInteger(res) || res < 0 || res > 15) {
     throw new LakeqlError("LAKEQL_TYPE_ERROR", "h3_cell() expects an integer resolution 0..15");
   }
-  return latLngToCell(lat, lon, res);
+  return requireGeoBackend().latLngToCell(lat, lon, res);
 }
 
 function h3Parent(args: EvalValue[]): EvalValue {
@@ -585,11 +693,11 @@ function h3Parent(args: EvalValue[]): EvalValue {
   if (typeof res !== "number" || !Number.isInteger(res) || res < 0 || res > 15) {
     throw new LakeqlError("LAKEQL_TYPE_ERROR", "h3_parent() expects an integer resolution 0..15");
   }
-  return cellToParent(cell, res);
+  return requireGeoBackend().cellToParent(cell, res);
 }
 
 function validateH3Cell(cell: string, label: string): void {
-  if (!isValidCell(cell)) {
+  if (!requireGeoBackend().isValidCell(cell)) {
     throw new LakeqlError("LAKEQL_TYPE_ERROR", `h3 cell ${label} is invalid`, { cell });
   }
 }

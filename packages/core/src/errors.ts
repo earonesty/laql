@@ -19,6 +19,7 @@ export const ERROR_CODES = [
   "LAKEQL_BOOKMARK_STALE",
   "LAKEQL_BOOKMARK_INVALID",
   "LAKEQL_ABORTED",
+  "LAKEQL_GEO_BACKEND_MISSING",
 ] as const;
 
 export type LakeqlErrorCode = (typeof ERROR_CODES)[number];

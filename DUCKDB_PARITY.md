@@ -44,26 +44,35 @@ Today lakeql's loading strategy is **partial and inconsistent**:
   Cloudflare driver is dynamically imported in the workerd entry.
 - ✅ Package-level separation: `lakeql-parquet`, `lakeql-iceberg`, `lakeql-sql`
   are separate packages, so you only bundle what you import.
-- ❌ **Eager anti-pattern:** geospatial is statically imported straight into
-  `lakeql-core`'s evaluator — `@turf/boolean-contains`, `@turf/boolean-intersects`,
-  and `h3-js` (`packages/core/src/evaluator.ts:1-3`) are hard `lakeql-core`
-  dependencies. **Every** core consumer bundles turf + h3-js even if it never
-  calls an `st_*` / `h3_*` function. That directly undercuts the
-  "dependency-light" pitch for the typical "query Parquet on R2" user.
+- ✅ **Geo is now lazy (was the eager anti-pattern, fixed):** `@turf/*` + `h3-js`
+  used to be statically imported into `lakeql-core`'s evaluator, so **every**
+  consumer bundled turf + h3-js (~7.5 MB) even for a pure `SELECT … FROM parquet`.
+  They now live in `packages/core/src/geo-backend.ts`, reached only via a dynamic
+  `import()` triggered when a query actually uses a spatial function needing exact
+  geometry/H3. Verified: a parquet-only consumer bundle contains zero static
+  turf/h3 references — they sit in a separate async chunk.
 
 **The principle for all parity work below:** follow the `avsc` precedent, not the
 geo anti-pattern. Every new format reader and every new output encoder is either
 (a) its own package, or (b) behind a dynamic `import()` triggered only by the API
 call / function / format that needs it. The core static graph must not grow.
 
-### Companion cleanup (do alongside Tier 1) — de-bundle geo from core into `lakeql-geo`
+### Companion cleanup — de-bundle geo from core ✅ DONE
 
-Move `@turf/*` + `h3-js` out of `lakeql-core`'s static graph and into the existing
-**`lakeql-geo`** package as an opt-in function pack: the host registers `st_*` /
-`h3_*` only when it needs them, and turf/h3 load lazily (the `avsc` pattern). Net
-result: a `lakeql-core` build that ships zero geospatial weight unless a query
-uses it. This is the proof-of-concept for the smart-load principle and should land
-with Tier 1 so the pattern is established before new modules arrive.
+`@turf/*` + `h3-js` were lifted out of `lakeql-core`'s static graph into a
+dynamically-imported `geo-backend.ts`. The evaluator holds an injectable backend
+slot; the query executor scans each query's expressions and `await import()`s the
+backend only when a backend-requiring spatial function (`st_intersects/disjoint/
+contains/within`, `h3_within/cell/parent`) is present — the `avsc` pattern. Pure
+spatial helpers (`st_point`, `st_bbox`, `st_distance`, `st_area`, `h3_in`, …) need
+no backend and keep working with zero extra deps. Also set `"sideEffects": false`
+on `lakeql-core` + `lakeql` so the umbrella's barrel re-exports tree-shake. This is
+the proof-of-concept for the smart-load principle that the new format/output
+modules below must follow.
+
+(The standalone `lakeql-geo` builder package keeps its own turf import for the
+fluent API; it is not re-exported by the edge `index` entry, so it never enters
+the default bundle.)
 
 ---
 

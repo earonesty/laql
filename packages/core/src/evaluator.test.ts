@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { LakeqlError } from "./errors.js";
-import { evaluate, jsonSafeValue, matches } from "./evaluator.js";
+import { evaluate, jsonSafeValue, loadGeoBackend, matches } from "./evaluator.js";
 import {
   and,
   between,
@@ -47,6 +47,13 @@ const row = {
 };
 
 describe("evaluate", () => {
+  // Spatial predicates that need turf/h3 require the lazily-loaded geo backend.
+  // Query execution loads it automatically; direct evaluate() callers (these
+  // tests) must load it explicitly.
+  beforeAll(async () => {
+    await loadGeoBackend();
+  });
+
   it("implements SQL three-valued null semantics for predicates", () => {
     expect(evaluate(eq("maybe", null), row)).toBeNull();
     expect(evaluate(isNull("maybe"), row)).toBe(true);
@@ -370,7 +377,9 @@ describe("evaluate", () => {
     expect(() => evaluate(fn("h3_within", col("h3_8"), "8829a1d757fffff", -1), row)).toThrowError(
       LakeqlError,
     );
-    expect(() => evaluate(fn("h3_within", col("h3_8"), "invalid", 1), row)).toThrowError(LakeqlError);
+    expect(() => evaluate(fn("h3_within", col("h3_8"), "invalid", 1), row)).toThrowError(
+      LakeqlError,
+    );
     expect(() => evaluate(fn("h3_cell", 34.05, -118.24, 16), row)).toThrowError(LakeqlError);
     expect(() => evaluate(fn("h3_parent", "invalid", 7), row)).toThrowError(LakeqlError);
     expect(() => evaluate(like("amount", "%"), row)).toThrowError(LakeqlError);

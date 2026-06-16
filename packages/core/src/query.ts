@@ -1,5 +1,11 @@
 import { LakeqlError } from "./errors.js";
-import { encodeJsonLine, evaluate, jsonSafeValue, matches } from "./evaluator.js";
+import {
+  encodeJsonLine,
+  ensureGeoBackendForExprs,
+  evaluate,
+  jsonSafeValue,
+  matches,
+} from "./evaluator.js";
 import type { Expr } from "./expr.js";
 import { col, eq, gt, gte, isIn, isNotNull, isNull, lt, lte, ne, notIn } from "./expr.js";
 import {
@@ -353,7 +359,10 @@ export class ResumedQuery {
 
   run(options: QueryRunOptions): Promise<SliceResult> {
     if (this.bookmark.query === undefined) {
-      throw new LakeqlError("LAKEQL_BOOKMARK_INVALID", "Bookmark does not contain a resumable query");
+      throw new LakeqlError(
+        "LAKEQL_BOOKMARK_INVALID",
+        "Bookmark does not contain a resumable query",
+      );
     }
     return this.lake.createResult(this.bookmark.query).slice({
       ...options.slice,
@@ -809,6 +818,12 @@ export class QueryResult {
     options: AggregateOptions = {},
   ): Promise<AggregateResult> {
     validateAggregateRequest(groupColumns, spec, options);
+    // Aggregate spec expressions and HAVING live outside config; planObjects()
+    // only sees where/projections, so cover the aggregate exprs here too.
+    await ensureGeoBackendForExprs([
+      ...Object.values(spec).map((aggregate) => aggregate.expr),
+      options.having,
+    ]);
     const groups = await aggregateGroupsFromState(groupColumns, spec, options);
     const startedAt = this.config.now();
     const readColumns = aggregateReadColumns(groupColumns, spec, this.config.where);
@@ -1057,6 +1072,10 @@ export class QueryResult {
 
   private async planObjects(): Promise<{ planned: ObjectInfo[]; skipped: number }> {
     const config = this.config;
+    // Lazily load the geospatial backend before any row is evaluated, but only
+    // if this query's filter/projection expressions actually use a spatial
+    // function that needs it. Every read path funnels through planObjects().
+    await ensureGeoBackendForExprs([config.where, ...Object.values(config.projections ?? {})]);
     const objects = await expandPaths(config.lake.store, config.source);
     let planned = objects;
     let skipped = 0;
@@ -1608,19 +1627,27 @@ async function aggregateGroupsFromState(
       ? await options.spill.read(options.operatorState.spillRef)
       : options.operatorState;
   if (isSpilledOperatorState(state)) {
-    throw new LakeqlError("LAKEQL_BOOKMARK_INVALID", "Aggregate spill state requires a spill adapter", {
-      spillRef: state.spillRef,
-    });
+    throw new LakeqlError(
+      "LAKEQL_BOOKMARK_INVALID",
+      "Aggregate spill state requires a spill adapter",
+      {
+        spillRef: state.spillRef,
+      },
+    );
   }
   const snapshot = deserializeAggregateOperatorState(state);
   if (
     stableStringify(snapshot.groupColumns) !== stableStringify(groupColumns) ||
     stableStringify(snapshot.spec) !== stableStringify(spec)
   ) {
-    throw new LakeqlError("LAKEQL_BOOKMARK_STALE", "Aggregate operator state does not match request", {
-      stateGroupColumns: snapshot.groupColumns,
-      groupColumns,
-    });
+    throw new LakeqlError(
+      "LAKEQL_BOOKMARK_STALE",
+      "Aggregate operator state does not match request",
+      {
+        stateGroupColumns: snapshot.groupColumns,
+        groupColumns,
+      },
+    );
   }
   const groups = new Map<string, AggregateGroup>();
   for (const group of snapshot.groups)
@@ -1847,9 +1874,13 @@ function snapshotValue(value: unknown): AggregateSnapshotValue {
   ) {
     return value;
   }
-  throw new LakeqlError("LAKEQL_TYPE_ERROR", "Aggregate operator state values must be JSON scalars", {
-    value,
-  });
+  throw new LakeqlError(
+    "LAKEQL_TYPE_ERROR",
+    "Aggregate operator state values must be JSON scalars",
+    {
+      value,
+    },
+  );
 }
 
 function aggregateValue(row: Row, alias: string, aggregate: AggregateExpr | undefined): unknown {
@@ -1880,7 +1911,10 @@ function validateAggregateRequest(
     throw new LakeqlError("LAKEQL_TYPE_ERROR", "groupBy columns must be non-empty strings");
   }
   if (Object.keys(spec).length === 0) {
-    throw new LakeqlError("LAKEQL_TYPE_ERROR", "aggregate spec must contain at least one aggregate");
+    throw new LakeqlError(
+      "LAKEQL_TYPE_ERROR",
+      "aggregate spec must contain at least one aggregate",
+    );
   }
   if (
     options.maxGroups !== undefined &&
@@ -1925,7 +1959,9 @@ function validateAggregateExpr(aggregate: AggregateExpr): void {
     "any",
   ];
   if (!ops.includes(aggregate.op)) {
-    throw new LakeqlError("LAKEQL_TYPE_ERROR", `Unsupported aggregate ${aggregate.op}`, { aggregate });
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", `Unsupported aggregate ${aggregate.op}`, {
+      aggregate,
+    });
   }
   if (aggregate.column !== undefined && aggregate.expr !== undefined) {
     throw new LakeqlError("LAKEQL_TYPE_ERROR", "aggregate cannot specify both column and expr", {
@@ -1940,7 +1976,9 @@ function validateAggregateExpr(aggregate: AggregateExpr): void {
 }
 
 function throwAggregateType(op: string): never {
-  throw new LakeqlError("LAKEQL_TYPE_ERROR", `${op} aggregate received an incompatible value`, { op });
+  throw new LakeqlError("LAKEQL_TYPE_ERROR", `${op} aggregate received an incompatible value`, {
+    op,
+  });
 }
 
 export function parseJsonQuery(input: unknown): PathQueryInit {
@@ -2217,7 +2255,9 @@ async function expandPaths(store: ObjectStore, pattern: string): Promise<ObjectI
   if (!hasGlob(pattern)) {
     const head = await store.head(pattern);
     if (!head) {
-      throw new LakeqlError("LAKEQL_OBJECT_NOT_FOUND", `No object at ${pattern}`, { path: pattern });
+      throw new LakeqlError("LAKEQL_OBJECT_NOT_FOUND", `No object at ${pattern}`, {
+        path: pattern,
+      });
     }
     const object: ObjectInfo = { path: pattern, size: head.size };
     if (head.etag !== undefined) object.etag = head.etag;
