@@ -34,8 +34,8 @@ import "./styles.css";
 type Mode = "sql" | "js" | "json";
 
 const DEFAULTS: Record<Mode, string> = {
-  sql: `from sales.parquet
-select region, sum(amount) as revenue, count() as orders
+  sql: `select region, sum(amount) as revenue, count() as orders
+from sales.parquet
 where amount > 0
 group by region
 order by revenue desc`,
