@@ -1,6 +1,6 @@
-# LaQL
+# lakeql
 
-LaQL reads Parquet files and plans Iceberg tables directly from object storage, in
+lakeql reads Parquet files and plans Iceberg tables directly from object storage, in
 TypeScript. It is small and dependency-light enough to run in constrained runtimes —
 Cloudflare Workers, edge functions, serverless — where DuckDB-WASM or a JVM engine is too
 heavy. See [why not DuckDB-WASM?](./docs/why-not-duckdb-wasm.md).
@@ -13,7 +13,7 @@ supported feature, and every feature it detects and refuses, is enumerated in th
 ## Install
 
 ```sh
-npm install laql
+npm install lakeql
 ```
 
 ## Use it
@@ -21,7 +21,7 @@ npm install laql
 Read a Parquet file over HTTP — no credentials, runs in Node or on the edge:
 
 ```ts
-import { createLake, httpStore } from "laql/node";
+import { createLake, httpStore } from "lakeql/node";
 
 const lake = createLake({ store: httpStore({ baseUrl: "https://example.com/data" }) });
 
@@ -35,7 +35,7 @@ const rows = await lake
 Inside a Cloudflare Worker, reading from R2:
 
 ```ts
-import { createLake, r2Store } from "laql/cloudflare";
+import { createLake, r2Store } from "lakeql/cloudflare";
 
 export default {
   async fetch(_req: Request, env: { DATA: R2Bucket }) {
@@ -52,7 +52,7 @@ export default {
 Plan an Iceberg table (snapshot selection, partition + delete-aware file pruning):
 
 ```ts
-import { eq, loadIcebergTable, r2Store } from "laql/cloudflare";
+import { eq, loadIcebergTable, r2Store } from "lakeql/cloudflare";
 
 const table = await loadIcebergTable({
   store: r2Store(env.DATA),
@@ -64,12 +64,13 @@ const plan = table.planFiles({ ref: "main", where: eq("country", "US") });
 
 ## Packages
 
-`laql` is the aggregate entrypoint. The packages underneath are independently usable, so you
-can depend only on what you need:
+`lakeql` is the published package — one install, with `lakeql`, `lakeql/node`, and
+`lakeql/cloudflare` entry points. It bundles the internal `@laql/*` modules below, which are
+kept as workspace source (not separately published):
 
-| Package | Owns |
+| Module | Owns |
 | --- | --- |
-| [`laql`](./packages/laql) | Aggregate entrypoint (`laql/node`, `laql/cloudflare`) and the unified `loadTable`/`planFiles`/`scanRows` contract. |
+| `lakeql` | Aggregate entry points (`lakeql/node`, `lakeql/cloudflare`) and the unified `loadTable`/`planFiles`/`scanRows` contract. |
 | [`@laql/core`](./packages/core) | Expressions, planning, execution, budgets/limits, manifests, joins, sidecar indexes, object-store interface, typed errors. |
 | [`@laql/parquet`](./packages/parquet) | Parquet read/write with row-group pruning. |
 | [`@laql/iceberg`](./packages/iceberg) | Iceberg metadata loading, planning, delete application, and append commits. |
@@ -90,7 +91,7 @@ can depend only on what you need:
 
 ## Trust
 
-LaQL is checked in CI against real engine output, not just self-generated fixtures:
+lakeql is checked in CI against real engine output, not just self-generated fixtures:
 conformance against Spark/PyIceberg reference warehouses, row-for-row comparison against
 DuckDB, real S3 (MinIO) and Iceberg REST catalog round-trips, a 90% coverage gate, and a
 [reproducible benchmark report](./bench/REPORT.md). See [conformance](./docs/conformance.md).

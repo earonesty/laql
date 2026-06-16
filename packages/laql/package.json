@@ -1,7 +1,7 @@
 {
-  "name": "laql",
+  "name": "lakeql",
   "version": "0.1.0",
-  "description": "LaQL: lightweight TypeScript query engine for Iceberg + Parquet on object storage",
+  "description": "lakeql: lightweight TypeScript query engine for Iceberg + Parquet on object storage",
   "keywords": [
     "lakehouse",
     "parquet",
@@ -35,14 +35,14 @@
   ],
   "scripts": {
     "build": "tsup",
-    "prepack": "pnpm -w build && pnpm --filter laql build"
+    "prepack": "pnpm -w build && pnpm --filter lakeql build"
   },
   "repository": {
     "type": "git",
     "url": "https://github.com/earonesty/laql.git",
     "directory": "packages/laql"
   },
-  "homepage": "https://laql.dev",
+  "homepage": "https://lakeql.com",
   "engines": {
     "node": ">=22"
   },

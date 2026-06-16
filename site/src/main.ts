@@ -429,7 +429,7 @@ function setupSwitch(): void {
 function setupCopy(): void {
   const btn = document.getElementById("copy-install");
   btn?.addEventListener("click", async () => {
-    await navigator.clipboard.writeText("npm install laql");
+    await navigator.clipboard.writeText("npm install lakeql");
     const prev = btn.textContent;
     btn.textContent = "copied";
     setTimeout(() => {
