@@ -1,5 +1,5 @@
 {
-  "name": "@laql/iceberg",
+  "name": "lakeql-iceberg",
   "version": "0.0.2",
   "description": "lakeql Iceberg adapter: table loading, snapshots, manifest planning, commits",
   "keywords": [
@@ -37,11 +37,11 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@laql/core": "workspace:*",
+    "lakeql-core": "workspace:*",
     "avsc": "^5.7.9"
   },
   "devDependencies": {
-    "@laql/fixtures": "workspace:*"
+    "lakeql-fixtures": "workspace:*"
   },
   "private": true
 }

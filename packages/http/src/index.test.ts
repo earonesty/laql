@@ -1,4 +1,4 @@
-import { LaQLError } from "@laql/core";
+import { LaQLError } from "lakeql-core";
 import { describe, expect, it } from "vitest";
 import { httpStore } from "./index.js";
 

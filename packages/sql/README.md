@@ -1,4 +1,4 @@
-# @laql/sql
+# lakeql-sql
 
 Small SQL dialect parser and formatter for LaQL query ASTs.
 

@@ -5,9 +5,9 @@ import {
   type ObjectInfo,
   type ObjectStore,
   type PutOptions,
-} from "@laql/core";
+} from "lakeql-core";
 
-export const PACKAGE = "@laql/http" as const;
+export const PACKAGE = "lakeql-http" as const;
 
 export interface HttpStoreOptions {
   baseUrl: string;

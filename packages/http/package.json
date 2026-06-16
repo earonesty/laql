@@ -1,5 +1,5 @@
 {
-  "name": "@laql/http",
+  "name": "lakeql-http",
   "version": "0.0.2",
   "description": "lakeql HTTP range-read object store adapter",
   "keywords": [
@@ -37,7 +37,7 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@laql/core": "workspace:*"
+    "lakeql-core": "workspace:*"
   },
   "private": true
 }

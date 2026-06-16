@@ -22,7 +22,7 @@ then posts a table update with an `assert-ref-snapshot-id` requirement for the
 current `main` branch:
 
 ```ts
-import { icebergRestCatalog } from "@laql/iceberg";
+import { icebergRestCatalog } from "lakeql-iceberg";
 
 const catalog = icebergRestCatalog({
   url: "https://catalog.example",

@@ -23,10 +23,10 @@ import {
   not,
   type ObjectStore,
   or,
-} from "@laql/core";
-import { httpStore } from "@laql/http";
-import { createParquetLake } from "@laql/parquet";
-import { parseSql } from "@laql/sql";
+} from "lakeql-core";
+import { httpStore } from "lakeql-http";
+import { createParquetLake } from "lakeql-parquet";
+import { parseSql } from "lakeql-sql";
 import { tags } from "@lezer/highlight";
 import { basicSetup } from "codemirror";
 import "./styles.css";

@@ -1,10 +1,10 @@
 # Cloudflare Workers
 
-Use the `laql/cloudflare` subpath for Worker-oriented imports and `@laql/r2` for R2-backed object access.
+Use the `lakeql/cloudflare` subpath for Worker-oriented imports and `lakeql-r2` for R2-backed object access.
 
 ```ts
-import { createLake } from "laql/cloudflare";
-import { r2Store } from "@laql/r2";
+import { createLake } from "lakeql/cloudflare";
+import { r2Store } from "lakeql-r2";
 
 export default {
   async fetch(_request: Request, env: { DATA: R2Bucket }) {
@@ -32,7 +32,7 @@ const lake = createLake({
 });
 ```
 
-LaQL reads Parquet metadata and row groups with range requests. Peak row buffering is controlled by
+lakeql reads Parquet metadata and row groups with range requests. Peak row buffering is controlled by
 `maxBufferedRows`; object-read fanout is controlled by `maxConcurrentReads`; cancellation rejects at
 await boundaries with `LAQL_ABORTED`.
 

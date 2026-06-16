@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
-import { memoryStore } from "@laql/core";
-import { EXTERNAL_CONFORMANCE, externalFixturePath } from "@laql/fixtures";
+import { memoryStore } from "lakeql-core";
+import { EXTERNAL_CONFORMANCE, externalFixturePath } from "lakeql-fixtures";
 import { describe, expect, it } from "vitest";
 import { readParquetObjects } from "./index.js";
 

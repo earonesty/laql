@@ -1,5 +1,5 @@
 {
-  "name": "@laql/fixtures",
+  "name": "lakeql-fixtures",
   "version": "0.0.1",
   "private": true,
   "description": "Deterministic test fixtures for LaQL: generated Parquet files and Iceberg warehouse layouts",

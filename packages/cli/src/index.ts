@@ -14,15 +14,15 @@ import {
   type QueryBuilder,
   type Row,
   writeOutputManifest,
-} from "@laql/core";
+} from "lakeql-core";
 import {
   createParquetLake,
   partitionedParquetOutputEntries,
   readParquetMetadata,
   type WriteParquetRowsOptions,
   writePartitionedParquet,
-} from "@laql/parquet";
-import { parseSql } from "@laql/sql";
+} from "lakeql-parquet";
+import { parseSql } from "lakeql-sql";
 
 export const COMMANDS = ["query", "explain", "inspect", "write", "compact", "schema"] as const;
 

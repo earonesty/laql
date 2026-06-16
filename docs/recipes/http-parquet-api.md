@@ -11,5 +11,5 @@ const rows = await queryHttpParquet({
 });
 ```
 
-The example uses `laql/node` and `@laql/http` public exports. Generic HTTP servers do not expose
+The example uses `lakeql/node` and `lakeql-http` public exports. Generic HTTP servers do not expose
 portable listings, so pass an `objects` index when code needs `list()`.

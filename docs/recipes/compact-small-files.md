@@ -6,7 +6,7 @@ Run from the repository root:
 pnpm build
 node packages/cli/dist/bin.js compact \
   --path fixtures/data/sales.parquet \
-  --output /tmp/laql-compact-sales \
+  --output /tmp/lakeql-compact-sales \
   --max-rows-per-file 75
 ```
 

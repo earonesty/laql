@@ -1,6 +1,6 @@
-# @laql/core
+# lakeql-core
 
-Core LaQL types and runtime: expressions, evaluation, planning, streaming query execution, manifests, bookmarks, joins, and sidecar indexes.
+Core lakeql types and runtime: expressions, evaluation, planning, streaming query execution, manifests, bookmarks, joins, and sidecar indexes.
 
 ## Ownership
 
@@ -17,4 +17,4 @@ to decode Parquet or load Iceberg metadata; adapters implement those pieces.
 - Errors: `LaQLError`, stable error codes, and `isLaQLError`.
 
 Use this package when building a new storage or scan adapter. Application code usually imports the
-aggregate `laql` package unless it needs a lower-level contract.
+aggregate `lakeql` package unless it needs a lower-level contract.

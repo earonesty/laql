@@ -1,4 +1,4 @@
-# @laql/iceberg
+# lakeql-iceberg
 
 Iceberg table utilities for LaQL: metadata loading, JSON/Avro manifest hydration, snapshot/file planning, delete application, and append commit helpers.
 
@@ -6,7 +6,7 @@ Iceberg table utilities for LaQL: metadata loading, JSON/Avro manifest hydration
 
 This package owns Iceberg metadata loading, manifest hydration, snapshot selection, data-file
 planning, delete application, append commit boundaries, and catalog contracts. Parquet file decoding
-is delegated to `@laql/parquet`.
+is delegated to `lakeql-parquet`.
 
 ## Public Surface
 

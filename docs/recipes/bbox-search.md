@@ -4,8 +4,8 @@ Use bbox predicates for coarse geospatial filtering:
 
 ```ts
 import { readFile } from "node:fs/promises";
-import { col, fn, lit, memoryStore } from "@laql/core";
-import { createLake } from "laql";
+import { col, fn, lit, memoryStore } from "lakeql-core";
+import { createLake } from "lakeql";
 
 const store = memoryStore();
 await store.put("data/geo.parquet", await readFile("fixtures/data/geo.parquet"));

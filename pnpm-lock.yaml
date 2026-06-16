@@ -47,17 +47,17 @@ importers:
 
   packages/cli:
     dependencies:
-      '@laql/core':
+      lakeql-core:
         specifier: workspace:*
         version: link:../core
-      '@laql/parquet':
+      lakeql-parquet:
         specifier: workspace:*
         version: link:../parquet
-      '@laql/sql':
+      lakeql-sql:
         specifier: workspace:*
         version: link:../sql
     devDependencies:
-      '@laql/fixtures':
+      lakeql-fixtures:
         specifier: workspace:*
         version: link:../../fixtures
 
@@ -75,32 +75,32 @@ importers:
 
   packages/geo:
     dependencies:
-      '@laql/core':
-        specifier: workspace:*
-        version: link:../core
       '@turf/boolean-contains':
         specifier: ^7.2.0
         version: 7.3.5
       '@turf/boolean-intersects':
         specifier: ^7.2.0
         version: 7.3.5
+      lakeql-core:
+        specifier: workspace:*
+        version: link:../core
 
   packages/http:
     dependencies:
-      '@laql/core':
+      lakeql-core:
         specifier: workspace:*
         version: link:../core
 
   packages/iceberg:
     dependencies:
-      '@laql/core':
-        specifier: workspace:*
-        version: link:../core
       avsc:
         specifier: ^5.7.9
         version: 5.7.9
+      lakeql-core:
+        specifier: workspace:*
+        version: link:../core
     devDependencies:
-      '@laql/fixtures':
+      lakeql-fixtures:
         specifier: workspace:*
         version: link:../../fixtures
 
@@ -131,28 +131,28 @@ importers:
         specifier: ^0.15.6
         version: 0.15.6
     devDependencies:
-      '@laql/core':
+      lakeql-core:
         specifier: workspace:*
         version: link:../core
-      '@laql/fixtures':
+      lakeql-fixtures:
         specifier: workspace:*
         version: link:../../fixtures
-      '@laql/http':
+      lakeql-http:
         specifier: workspace:*
         version: link:../http
-      '@laql/iceberg':
+      lakeql-iceberg:
         specifier: workspace:*
         version: link:../iceberg
-      '@laql/parquet':
+      lakeql-parquet:
         specifier: workspace:*
         version: link:../parquet
-      '@laql/r2':
+      lakeql-r2:
         specifier: workspace:*
         version: link:../r2
-      '@laql/s3':
+      lakeql-s3:
         specifier: workspace:*
         version: link:../s3
-      '@laql/sql':
+      lakeql-sql:
         specifier: workspace:*
         version: link:../sql
       tsup:
@@ -161,41 +161,41 @@ importers:
 
   packages/parquet:
     dependencies:
-      '@laql/core':
-        specifier: workspace:*
-        version: link:../core
       hyparquet:
         specifier: ^1.26.0
         version: 1.26.0
       hyparquet-writer:
         specifier: ^0.15.6
         version: 0.15.6
+      lakeql-core:
+        specifier: workspace:*
+        version: link:../core
     devDependencies:
-      '@laql/fixtures':
+      lakeql-fixtures:
         specifier: workspace:*
         version: link:../../fixtures
 
   packages/r2:
     dependencies:
-      '@laql/core':
+      lakeql-core:
         specifier: workspace:*
         version: link:../core
 
   packages/s3:
     dependencies:
-      '@laql/core':
-        specifier: workspace:*
-        version: link:../core
       aws4fetch:
         specifier: ^1.0.20
         version: 1.0.20
       fast-xml-parser:
         specifier: ^5.9.0
         version: 5.9.0
+      lakeql-core:
+        specifier: workspace:*
+        version: link:../core
 
   packages/sql:
     dependencies:
-      '@laql/core':
+      lakeql-core:
         specifier: workspace:*
         version: link:../core
       pgsql-ast-parser:
@@ -222,24 +222,24 @@ importers:
       '@codemirror/view':
         specifier: ^6.36.4
         version: 6.43.1
-      '@laql/core':
-        specifier: workspace:*
-        version: link:../packages/core
-      '@laql/http':
-        specifier: workspace:*
-        version: link:../packages/http
-      '@laql/parquet':
-        specifier: workspace:*
-        version: link:../packages/parquet
-      '@laql/sql':
-        specifier: workspace:*
-        version: link:../packages/sql
       '@lezer/highlight':
         specifier: ^1.2.1
         version: 1.2.3
       codemirror:
         specifier: ^6.0.1
         version: 6.0.2
+      lakeql-core:
+        specifier: workspace:*
+        version: link:../packages/core
+      lakeql-http:
+        specifier: workspace:*
+        version: link:../packages/http
+      lakeql-parquet:
+        specifier: workspace:*
+        version: link:../packages/parquet
+      lakeql-sql:
+        specifier: workspace:*
+        version: link:../packages/sql
     devDependencies:
       vite:
         specifier: ^6.3.5

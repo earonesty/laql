@@ -65,18 +65,18 @@ const plan = table.planFiles({ ref: "main", where: eq("country", "US") });
 ## Packages
 
 `lakeql` is the published package — one install, with `lakeql`, `lakeql/node`, and
-`lakeql/cloudflare` entry points. It bundles the internal `@laql/*` modules below, which are
+`lakeql/cloudflare` entry points. It bundles the internal `lakeql-*` modules below, which are
 kept as workspace source (not separately published):
 
 | Module | Owns |
 | --- | --- |
 | `lakeql` | Aggregate entry points (`lakeql/node`, `lakeql/cloudflare`) and the unified `loadTable`/`planFiles`/`scanRows` contract. |
-| [`@laql/core`](./packages/core) | Expressions, planning, execution, budgets/limits, manifests, joins, sidecar indexes, object-store interface, typed errors. |
-| [`@laql/parquet`](./packages/parquet) | Parquet read/write with row-group pruning. |
-| [`@laql/iceberg`](./packages/iceberg) | Iceberg metadata loading, planning, delete application, and append commits. |
-| [`@laql/http`](./packages/http), [`@laql/s3`](./packages/s3), [`@laql/r2`](./packages/r2) | Object-store adapters (range reads by default). |
-| [`@laql/sql`](./packages/sql) | Small, bounded SQL parser/formatter (CLI-only). |
-| [`@laql/geo`](./packages/geo) | Geospatial / H3 expression helpers. |
+| [`lakeql-core`](./packages/core) | Expressions, planning, execution, budgets/limits, manifests, joins, sidecar indexes, object-store interface, typed errors. |
+| [`lakeql-parquet`](./packages/parquet) | Parquet read/write with row-group pruning. |
+| [`lakeql-iceberg`](./packages/iceberg) | Iceberg metadata loading, planning, delete application, and append commits. |
+| [`lakeql-http`](./packages/http), [`lakeql-s3`](./packages/s3), [`lakeql-r2`](./packages/r2) | Object-store adapters (range reads by default). |
+| [`lakeql-sql`](./packages/sql) | Small, bounded SQL parser/formatter (CLI-only). |
+| [`lakeql-geo`](./packages/geo) | Geospatial / H3 expression helpers. |
 
 ## Documentation
 

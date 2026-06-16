@@ -1,4 +1,4 @@
-import { col, lit } from "@laql/core";
+import { col, lit } from "lakeql-core";
 import { describe, expect, it } from "vitest";
 import {
   h3Cell,

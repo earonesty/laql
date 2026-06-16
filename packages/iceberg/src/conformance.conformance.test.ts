@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
-import { memoryStore } from "@laql/core";
-import { EXTERNAL_CONFORMANCE, externalFixturePath } from "@laql/fixtures";
+import { memoryStore } from "lakeql-core";
+import { EXTERNAL_CONFORMANCE, externalFixturePath } from "lakeql-fixtures";
 import { describe, expect, it } from "vitest";
 import { loadIcebergTable } from "./index.js";
 

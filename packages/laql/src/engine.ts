@@ -1,4 +1,4 @@
-import type { ObjectStore, ObjectStoreReadControls, Row } from "@laql/core";
+import type { ObjectStore, ObjectStoreReadControls, Row } from "lakeql-core";
 import {
   type IcebergPlan,
   type IcebergTable,
@@ -7,13 +7,13 @@ import {
   type PlanIcebergFilesOptions,
   planFiles as planIcebergFiles,
   scanPlannedIcebergRows,
-} from "@laql/iceberg";
+} from "lakeql-iceberg";
 import {
   type ParquetRowBatch,
   type ReadParquetBatchOptions,
   readIcebergParquetDeletes,
   readParquetObjectBatches,
-} from "@laql/parquet";
+} from "lakeql-parquet";
 
 export interface LoadIcebergEngineTableOptions extends LoadIcebergTableOptions {
   format: "iceberg";

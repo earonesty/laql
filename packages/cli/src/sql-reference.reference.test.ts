@@ -2,9 +2,9 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DuckDBConnection } from "@duckdb/node-api";
-import { memoryStore, type Row, stableStringify } from "@laql/core";
-import { fixturePath, SALES } from "@laql/fixtures";
-import { writeParquet } from "@laql/parquet";
+import { memoryStore, type Row, stableStringify } from "lakeql-core";
+import { fixturePath, SALES } from "lakeql-fixtures";
+import { writeParquet } from "lakeql-parquet";
 import { describe, expect, it } from "vitest";
 import { runCli } from "./index.js";
 

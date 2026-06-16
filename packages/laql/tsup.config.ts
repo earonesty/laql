@@ -1,7 +1,7 @@
 import { defineConfig } from "tsup";
 
 // `laql` is published as a single self-contained package: the internal
-// `@laql/*` workspace sources are inlined, while the real runtime dependencies
+// `lakeql-*` workspace sources are inlined, while the real runtime dependencies
 // (Parquet/Avro/crypto/geo libraries) stay external and are declared in
 // package.json so consumers install one package with a small dependency set.
 export default defineConfig({
@@ -9,13 +9,13 @@ export default defineConfig({
     index: "src/index.ts",
     node: "src/node.ts",
     cloudflare: "src/cloudflare.ts",
-    // The CLI lives in the @laql/cli workspace source and is bundled in so a
+    // The CLI lives in the lakeql-cli workspace source and is bundled in so a
     // global install exposes a `lakeql` command. Shebang is preserved by tsup.
     bin: "../cli/src/bin.ts",
   },
   format: ["esm"],
   // Type declarations only for the library entries (the CLI bin needs none).
-  // resolve inlines the @laql/* workspace types so consumers don't need the
+  // resolve inlines the lakeql-* workspace types so consumers don't need the
   // (unpublished) internal packages for types.
   dts: {
     resolve: true,
@@ -29,7 +29,7 @@ export default defineConfig({
   treeshake: true,
   sourcemap: false,
   // Inline the workspace packages; keep declared runtime deps external.
-  noExternal: [/^@laql\//],
+  noExternal: [/^lakeql-/],
   external: [
     "@turf/boolean-contains",
     "@turf/boolean-intersects",

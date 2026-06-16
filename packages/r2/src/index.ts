@@ -5,9 +5,9 @@ import {
   type ObjectInfo,
   type ObjectStore,
   type PutOptions,
-} from "@laql/core";
+} from "lakeql-core";
 
-export const PACKAGE = "@laql/r2" as const;
+export const PACKAGE = "lakeql-r2" as const;
 
 export interface R2ObjectBody {
   key: string;

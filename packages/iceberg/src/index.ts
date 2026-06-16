@@ -11,9 +11,9 @@ import {
   stableStringify,
   throwIfAborted,
   withObjectStoreReadControls,
-} from "@laql/core";
+} from "lakeql-core";
 
-export const PACKAGE = "@laql/iceberg" as const;
+export const PACKAGE = "lakeql-iceberg" as const;
 
 interface AvroLongBuffer extends Uint8Array {
   readBigInt64LE(): bigint;

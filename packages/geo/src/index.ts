@@ -1,4 +1,4 @@
-import { col, type Expr, fn, lit } from "@laql/core";
+import { col, type Expr, fn, lit } from "lakeql-core";
 import { booleanContains } from "@turf/boolean-contains";
 import { booleanIntersects } from "@turf/boolean-intersects";
 

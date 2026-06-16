@@ -1,10 +1,10 @@
-# @laql/s3
+# lakeql-s3
 
 S3-compatible SigV4 object-store adapter for LaQL.
 
 ## Ownership
 
-This package adapts AWS S3 and S3-compatible object stores to the `@laql/core`
+This package adapts AWS S3 and S3-compatible object stores to the `lakeql-core`
 `ConditionalObjectStore` contract. It owns SigV4 request signing, safe key encoding, paginated
 `ListObjectsV2` parsing, ranged reads, and conditional writes.
 

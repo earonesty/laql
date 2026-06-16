@@ -1,4 +1,4 @@
-# @laql/geo
+# lakeql-geo
 
 Geospatial and H3 expression builders for LaQL.
 

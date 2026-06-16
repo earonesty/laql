@@ -1,10 +1,10 @@
-# @laql/r2
+# lakeql-r2
 
 Cloudflare R2 object-store adapter for LaQL.
 
 ## Ownership
 
-This package adapts a Cloudflare R2 bucket binding to the `@laql/core` `ObjectStore` contract. It is
+This package adapts a Cloudflare R2 bucket binding to the `lakeql-core` `ObjectStore` contract. It is
 intended for Workers and workerd-compatible runtimes.
 
 ## Public Surface

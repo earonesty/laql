@@ -11,3 +11,4 @@ fixtures/external/*
 !fixtures/external/iceberg-reference/**
 fixtures/external/parquet-testing/
 site/dist/
+plans/

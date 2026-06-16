@@ -15,8 +15,8 @@ import {
   or,
   type Row,
   stableStringify,
-} from "@laql/core";
-import { fixturePath, SALES, STATS, TYPES } from "@laql/fixtures";
+} from "lakeql-core";
+import { fixturePath, SALES, STATS, TYPES } from "lakeql-fixtures";
 import type { SchemaElement } from "hyparquet";
 import { parquetWriteBuffer } from "hyparquet-writer";
 import { describe, expect, it } from "vitest";

@@ -1,4 +1,4 @@
-# @laql/cli
+# lakeql-cli
 
 Command-line interface for querying, inspecting, writing, and compacting LaQL lake data.
 

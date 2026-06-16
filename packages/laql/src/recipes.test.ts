@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { fixturePath, GEO, H3, ICEBERG, SALES } from "@laql/fixtures";
+import { fixturePath, GEO, H3, ICEBERG, SALES } from "lakeql-fixtures";
 import { describe, expect, it } from "vitest";
 import { queryHttpParquet } from "../../../examples/http-parquet.js";
 import { planR2Iceberg } from "../../../examples/r2-iceberg.js";

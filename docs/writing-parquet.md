@@ -3,8 +3,8 @@
 Use `writePartitionedParquet` for deterministic partitioned Parquet output.
 
 ```ts
-import { memoryStore } from "@laql/core";
-import { writePartitionedParquet } from "@laql/parquet";
+import { memoryStore } from "lakeql-core";
+import { writePartitionedParquet } from "lakeql-parquet";
 
 const store = memoryStore();
 const result = await writePartitionedParquet(store, "out/sales", {
@@ -34,7 +34,7 @@ Each written file and output-manifest entry includes a deterministic `sha256:` c
 hash computed from the exact Parquet bytes written to the object store.
 When write tasks persist their `OutputManifestEntry` values in a checkpoint adapter,
 `createOutputManifestFromCheckpoints` fans them into one sorted manifest for commit.
-Use `writeOutputManifest` and `readOutputManifest` from `@laql/core` to persist the
+Use `writeOutputManifest` and `readOutputManifest` from `lakeql-core` to persist the
 final manifest as deterministic JSON in an `ObjectStore`.
 
 Use `writePartitionedParquetTask` when the write should advance the task checkpoint
@@ -42,8 +42,8 @@ state machine and record all output entries. Replaying a completed task with the
 idempotency key returns the checkpointed outputs without rewriting files:
 
 ```ts
-import { memoryCheckpointAdapter } from "@laql/core";
-import { writePartitionedParquetTask } from "@laql/parquet";
+import { memoryCheckpointAdapter } from "lakeql-core";
+import { writePartitionedParquetTask } from "lakeql-parquet";
 
 const checkpoints = memoryCheckpointAdapter();
 const { entries } = await writePartitionedParquetTask(store, "out/sales", {
@@ -61,7 +61,7 @@ For CTAS-style flows, `createParquetTableAs` consumes a query result, writes the
 rows through the checkpointed task path, and returns an output manifest:
 
 ```ts
-import { createParquetTableAs } from "@laql/parquet";
+import { createParquetTableAs } from "lakeql-parquet";
 
 const created = await createParquetTableAs(store, "out/west_sales", {
   query: lake.path("sales.parquet").where(eq("region", "west")),

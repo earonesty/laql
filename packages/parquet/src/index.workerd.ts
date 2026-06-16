@@ -1,4 +1,4 @@
-import { eq, lt, memoryCache, memoryStore } from "@laql/core";
+import { eq, lt, memoryCache, memoryStore } from "lakeql-core";
 import { describe, expect, it } from "vitest";
 import { createParquetLake, type ParquetMetadata, writeParquet } from "./index.js";
 

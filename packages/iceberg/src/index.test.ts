@@ -17,8 +17,8 @@ import {
   type ObjectStore,
   type Row,
   stableStringify,
-} from "@laql/core";
-import { fixturePath, ICEBERG } from "@laql/fixtures";
+} from "lakeql-core";
+import { fixturePath, ICEBERG } from "lakeql-fixtures";
 import avro from "avsc";
 import { beforeAll, describe, expect, it } from "vitest";
 import {

@@ -1,5 +1,5 @@
 {
-  "name": "@laql/parquet",
+  "name": "lakeql-parquet",
   "version": "0.0.2",
   "description": "lakeql Parquet adapter: hyparquet reads, hyparquet-writer writes, pruning, projection",
   "keywords": [
@@ -37,12 +37,12 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@laql/core": "workspace:*",
+    "lakeql-core": "workspace:*",
     "hyparquet": "^1.26.0",
     "hyparquet-writer": "^0.15.6"
   },
   "devDependencies": {
-    "@laql/fixtures": "workspace:*"
+    "lakeql-fixtures": "workspace:*"
   },
   "private": true
 }

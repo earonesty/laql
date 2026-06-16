@@ -47,7 +47,7 @@ The preferred layout is one `manifest.json` per case:
 ```
 
 The conformance lane loads every file under `iceberg-reference/` into an object store,
-loads each case metadata file through `@laql/iceberg`, and verifies any declared
+loads each case metadata file through `lakeql-iceberg`, and verifies any declared
 snapshot row-count or file-list expectations. Cases without `manifest.json` are still
 discovered by `metadata.json` and `*.metadata.json` as a compatibility fallback.
 

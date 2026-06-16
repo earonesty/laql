@@ -15,7 +15,7 @@ node packages/cli/dist/bin.js explain --path fixtures/data/sales.parquet --sql "
 node packages/cli/dist/bin.js query --path fixtures/data/sales.parquet --sql "select store_id, amount from input limit 2"
 node packages/cli/dist/bin.js query --path fixtures/data/sales.parquet --sql "select store_id, amount from input limit 2" --format csv
 node packages/cli/dist/bin.js query --table sales=fixtures/data/sales.parquet --table stores=/tmp/stores.parquet --sql "select s.store_id, d.segment from sales s join stores d on s.store_id = d.store_id limit 10"
-node packages/cli/dist/bin.js write --path fixtures/data/sales.parquet --sql "select store_id, region, amount from input limit 2" --output /tmp/laql-out
-node packages/cli/dist/bin.js write --path fixtures/data/sales.parquet --sql "select store_id, region, amount from input limit 2" --output /tmp/laql-out --manifest /tmp/laql-out-manifest.json --job-id job_cli
-node packages/cli/dist/bin.js compact --path fixtures/data/sales.parquet --output /tmp/laql-compact --max-rows-per-file 75
+node packages/cli/dist/bin.js write --path fixtures/data/sales.parquet --sql "select store_id, region, amount from input limit 2" --output /tmp/lakeql-out
+node packages/cli/dist/bin.js write --path fixtures/data/sales.parquet --sql "select store_id, region, amount from input limit 2" --output /tmp/lakeql-out --manifest /tmp/lakeql-out-manifest.json --job-id job_cli
+node packages/cli/dist/bin.js compact --path fixtures/data/sales.parquet --output /tmp/lakeql-compact --max-rows-per-file 75
 ```

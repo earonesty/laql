@@ -18,7 +18,7 @@ import {
   type TaskCheckpoint,
   throwIfAborted,
   withObjectStoreReadControls,
-} from "@laql/core";
+} from "lakeql-core";
 import type { RowGroup } from "hyparquet";
 import { parquetMetadataAsync, parquetReadObjects } from "hyparquet";
 import type { BasicType, ColumnSource, ParquetWriteOptions } from "hyparquet-writer";

@@ -11,7 +11,7 @@ lake
   .limit(10);
 ```
 
-Expressions are plain serializable objects. Use helpers from `@laql/core` for comparisons, logical operators, null checks, `like`, `ilike`, `between`, `in`, and scalar function calls.
+Expressions are plain serializable objects. Use helpers from `lakeql-core` for comparisons, logical operators, null checks, `like`, `ilike`, `between`, `in`, and scalar function calls.
 
 Constrained joins are available as explicit helpers:
 

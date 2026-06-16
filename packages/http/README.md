@@ -1,10 +1,10 @@
-# @laql/http
+# lakeql-http
 
 HTTP range-read object-store adapter for LaQL.
 
 ## Ownership
 
-This package adapts HTTP-addressable objects to the `@laql/core` `ObjectStore` contract. It is
+This package adapts HTTP-addressable objects to the `lakeql-core` `ObjectStore` contract. It is
 useful for public buckets, signed URLs, local fixture servers, and services that support byte-range
 requests.
 

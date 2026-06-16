@@ -1,8 +1,8 @@
-export * from "@laql/core";
-export * from "@laql/iceberg";
-export * from "@laql/parquet";
-export { createParquetLake as createLake, parquetScanner } from "@laql/parquet";
-export { r2Store } from "@laql/r2";
+export * from "lakeql-core";
+export * from "lakeql-iceberg";
+export * from "lakeql-parquet";
+export { createParquetLake as createLake, parquetScanner } from "lakeql-parquet";
+export { r2Store } from "lakeql-r2";
 export type {
   EngineFilePlan,
   EngineTable,

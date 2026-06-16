@@ -1,4 +1,4 @@
-# @laql/core
+# lakeql-core
 
 ## 0.1.0
 

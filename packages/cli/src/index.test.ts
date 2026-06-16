@@ -1,9 +1,9 @@
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { memoryStore, readOutputManifest } from "@laql/core";
-import { fixturePath, SALES } from "@laql/fixtures";
-import { createParquetLake, writeParquet } from "@laql/parquet";
+import { memoryStore, readOutputManifest } from "lakeql-core";
+import { fixturePath, SALES } from "lakeql-fixtures";
+import { createParquetLake, writeParquet } from "lakeql-parquet";
 import { describe, expect, it } from "vitest";
 import { COMMANDS, runCli, usage } from "./index.js";
 

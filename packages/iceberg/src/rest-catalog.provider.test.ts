@@ -1,4 +1,4 @@
-import { memoryStore } from "@laql/core";
+import { memoryStore } from "lakeql-core";
 import { describe, expect, it } from "vitest";
 import { icebergRestCatalog } from "./index.js";
 

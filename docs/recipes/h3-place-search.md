@@ -4,8 +4,8 @@ Use the H3 fixture with the `h3_within` predicate:
 
 ```ts
 import { readFile } from "node:fs/promises";
-import { col, fn, lit, memoryStore } from "@laql/core";
-import { createLake } from "laql";
+import { col, fn, lit, memoryStore } from "lakeql-core";
+import { createLake } from "lakeql";
 
 const store = memoryStore();
 await store.put("data/h3.parquet", await readFile("fixtures/data/h3.parquet"));

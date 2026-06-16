@@ -5,7 +5,7 @@ import {
   LaQLError,
   type OrderByTerm,
   type PathQueryInit,
-} from "@laql/core";
+} from "lakeql-core";
 import { parse } from "pgsql-ast-parser";
 
 export interface SqlQueryAst extends PathQueryInit {

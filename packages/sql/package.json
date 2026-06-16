@@ -1,5 +1,5 @@
 {
-  "name": "@laql/sql",
+  "name": "lakeql-sql",
   "version": "0.0.2",
   "description": "lakeql SQL dialect: parser and SQL-to-AST compiler",
   "keywords": [
@@ -37,7 +37,7 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@laql/core": "workspace:*",
+    "lakeql-core": "workspace:*",
     "pgsql-ast-parser": "^12.0.2"
   },
   "private": true

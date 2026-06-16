@@ -3,8 +3,8 @@
 Create a Parquet lake from an ObjectStore, then query paths or globs.
 
 ```ts
-import { eq, memoryStore } from "@laql/core";
-import { createParquetLake } from "@laql/parquet";
+import { eq, memoryStore } from "lakeql-core";
+import { createParquetLake } from "lakeql-parquet";
 
 const store = memoryStore();
 const lake = createParquetLake({ store });

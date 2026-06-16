@@ -1,4 +1,4 @@
-import { LaQLError } from "@laql/core";
+import { LaQLError } from "lakeql-core";
 import { describe, expect, it } from "vitest";
 import { formatSql, parseSql } from "./index.js";
 

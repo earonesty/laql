@@ -33,10 +33,10 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # The site bundles the built @laql/* packages, so build them first.
+      # The site bundles the built lakeql-* packages, so build them first.
       - run: pnpm build
 
-      - run: pnpm --filter @laql/site build
+      - run: pnpm --filter lakeql-site build
 
       - uses: actions/configure-pages@v5
         with:

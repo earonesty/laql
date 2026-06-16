@@ -3,9 +3,9 @@
 Iceberg support plans deterministic data files from metadata JSON fixtures and applies snapshot selection, schema projection, partition pruning, and strict delete-file handling.
 
 ```ts
-import { eq, memoryStore } from "@laql/core";
-import { loadIcebergTable, planFiles, scanPlannedIcebergRows } from "@laql/iceberg";
-import { readIcebergParquetDeletes, readParquetObjects } from "@laql/parquet";
+import { eq, memoryStore } from "lakeql-core";
+import { loadIcebergTable, planFiles, scanPlannedIcebergRows } from "lakeql-iceberg";
+import { readIcebergParquetDeletes, readParquetObjects } from "lakeql-parquet";
 
 const table = await loadIcebergTable({
   store,
@@ -25,7 +25,7 @@ For object-store table layouts, load by table location. LaQL first reads
 files and choosing the highest version:
 
 ```ts
-import { loadIcebergTableFromObjectStore } from "@laql/iceberg";
+import { loadIcebergTableFromObjectStore } from "lakeql-iceberg";
 
 const table = await loadIcebergTableFromObjectStore({
   store,
@@ -36,7 +36,7 @@ const table = await loadIcebergTableFromObjectStore({
 REST catalogs can load the current table metadata by identifier:
 
 ```ts
-import { loadIcebergTableFromRest } from "@laql/iceberg";
+import { loadIcebergTableFromRest } from "lakeql-iceberg";
 
 const table = await loadIcebergTableFromRest({
   store,

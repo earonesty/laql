@@ -1,9 +1,9 @@
 # Recipe: Unified Engine API
 
-Use the aggregate `laql` package when an application should not depend on package internals:
+Use the aggregate `lakeql` package when an application should not depend on package internals:
 
 ```ts
-import { eq, loadTable, planFiles, scanRows } from "laql";
+import { eq, loadTable, planFiles, scanRows } from "lakeql";
 
 const table = await loadTable({
   format: "iceberg",

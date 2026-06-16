@@ -6,11 +6,11 @@ import {
   type ObjectHead,
   type ObjectInfo,
   type PutOptions,
-} from "@laql/core";
+} from "lakeql-core";
 import { AwsClient } from "aws4fetch";
 import { XMLParser } from "fast-xml-parser";
 
-export const PACKAGE = "@laql/s3" as const;
+export const PACKAGE = "lakeql-s3" as const;
 
 export interface S3StoreOptions {
   endpoint: string;

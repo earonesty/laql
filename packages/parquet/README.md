@@ -1,10 +1,10 @@
-# @laql/parquet
+# lakeql-parquet
 
 Parquet integration for LaQL, including object-store reads, row-group pruning, projection, metadata inspection, and Parquet writes.
 
 ## Ownership
 
-This package owns Parquet file access for LaQL. It bridges `@laql/core` object stores to
+This package owns Parquet file access for LaQL. It bridges `lakeql-core` object stores to
 `hyparquet`, exposes row-group planning, validates supported schema posture, and writes Parquet
 output through `hyparquet-writer`.
 

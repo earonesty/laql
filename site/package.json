@@ -1,5 +1,5 @@
 {
-  "name": "@laql/site",
+  "name": "lakeql-site",
   "private": true,
   "type": "module",
   "scripts": {
@@ -14,10 +14,10 @@
     "@codemirror/language": "^6.10.8",
     "@codemirror/state": "^6.5.2",
     "@codemirror/view": "^6.36.4",
-    "@laql/core": "workspace:*",
-    "@laql/http": "workspace:*",
-    "@laql/parquet": "workspace:*",
-    "@laql/sql": "workspace:*",
+    "lakeql-core": "workspace:*",
+    "lakeql-http": "workspace:*",
+    "lakeql-parquet": "workspace:*",
+    "lakeql-sql": "workspace:*",
     "@lezer/highlight": "^1.2.1",
     "codemirror": "^6.0.1"
   },

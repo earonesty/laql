@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { fixturePath, ICEBERG, SALES } from "@laql/fixtures";
+import { fixturePath, ICEBERG, SALES } from "lakeql-fixtures";
 import { expect, it } from "vitest";
 import {
   and,

@@ -1,4 +1,4 @@
-# Product spec: `laql`
+# Product spec: `lakeql`
 
 A lightweight TypeScript query engine for Iceberg + Parquet on object storage.
 
@@ -26,7 +26,7 @@ h3-js              H3 lat/lon-to-cell, parent, and grid-disk operations used by
                    the expression evaluator
 ```
 
-Current Iceberg manifest hydration reads LaQL's JSON fixture/manifest format
+Current Iceberg manifest hydration reads lakeql's JSON fixture/manifest format
 and uncompressed Avro Iceberg manifest lists/manifests.
 
 Primary use case:
@@ -55,7 +55,7 @@ No WASM boot tax unless the user explicitly opts into one.
 
 # Positioning
 
-`laql` is not a database.
+`lakeql` is not a database.
 
 It is a query engine for lake files.
 
@@ -95,7 +95,7 @@ build APIs over lake data inside Workers
 
 # Runtime model
 
-`@laql/core` is runtime-agnostic.
+`lakeql-core` is runtime-agnostic.
 
 It targets any short-lived, memory-constrained invocation: Cloudflare Workers, AWS Lambda, edge runtimes, browsers, Node, Deno, Bun, service workers.
 
@@ -116,9 +116,9 @@ state                bookmarks are plain serializable values;
 Runtime drivers wire these up:
 
 ```txt
-laql/cloudflare    R2, Cache API, DO committer, Queues recipes
-laql/lambda        S3, SQS recipes              (same core)
-laql/node          filesystem / S3              (same core)
+lakeql/cloudflare    R2, Cache API, DO committer, Queues recipes
+lakeql/lambda        S3, SQS recipes              (same core)
+lakeql/node          filesystem / S3              (same core)
 ```
 
 Cloudflare is the flagship driver, not a dependency.
@@ -127,7 +127,7 @@ Cloudflare is the flagship driver, not a dependency.
 
 # Responsibility boundary
 
-`laql` owns lake-query mechanics:
+`lakeql` owns lake-query mechanics:
 
 ```txt
 read Iceberg and Parquet metadata
@@ -180,7 +180,7 @@ where it runs.
 # Package layout
 
 ```txt
-@laql/core
+lakeql-core
   AST
   query planner
   expression evaluator
@@ -189,14 +189,14 @@ where it runs.
   type system
   errors
 
-@laql/parquet
+lakeql-parquet
   hyparquet reader adapter
   hyparquet-writer adapter
   row-group pruning
   column projection
   page/batch streaming
 
-@laql/iceberg
+lakeql-iceberg
   table loading
   schema loading
   snapshot loading
@@ -204,7 +204,7 @@ where it runs.
   partition pruning
   Iceberg append commits
 
-@laql/r2
+lakeql-r2
   Cloudflare R2 object store adapter
   range reads
   writes
@@ -212,30 +212,30 @@ where it runs.
   object listing
   metadata reads
 
-@laql/s3
+lakeql-s3
   S3-compatible object store adapter
   optional portability package
 
-@laql/http
+lakeql-http
   HTTP range-read adapter
 
-@laql/geo
+lakeql-geo
   h3_* functions
   st_* functions
   bbox helpers
   GeoJSON helpers
 
-@laql/sql
+lakeql-sql
   small SQL parser
   SQL-to-AST compiler
   explain output
 
-@laql/react
+lakeql-react
   optional query hooks
   browser demos
   progressive result streaming helpers
 
-@laql/cli
+lakeql-cli
   inspect
   query
   write
@@ -248,15 +248,15 @@ where it runs.
 Default import for Worker users:
 
 ```ts
-import { LaQL, eq, and, gt, h3Within, bbox } from "@laql/core";
-import { r2Store } from "@laql/r2";
-import { icebergCatalog } from "@laql/iceberg";
+import { lakeql, eq, and, gt, h3Within, bbox } from "lakeql-core";
+import { r2Store } from "lakeql-r2";
+import { icebergCatalog } from "lakeql-iceberg";
 ```
 
 Convenience import:
 
 ```ts
-import { createLake } from "laql/cloudflare";
+import { createLake } from "lakeql/cloudflare";
 ```
 
 ---
@@ -264,7 +264,7 @@ import { createLake } from "laql/cloudflare";
 # Basic Worker usage
 
 ```ts
-import { createLake, eq, and, h3Within, bbox, stIntersects } from "laql/cloudflare";
+import { createLake, eq, and, h3Within, bbox, stIntersects } from "lakeql/cloudflare";
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -324,7 +324,7 @@ return new Response(
 
 # Public query styles
 
-`laql` supports three equivalent query styles.
+`lakeql` supports three equivalent query styles.
 
 ## 1. Fluent TypeScript API
 
@@ -988,7 +988,7 @@ console.log(plan.text);
 Output:
 
 ```txt
-LaQL Plan
+lakeql Plan
 
 table
   places
@@ -1292,7 +1292,7 @@ events/date=2026-06-10/h3_7=8729a1d76ffffff/part-01JY9M6R2C4T.parquet
 
 # Write semantics
 
-`laql` distinguishes three write modes.
+`lakeql` distinguishes three write modes.
 
 ## 1. Plain partitioned Parquet
 
@@ -1656,7 +1656,7 @@ These are the “people using DuckDB-WASM today will switch” features.
 
 DuckDB-WASM requires bundle selection, worker setup, database instantiation, file registration, and virtual filesystem choices.
 
-`laql`:
+`lakeql`:
 
 ```ts
 const lake = createLake({ store: env.BUCKET });
@@ -1735,7 +1735,7 @@ range requests made
 
 DuckDB is SQL-first.
 
-`laql` is API-first.
+`lakeql` is API-first.
 
 The JSON query format is stable, safe, serializable, cacheable, and easy for LLMs/UI builders to generate.
 
@@ -1840,13 +1840,13 @@ const snapshots = await lake.table("events").snapshots();
 Install:
 
 ```sh
-npm install -g laql
+npm install -g lakeql
 ```
 
 Query Iceberg:
 
 ```sh
-laql query \
+lakeql query \
   --catalog iceberg-rest \
   --catalog-url "$ICEBERG_REST_URL" \
   --table places \
@@ -1856,7 +1856,7 @@ laql query \
 Query Parquet path:
 
 ```sh
-laql query \
+lakeql query \
   --path "r2://data/events/date=2026-06-10/*.parquet" \
   --sql "select user_id, ts from input where event = 'signup' limit 100"
 ```
@@ -1864,7 +1864,7 @@ laql query \
 Explain:
 
 ```sh
-laql explain \
+lakeql explain \
   --table places \
   --sql "select id from places where h3_within(h3_8, '8829a1d757fffff', 2)"
 ```
@@ -1872,19 +1872,19 @@ laql explain \
 Inspect Parquet:
 
 ```sh
-laql parquet inspect r2://data/events/part-0001.parquet
+lakeql parquet inspect r2://data/events/part-0001.parquet
 ```
 
 Inspect Iceberg:
 
 ```sh
-laql iceberg inspect places
+lakeql iceberg inspect places
 ```
 
 Create table:
 
 ```sh
-laql create-table events \
+lakeql create-table events \
   --schema schema.json \
   --partition-by date,h3_7
 ```
@@ -1892,7 +1892,7 @@ laql create-table events \
 Compact:
 
 ```sh
-laql compact events \
+lakeql compact events \
   --target-file-size 128mb \
   --partition "date=2026-06-10"
 ```
@@ -1901,10 +1901,10 @@ laql compact events \
 
 # HTTP server mode
 
-`laql` can expose a safe query endpoint.
+`lakeql` can expose a safe query endpoint.
 
 ```ts
-import { laqlHandler } from "laql/cloudflare";
+import { laqlHandler } from "lakeql/cloudflare";
 
 export default {
   fetch: laqlHandler({
@@ -2594,7 +2594,7 @@ Major subsystems and their responsibilities:
 ```txt
 1. core read path
    AST, expression evaluator, planner skeleton
-   @laql/http + @laql/parquet (hyparquet adapter)
+   lakeql-http + lakeql-parquet (hyparquet adapter)
    scan / filter / project / limit over plain Parquet paths
    row-group streaming, streaming rows, NDJSON
 
@@ -2687,9 +2687,9 @@ conformance tests
 # What the VISION says
 
 ````md
-# LaQL
+# lakeql
 
-LaQL is a lightweight TypeScript query engine for Parquet and Iceberg on object storage.
+lakeql is a lightweight TypeScript query engine for Parquet and Iceberg on object storage.
 
 It runs in Cloudflare Workers, browsers, Node, Deno, Bun, and service workers.
 
@@ -2706,7 +2706,7 @@ const rows = await lake.table("places")
   .toArray();
 ```
 
-LaQL supports:
+lakeql supports:
 
 * Iceberg tables
 * Parquet files

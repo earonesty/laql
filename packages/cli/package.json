@@ -1,5 +1,5 @@
 {
-  "name": "@laql/cli",
+  "name": "lakeql-cli",
   "version": "0.0.2",
   "description": "lakeql command line: query, explain, inspect, write, compact",
   "keywords": [
@@ -40,12 +40,12 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@laql/core": "workspace:*",
-    "@laql/parquet": "workspace:*",
-    "@laql/sql": "workspace:*"
+    "lakeql-core": "workspace:*",
+    "lakeql-parquet": "workspace:*",
+    "lakeql-sql": "workspace:*"
   },
   "devDependencies": {
-    "@laql/fixtures": "workspace:*"
+    "lakeql-fixtures": "workspace:*"
   },
   "private": true
 }

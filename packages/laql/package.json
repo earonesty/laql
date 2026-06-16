@@ -63,14 +63,14 @@
     "hyparquet-writer": "^0.15.6"
   },
   "devDependencies": {
-    "@laql/core": "workspace:*",
-    "@laql/fixtures": "workspace:*",
-    "@laql/http": "workspace:*",
-    "@laql/iceberg": "workspace:*",
-    "@laql/parquet": "workspace:*",
-    "@laql/r2": "workspace:*",
-    "@laql/s3": "workspace:*",
-    "@laql/sql": "workspace:*",
+    "lakeql-core": "workspace:*",
+    "lakeql-fixtures": "workspace:*",
+    "lakeql-http": "workspace:*",
+    "lakeql-iceberg": "workspace:*",
+    "lakeql-parquet": "workspace:*",
+    "lakeql-r2": "workspace:*",
+    "lakeql-s3": "workspace:*",
+    "lakeql-sql": "workspace:*",
     "tsup": "^8.5.0"
   }
 }

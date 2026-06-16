@@ -25,7 +25,7 @@ import {
   notIn,
   or,
   stableStringify,
-} from "@laql/core";
+} from "lakeql-core";
 import {
   fixturePath,
   GEO,
@@ -39,7 +39,7 @@ import {
   TYPES,
   WIDE,
   WRITE,
-} from "@laql/fixtures";
+} from "lakeql-fixtures";
 import type { RowGroup } from "hyparquet";
 import { beforeAll, describe, expect, it } from "vitest";
 import {

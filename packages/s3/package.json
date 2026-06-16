@@ -1,5 +1,5 @@
 {
-  "name": "@laql/s3",
+  "name": "lakeql-s3",
   "version": "0.0.2",
   "description": "lakeql S3-compatible object store adapter",
   "keywords": [
@@ -37,7 +37,7 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@laql/core": "workspace:*",
+    "lakeql-core": "workspace:*",
     "aws4fetch": "^1.0.20",
     "fast-xml-parser": "^5.9.0"
   },

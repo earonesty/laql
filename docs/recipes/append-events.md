@@ -3,8 +3,8 @@
 Write events to partitioned Parquet, then append those files to Iceberg metadata:
 
 ```ts
-import { memoryStore } from "@laql/core";
-import { writePartitionedParquet } from "@laql/parquet";
+import { memoryStore } from "lakeql-core";
+import { writePartitionedParquet } from "lakeql-parquet";
 
 const store = memoryStore();
 const rows = [

@@ -1,5 +1,5 @@
 {
-  "name": "@laql/geo",
+  "name": "lakeql-geo",
   "version": "0.1.0",
   "description": "lakeql geospatial: h3_* and st_* functions",
   "keywords": [
@@ -37,7 +37,7 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@laql/core": "workspace:*",
+    "lakeql-core": "workspace:*",
     "@turf/boolean-contains": "^7.2.0",
     "@turf/boolean-intersects": "^7.2.0"
   },
