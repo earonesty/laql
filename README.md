@@ -1,32 +1,108 @@
 # LaQL
 
-LaQL is a lightweight TypeScript query engine for Parquet and Iceberg-style lake data on object storage.
+LaQL reads Parquet files and plans Iceberg tables directly from object storage, in
+TypeScript. It is small and dependency-light enough to run in constrained runtimes —
+Cloudflare Workers, edge functions, serverless — where DuckDB-WASM or a JVM engine is too
+heavy. See [why not DuckDB-WASM?](./docs/why-not-duckdb-wasm.md).
 
-It provides composable packages for query planning and evaluation, Parquet reads/writes, object-store adapters, SQL parsing, geospatial/H3 helpers, and Iceberg table planning/append workflows.
+The scope is deliberately narrow: a strict read/scan core that either reads correctly or
+rejects precisely. It streams with HTTP range reads and bounded memory, and refuses table
+features it cannot honor with a typed error rather than guessing. Iceberg writes are
+append-only. What is supported, and what is detected-and-rejected, is enumerated in the
+[compatibility matrix](./docs/compatibility.md) and [unsupported features](./docs/unsupported.md).
+
+## Install
+
+```sh
+npm install laql
+```
+
+## Use it
+
+Read a Parquet file over HTTP — no credentials, runs in Node or on the edge:
+
+```ts
+import { createLake, httpStore } from "laql/node";
+
+const lake = createLake({ store: httpStore({ baseUrl: "https://example.com/data" }) });
+
+const rows = await lake
+  .path("sales.parquet")
+  .select(["id", "amount"])
+  .limit(100)
+  .toArray();
+```
+
+Inside a Cloudflare Worker, reading from R2:
+
+```ts
+import { createLake, r2Store } from "laql/cloudflare";
+
+export default {
+  async fetch(_req: Request, env: { DATA: R2Bucket }) {
+    const lake = createLake({
+      store: r2Store(env.DATA),
+      budget: { maxOutputRows: 1000, maxConcurrentReads: 4 },
+    });
+    const rows = await lake.path("sales.parquet").limit(100).toArray();
+    return Response.json(rows);
+  },
+};
+```
+
+Plan an Iceberg table (snapshot selection, partition + delete-aware file pruning):
+
+```ts
+import { eq, loadIcebergTable, r2Store } from "laql/cloudflare";
+
+const table = await loadIcebergTable({
+  store: r2Store(env.DATA),
+  metadataPath: "warehouse/places/metadata/v2.metadata.json",
+});
+
+const plan = table.planFiles({ ref: "main", where: eq("country", "US") });
+```
 
 ## Packages
 
-- `laql`: aggregate entrypoint for Node and Cloudflare-oriented usage.
-- `@laql/core`: expressions, planning, execution, manifests, bookmarks, joins, and sidecar indexes.
-- `@laql/parquet`: Parquet reader/writer integration with row-group pruning.
-- `@laql/iceberg`: Iceberg metadata loading, JSON manifest hydration, planning, delete application, and append commits.
-- `@laql/http`, `@laql/s3`, `@laql/r2`: object-store adapters.
-- `@laql/sql`: small SQL parser and formatter.
-- `@laql/geo`: expression builders and geospatial/H3 helper APIs.
+`laql` is the aggregate entrypoint. The packages underneath are independently usable, so you
+can depend only on what you need:
 
-## Compatibility
+| Package | Owns |
+| --- | --- |
+| [`laql`](./packages/laql) | Aggregate entrypoint (`laql/node`, `laql/cloudflare`) and the unified `loadTable`/`planFiles`/`scanRows` contract. |
+| [`@laql/core`](./packages/core) | Expressions, planning, execution, budgets/limits, manifests, joins, sidecar indexes, object-store interface, typed errors. |
+| [`@laql/parquet`](./packages/parquet) | Parquet read/write with row-group pruning. |
+| [`@laql/iceberg`](./packages/iceberg) | Iceberg metadata loading, planning, delete application, and append commits. |
+| [`@laql/http`](./packages/http), [`@laql/s3`](./packages/s3), [`@laql/r2`](./packages/r2) | Object-store adapters (range reads by default). |
+| [`@laql/sql`](./packages/sql) | Small, bounded SQL parser/formatter (CLI-only). |
+| [`@laql/geo`](./packages/geo) | Geospatial / H3 expression helpers. |
 
-LaQL aims to read supported Parquet and Iceberg features correctly and reject unsupported table
-semantics explicitly. See [Compatibility Matrix](./docs/compatibility.md) and
-[Unsupported But Detected](./docs/unsupported.md). Catalog adapter contracts are documented in
-[Iceberg Catalogs](./docs/catalogs.md), and Parquet type coverage is documented in
-[Parquet Types](./docs/parquet-types.md).
+## Documentation
+
+- [Introduction](./docs/introduction.md) and [query language](./docs/query-language.md)
+- Querying: [Parquet](./docs/querying-parquet.md), [Iceberg](./docs/querying-iceberg.md), [partitioning](./docs/partitioning.md)
+- Writing: [Parquet](./docs/writing-parquet.md), [Iceberg (append-only)](./docs/writing-iceberg.md)
+- [Compatibility matrix](./docs/compatibility.md) and [unsupported-but-detected](./docs/unsupported.md)
+- [Iceberg catalogs](./docs/catalogs.md), [Parquet types](./docs/parquet-types.md), [error codes](./docs/errors.md)
+- [Cloudflare Workers](./docs/cloudflare-workers.md), [performance](./docs/performance.md), [security](./docs/security.md)
+- [SQL dialect](./docs/sql-dialect.md), [CLI](./docs/cli.md), [geospatial](./docs/geospatial.md), [H3](./docs/h3.md)
+- [Recipes](./docs/recipes) and runnable [examples](./examples)
+
+## Trust
+
+LaQL is checked in CI against real engine output, not just self-generated fixtures:
+conformance against Spark/PyIceberg reference warehouses, row-for-row comparison against
+DuckDB, real S3 (MinIO) and Iceberg REST catalog round-trips, a 90% coverage gate, and a
+[reproducible benchmark report](./bench/REPORT.md). See [conformance](./docs/conformance.md).
 
 ## Development
 
 ```sh
 pnpm install
-pnpm typecheck
-pnpm lint
-pnpm test
+pnpm check   # lint, build, typecheck, tests, conformance, reference, coverage
 ```
+
+## License
+
+MIT
