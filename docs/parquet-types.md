@@ -1,6 +1,6 @@
 # Parquet Types
 
-LaQL delegates physical Parquet decoding to `hyparquet` and keeps an explicit support posture for
+Lakeql delegates physical Parquet decoding to `hyparquet` and keeps an explicit support posture for
 nested columns. The rule is: decode correctly or reject before rows are returned.
 
 ## Supported And Tested
@@ -16,13 +16,13 @@ nested columns. The rule is: decode correctly or reject before rows are returned
 
 ## Detected And Rejected
 
-Struct columns are rejected with `LAQL_UNSUPPORTED_PARQUET_FEATURE`. `hyparquet` exposes struct
-leaves as sub-column data rather than assembling the parent object, so LaQL rejects unannotated
+Struct columns are rejected with `LAKEQL_UNSUPPORTED_PARQUET_FEATURE`. `hyparquet` exposes struct
+leaves as sub-column data rather than assembling the parent object, so Lakeql rejects unannotated
 group nodes before scanning or row-group planning. This prevents silent flattening from looking like
 a successful read.
 
 Decimals above precision 15 and timestamps with microsecond or nanosecond units are rejected with
-`LAQL_UNSUPPORTED_PARQUET_FEATURE`. The current JS-facing decode path would otherwise lose
+`LAKEQL_UNSUPPORTED_PARQUET_FEATURE`. The current JS-facing decode path would otherwise lose
 precision by returning wide decimals as numbers or sub-millisecond timestamps as `Date` values.
 
 The current Parquet type matrix is either supported and tested or detected and rejected. New logical

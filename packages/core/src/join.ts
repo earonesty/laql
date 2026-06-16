@@ -1,4 +1,4 @@
-import { LaQLError } from "./errors.js";
+import { LakeqlError } from "./errors.js";
 import { stableStringify } from "./manifest.js";
 import type { Row } from "./types.js";
 
@@ -117,17 +117,17 @@ function validateJoinOptions(
   const leftKeys = normalizeJoinKeys(options.leftKey, "leftKey", strategy);
   const rightKeys = normalizeJoinKeys(options.rightKey, "rightKey", strategy);
   if (leftKeys.length !== rightKeys.length) {
-    throw new LaQLError("LAQL_TYPE_ERROR", `${strategy} join key counts must match`, {
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", `${strategy} join key counts must match`, {
       leftKey: options.leftKey,
       rightKey: options.rightKey,
     });
   }
   if (leftKeys.length === 0) {
-    throw new LaQLError("LAQL_TYPE_ERROR", `${strategy} join requires leftKey and rightKey`);
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", `${strategy} join requires leftKey and rightKey`);
   }
   if (!Number.isInteger(options.maxRightRows) || options.maxRightRows < 1) {
-    throw new LaQLError(
-      "LAQL_TYPE_ERROR",
+    throw new LakeqlError(
+      "LAKEQL_TYPE_ERROR",
       `${strategy} join maxRightRows must be a positive integer`,
     );
   }
@@ -138,7 +138,7 @@ function validateJoinOptions(
     options.type !== "semi" &&
     options.type !== "anti"
   ) {
-    throw new LaQLError("LAQL_TYPE_ERROR", `${strategy} join type is not supported`, {
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", `${strategy} join type is not supported`, {
       type: options.type,
     });
   }
@@ -147,7 +147,7 @@ function validateJoinOptions(
 function normalizeJoinKeys(key: JoinKey, label: string, strategy: string): string[] {
   const keys = Array.isArray(key) ? key : [key];
   if (keys.some((column) => typeof column !== "string" || column.length === 0)) {
-    throw new LaQLError("LAQL_TYPE_ERROR", `${strategy} join ${label} must contain column names`, {
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", `${strategy} join ${label} must contain column names`, {
       [label]: key,
     });
   }
@@ -168,7 +168,7 @@ function joinValue(
 
 function scalarJoinValue(row: Row, column: string): string | number | boolean | bigint | null {
   if (!(column in row)) {
-    throw new LaQLError("LAQL_UNKNOWN_COLUMN", `Unknown join key ${column}`, { column });
+    throw new LakeqlError("LAKEQL_UNKNOWN_COLUMN", `Unknown join key ${column}`, { column });
   }
   const value = row[column];
   if (value === null || value === undefined) return null;
@@ -178,7 +178,7 @@ function scalarJoinValue(row: Row, column: string): string | number | boolean | 
     typeof value !== "boolean" &&
     typeof value !== "bigint"
   ) {
-    throw new LaQLError("LAQL_TYPE_ERROR", `Join key ${column} must be scalar`, { column });
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", `Join key ${column} must be scalar`, { column });
   }
   return value;
 }
@@ -198,8 +198,8 @@ function mergeRows(left: Row, right: Row, options: BroadcastJoinOptions | Lookup
 
 function enforceMaxRightRows(strategy: string, actual: number, limit: number): void {
   if (actual <= limit) return;
-  throw new LaQLError(
-    "LAQL_BUDGET_EXCEEDED",
+  throw new LakeqlError(
+    "LAKEQL_BUDGET_EXCEEDED",
     `${strategy} join exceeded maxRightRows (${actual} > ${limit})`,
     { metric: "maxRightRows", limit, actual },
   );

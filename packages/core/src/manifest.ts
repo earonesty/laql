@@ -1,4 +1,4 @@
-import { LaQLError } from "./errors.js";
+import { LakeqlError } from "./errors.js";
 import type { TaskInput } from "./query.js";
 import type { ObjectStore } from "./store.js";
 import type { Bookmark, BookmarkQuery } from "./types.js";
@@ -168,13 +168,13 @@ export async function readOutputManifest(
 ): Promise<OutputManifest> {
   const bytes = await store.get(path);
   if (!bytes) {
-    throw new LaQLError("LAQL_OBJECT_NOT_FOUND", `No output manifest at ${path}`, { path });
+    throw new LakeqlError("LAKEQL_OBJECT_NOT_FOUND", `No output manifest at ${path}`, { path });
   }
   try {
     return parseOutputManifest(JSON.parse(new TextDecoder().decode(bytes)));
   } catch (cause) {
-    if (cause instanceof LaQLError) throw cause;
-    throw new LaQLError("LAQL_VALIDATION_ERROR", "Output manifest is invalid JSON", {
+    if (cause instanceof LakeqlError) throw cause;
+    throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Output manifest is invalid JSON", {
       path,
       cause,
     });
@@ -208,7 +208,7 @@ export function createBookmark(init: BookmarkInit): Bookmark {
 
 export function assertBookmarkMatches(bookmark: Bookmark, planFingerprint: string): void {
   if (bookmark.planFingerprint !== planFingerprint) {
-    throw new LaQLError("LAQL_BOOKMARK_STALE", "Bookmark does not match the current query plan", {
+    throw new LakeqlError("LAKEQL_BOOKMARK_STALE", "Bookmark does not match the current query plan", {
       bookmarkPlanFingerprint: bookmark.planFingerprint,
       planFingerprint,
     });
@@ -286,7 +286,7 @@ export function transitionTaskCheckpoint(
 ): TaskCheckpoint {
   if (!existing) return createCheckpoint(input);
   if (existing.taskId !== input.taskId) {
-    throw new LaQLError("LAQL_VALIDATION_ERROR", "Task checkpoint id does not match transition", {
+    throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Task checkpoint id does not match transition", {
       existingTaskId: existing.taskId,
       taskId: input.taskId,
     });
@@ -297,14 +297,14 @@ export function transitionTaskCheckpoint(
   const stale =
     input.staleTimeoutMs !== undefined && input.nowMs - existing.updatedAtMs > input.staleTimeoutMs;
   if (existing.idempotencyKey !== input.idempotencyKey && !stale) {
-    throw new LaQLError("LAQL_VALIDATION_ERROR", "Task transition idempotency key mismatch", {
+    throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Task transition idempotency key mismatch", {
       taskId: input.taskId,
       existingIdempotencyKey: existing.idempotencyKey,
       idempotencyKey: input.idempotencyKey,
     });
   }
   if (!transitionAllowed(existing.state, input.nextState, stale)) {
-    throw new LaQLError("LAQL_VALIDATION_ERROR", "Task state transition is not allowed", {
+    throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Task state transition is not allowed", {
       taskId: input.taskId,
       from: existing.state,
       to: input.nextState,
@@ -384,7 +384,7 @@ function parseOutputManifest(value: unknown): OutputManifest {
     value.planFingerprint.length === 0 ||
     !Array.isArray(value.entries)
   ) {
-    throw new LaQLError("LAQL_VALIDATION_ERROR", "Output manifest has invalid required fields");
+    throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Output manifest has invalid required fields");
   }
   return createOutputManifest({
     jobId: value.jobId,
@@ -404,7 +404,7 @@ function parseOutputEntry(value: unknown): OutputManifestEntry {
     !isNonNegativeInteger(value.rowCount) ||
     !isNonNegativeInteger(value.byteSize)
   ) {
-    throw new LaQLError("LAQL_VALIDATION_ERROR", "Output manifest entry is invalid");
+    throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Output manifest entry is invalid");
   }
   const entry: OutputManifestEntry = {
     taskId: value.taskId,
@@ -415,13 +415,13 @@ function parseOutputEntry(value: unknown): OutputManifestEntry {
   };
   if (value.contentHash !== undefined) {
     if (typeof value.contentHash !== "string" || value.contentHash.length === 0) {
-      throw new LaQLError("LAQL_VALIDATION_ERROR", "Output manifest content hash is invalid");
+      throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Output manifest content hash is invalid");
     }
     entry.contentHash = value.contentHash;
   }
   if (value.etag !== undefined) {
     if (typeof value.etag !== "string" || value.etag.length === 0) {
-      throw new LaQLError("LAQL_VALIDATION_ERROR", "Output manifest etag is invalid");
+      throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Output manifest etag is invalid");
     }
     entry.etag = value.etag;
   }
@@ -436,7 +436,7 @@ function parseOutputIcebergMetadata(value: unknown): NonNullable<OutputManifestE
     !isNonNegativeInteger(value.fileSizeInBytes) ||
     !isStringRecord(value.partitionValues)
   ) {
-    throw new LaQLError("LAQL_VALIDATION_ERROR", "Output manifest Iceberg metadata is invalid");
+    throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Output manifest Iceberg metadata is invalid");
   }
   return {
     recordCount: value.recordCount,
@@ -892,7 +892,7 @@ function cloneCheckpoint(checkpoint: TaskCheckpoint): TaskCheckpoint {
 }
 
 function throwInvalidBookmark(message: string): never {
-  throw new LaQLError("LAQL_BOOKMARK_INVALID", message);
+  throw new LakeqlError("LAKEQL_BOOKMARK_INVALID", message);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

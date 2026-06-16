@@ -1,4 +1,4 @@
-import { LaQLError } from "./errors.js";
+import { LakeqlError } from "./errors.js";
 import type { Expr } from "./expr.js";
 
 export type IndexValue = string | number | bigint | boolean;
@@ -68,8 +68,8 @@ export function buildMinMaxIndex<T extends Record<string, unknown>>(
         continue;
       }
       if (!isIndexValue(value)) {
-        throw new LaQLError(
-          "LAQL_TYPE_ERROR",
+        throw new LakeqlError(
+          "LAKEQL_TYPE_ERROR",
           `Index column ${column} must contain scalar values`,
           {
             column,
@@ -104,7 +104,7 @@ export function buildBBoxIndex<T extends Record<string, unknown>>(
     maxy = Math.max(maxy, box.maxy);
   }
   if (!Number.isFinite(minx))
-    throw new LaQLError("LAQL_TYPE_ERROR", "Cannot index empty bbox rows");
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "Cannot index empty bbox rows");
   return { minx, miny, maxx, maxy };
 }
 
@@ -320,7 +320,7 @@ function rowBBox(
 function numberColumn(row: Record<string, unknown>, column: string): number {
   const value = row[column];
   if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new LaQLError("LAQL_TYPE_ERROR", `BBox column ${column} must be a finite number`, {
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", `BBox column ${column} must be a finite number`, {
       column,
     });
   }
@@ -336,7 +336,7 @@ function validateBBox(box: BBoxIndex): void {
     box.minx > box.maxx ||
     box.miny > box.maxy
   ) {
-    throw new LaQLError("LAQL_TYPE_ERROR", "BBox index bounds must be finite and ordered", { box });
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "BBox index bounds must be finite and ordered", { box });
   }
 }
 

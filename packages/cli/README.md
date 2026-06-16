@@ -1,6 +1,6 @@
 # lakeql-cli
 
-Command-line interface for querying, inspecting, writing, and compacting LaQL lake data.
+Command-line interface for querying, inspecting, writing, and compacting Lakeql lake data.
 
 ## Ownership
 

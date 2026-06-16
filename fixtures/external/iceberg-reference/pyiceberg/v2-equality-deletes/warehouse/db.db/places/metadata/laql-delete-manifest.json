@@ -7,5 +7,5 @@
     }
   ],
   "files": [],
-  "path": "warehouse/db.db/places/metadata/laql-delete-manifest.json"
+  "path": "warehouse/db.db/places/metadata/lakeql-delete-manifest.json"
 }

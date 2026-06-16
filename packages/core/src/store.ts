@@ -1,4 +1,4 @@
-import { LaQLError } from "./errors.js";
+import { LakeqlError } from "./errors.js";
 
 export interface PutOptions {
   contentType?: string;
@@ -131,7 +131,7 @@ export function readControlSignal(controls: ObjectStoreReadControls): AbortSigna
 
 export function throwIfAborted(signal: AbortSignal | undefined): void {
   if (!signal?.aborted) return;
-  throw new LaQLError("LAQL_ABORTED", "Query aborted", {
+  throw new LakeqlError("LAKEQL_ABORTED", "Query aborted", {
     reason: signal.reason instanceof Error ? signal.reason.message : signal.reason,
   });
 }
@@ -172,8 +172,8 @@ class ReadSemaphore {
 
   constructor(private readonly limit: number) {
     if (!Number.isInteger(limit) || limit < 1) {
-      throw new LaQLError(
-        "LAQL_VALIDATION_ERROR",
+      throw new LakeqlError(
+        "LAKEQL_VALIDATION_ERROR",
         "maxConcurrentReads must be a positive integer",
         {
           maxConcurrentReads: limit,
@@ -198,7 +198,7 @@ class ReadSemaphore {
         if (index >= 0) this.queue.splice(index, 1);
         cleanup();
         reject(
-          new LaQLError("LAQL_ABORTED", "Query aborted", {
+          new LakeqlError("LAKEQL_ABORTED", "Query aborted", {
             reason: signal?.reason instanceof Error ? signal.reason.message : signal?.reason,
           }),
         );

@@ -1,4 +1,4 @@
-import { LaQLError } from "lakeql-core";
+import { LakeqlError } from "lakeql-core";
 import { describe, expect, it } from "vitest";
 import { formatSql, parseSql } from "./index.js";
 
@@ -348,7 +348,7 @@ describe("parseSql", () => {
     expect(aggregateScalar).toMatchObject({
       where: {
         kind: "compare",
-        right: { kind: "call", fn: "__laql_scalar_subquery" },
+        right: { kind: "call", fn: "__lakeql_scalar_subquery" },
       },
       scalarSubqueries: {
         scalar_0: {
@@ -385,7 +385,7 @@ describe("parseSql", () => {
     expect(projectionScalar).toMatchObject({
       select: ["store_id"],
       projections: {
-        max_amount: { kind: "call", fn: "__laql_scalar_subquery" },
+        max_amount: { kind: "call", fn: "__lakeql_scalar_subquery" },
       },
       scalarSubqueries: {
         scalar_0: {
@@ -641,7 +641,7 @@ describe("parseSql", () => {
     expect(() =>
       formatSql({
         source: "t",
-        projections: { bad: { kind: "call", fn: "__laql_scalar_subquery", args: [] } },
+        projections: { bad: { kind: "call", fn: "__lakeql_scalar_subquery", args: [] } },
       }),
     ).toThrow(/Invalid scalar subquery/u);
     expect(() =>
@@ -650,7 +650,7 @@ describe("parseSql", () => {
         projections: {
           missing: {
             kind: "call",
-            fn: "__laql_scalar_subquery",
+            fn: "__lakeql_scalar_subquery",
             args: [{ kind: "literal", value: "scalar_0" }],
           },
         },
@@ -661,31 +661,31 @@ describe("parseSql", () => {
 
   it("throws typed parse errors", () => {
     expect(() => parseSql("select id from t; select id from t")).toThrow(/one SELECT/u);
-    expect(() => parseSql("delete from t")).toThrowError(LaQLError);
-    expect(() => parseSql("select from t")).toThrowError(LaQLError);
+    expect(() => parseSql("delete from t")).toThrowError(LakeqlError);
+    expect(() => parseSql("select from t")).toThrowError(LakeqlError);
     expect(() => parseSql("select id")).toThrow(/exactly one FROM/u);
-    expect(() => parseSql("from a select id from b")).toThrowError(LaQLError);
+    expect(() => parseSql("from a select id from b")).toThrowError(LakeqlError);
     expect(() => parseSql("select * as all_rows from t")).toThrow(/Aliases on SELECT \*/u);
     expect(() => parseSql("select id from t where id in 1")).toThrow(/IN subqueries/u);
-    expect(() => parseSql("select id from t where a between 1")).toThrowError(LaQLError);
+    expect(() => parseSql("select id from t where a between 1")).toThrowError(LakeqlError);
     expect(() => parseSql("select sum() as x from t")).toThrow(/requires exactly one/u);
     expect(() => parseSql("select id from t limit -1")).toThrow(/non-negative integer/u);
     expect(() => parseSql("select id from t where name like 1")).toThrow(/LIKE pattern/u);
-    expect(() => parseSql("select id from t where = 1")).toThrowError(LaQLError);
+    expect(() => parseSql("select id from t where = 1")).toThrowError(LakeqlError);
     expect(() => parseSql("select id + 1 from t")).toThrow(/explicit alias/u);
     expect(() => parseSql("select count(distinct *) as x from t")).toThrow(/COUNT\(DISTINCT \*\)/u);
-    expect(() => parseSql("select id from t group by ,")).toThrowError(LaQLError);
-    expect(() => parseSql("select id from t order by a nulls middle")).toThrowError(LaQLError);
-    expect(() => parseSql("select id from t where name = 'unterminated")).toThrowError(LaQLError);
-    expect(() => parseSql("select id from t where name = @bad")).toThrowError(LaQLError);
+    expect(() => parseSql("select id from t group by ,")).toThrowError(LakeqlError);
+    expect(() => parseSql("select id from t order by a nulls middle")).toThrowError(LakeqlError);
+    expect(() => parseSql("select id from t where name = 'unterminated")).toThrowError(LakeqlError);
+    expect(() => parseSql("select id from t where name = @bad")).toThrowError(LakeqlError);
     expect(() => parseSql("select id from t where id = (select id from t)")).toThrow(
       /Scalar subqueries/u,
     );
     expect(() => parseSql("select sum(distinct amount) as total from t")).toThrow(
       /Only COUNT\(DISTINCT x\)/u,
     );
-    expect(() => parseSql("select id from t where a ^ 1")).toThrowError(LaQLError);
-    expect(() => parseSql("select id from t where +a")).toThrowError(LaQLError);
+    expect(() => parseSql("select id from t where a ^ 1")).toThrowError(LakeqlError);
+    expect(() => parseSql("select id from t where +a")).toThrowError(LakeqlError);
     expect(() => formatSql({ source: "bad source" })).toThrow(/cannot be represented/u);
   });
 
@@ -705,10 +705,10 @@ describe("parseSql", () => {
     ];
 
     for (const sql of unsupported) {
-      expect(() => parseSql(sql)).toThrowError(LaQLError);
+      expect(() => parseSql(sql)).toThrowError(LakeqlError);
       expect(() => parseSql(sql)).toThrow(
         expect.objectContaining({
-          code: expect.stringMatching(/^LAQL_(PARSE_ERROR|SQL_UNSUPPORTED)$/u),
+          code: expect.stringMatching(/^LAKEQL_(PARSE_ERROR|SQL_UNSUPPORTED)$/u),
         }),
       );
     }

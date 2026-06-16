@@ -1,10 +1,10 @@
 # lakeql-sql
 
-Small SQL dialect parser and formatter for LaQL query ASTs.
+Small SQL dialect parser and formatter for Lakeql query ASTs.
 
 ## Ownership
 
-This package owns LaQL's intentionally small SQL subset. It converts documented SQL strings into
+This package owns Lakeql's intentionally small SQL subset. It converts documented SQL strings into
 core `PathQueryInit` query ASTs and formats those ASTs back to SQL.
 
 ## Public Surface
@@ -13,7 +13,7 @@ core `PathQueryInit` query ASTs and formats those ASTs back to SQL.
 - `formatSql(ast)` formats a `SqlQueryAst`.
 - `SqlQueryAst` extends the core path-query shape with optional `groupBy`, aggregates, and `having`.
 
-The parser uses `pgsql-ast-parser`, keeps LaQL's own size/depth guards, and rejects unsupported
+The parser uses `pgsql-ast-parser`, keeps Lakeql's own size/depth guards, and rejects unsupported
 join forms, complex CTEs, unsupported subqueries, and broader SQL execution with
-`LAQL_SQL_UNSUPPORTED`. Invalid SQL still throws `LAQL_PARSE_ERROR`. See
+`LAKEQL_SQL_UNSUPPORTED`. Invalid SQL still throws `LAKEQL_PARSE_ERROR`. See
 `docs/sql-dialect.md` for the supported syntax.

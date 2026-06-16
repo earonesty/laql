@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LaQLError } from "./errors.js";
+import { LakeqlError } from "./errors.js";
 import {
   and,
   between,
@@ -85,13 +85,13 @@ describe("logical builders", () => {
   });
 
   it("and/or reject fewer than 2 operands with a typed error", () => {
-    expect(() => and(eq("a", 1))).toThrowError(LaQLError);
+    expect(() => and(eq("a", 1))).toThrowError(LakeqlError);
     try {
       or();
     } catch (e) {
-      expect(e).toBeInstanceOf(LaQLError);
-      expect((e as LaQLError).code).toBe("LAQL_TYPE_ERROR");
-      expect((e as LaQLError).details.received).toBe(0);
+      expect(e).toBeInstanceOf(LakeqlError);
+      expect((e as LakeqlError).code).toBe("LAKEQL_TYPE_ERROR");
+      expect((e as LakeqlError).details.received).toBe(0);
     }
   });
 

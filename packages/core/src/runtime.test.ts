@@ -104,7 +104,7 @@ describe("runtime substrate helpers", () => {
     await expect(spill.usage()).resolves.toEqual({ entries: 1, byteSize: 1 });
     await spill.delete(ref);
     await expect(spill.usage()).resolves.toEqual({ entries: 0, byteSize: 0 });
-    await expect(spill.read(ref)).rejects.toMatchObject({ code: "LAQL_OBJECT_NOT_FOUND" });
+    await expect(spill.read(ref)).rejects.toMatchObject({ code: "LAKEQL_OBJECT_NOT_FOUND" });
   });
 
   it("enforces spill byte budgets with typed failures", async () => {
@@ -113,11 +113,11 @@ describe("runtime substrate helpers", () => {
     await spill.write("b", new Uint8Array([3, 4]));
 
     await expect(spill.write("c", new Uint8Array([5]))).rejects.toMatchObject({
-      code: "LAQL_BUDGET_EXCEEDED",
+      code: "LAKEQL_BUDGET_EXCEEDED",
       details: { metric: "spill bytes", limit: 4, actual: 5 },
     });
     await expect(spill.write("", new Uint8Array([1]))).rejects.toMatchObject({
-      code: "LAQL_TYPE_ERROR",
+      code: "LAKEQL_TYPE_ERROR",
     });
     await spill.write("b", new Uint8Array([3]));
     await expect(spill.usage()).resolves.toEqual({ entries: 2, byteSize: 3 });

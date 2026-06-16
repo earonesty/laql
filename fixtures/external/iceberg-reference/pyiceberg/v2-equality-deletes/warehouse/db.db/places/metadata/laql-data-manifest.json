@@ -8,5 +8,5 @@
       "sequenceNumber": 1
     }
   ],
-  "path": "warehouse/db.db/places/metadata/laql-data-manifest.json"
+  "path": "warehouse/db.db/places/metadata/lakeql-data-manifest.json"
 }

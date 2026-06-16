@@ -6,7 +6,7 @@ import {
   createLake,
   eq,
   gt,
-  LaQLError,
+  LakeqlError,
   loadIcebergTable,
   loadTable,
   memoryStore,
@@ -20,7 +20,7 @@ import {
 it("re-exports the core surface", () => {
   const expr = and(eq("region", "west"), gt("amount", 100));
   expect(expr.kind).toBe("logical");
-  expect(new LaQLError("LAQL_PARSE_ERROR", "x").code).toBe("LAQL_PARSE_ERROR");
+  expect(new LakeqlError("LAKEQL_PARSE_ERROR", "x").code).toBe("LAKEQL_PARSE_ERROR");
   expect(createLake).toBeTypeOf("function");
   expect(readParquetObjects).toBeTypeOf("function");
   expect(writePartitionedParquet).toBeTypeOf("function");

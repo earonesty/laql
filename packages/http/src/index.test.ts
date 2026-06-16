@@ -1,4 +1,4 @@
-import { LaQLError } from "lakeql-core";
+import { LakeqlError } from "lakeql-core";
 import { describe, expect, it } from "vitest";
 import { httpStore } from "./index.js";
 
@@ -84,15 +84,15 @@ describe("httpStore", () => {
     await expect(store.head("missing.parquet")).resolves.toBeNull();
     await expect(
       store.getRange("missing.parquet", { offset: 0, length: 1 }),
-    ).rejects.toBeInstanceOf(LaQLError);
+    ).rejects.toBeInstanceOf(LakeqlError);
     await expect(
       store.getRange("missing.parquet", { offset: -1, length: 1 }),
-    ).rejects.toMatchObject({ code: "LAQL_OBJECT_NOT_FOUND" });
+    ).rejects.toMatchObject({ code: "LAKEQL_OBJECT_NOT_FOUND" });
     await expect(async () => {
       for await (const _object of store.list("")) {
         // unreachable
       }
-    }).rejects.toMatchObject({ code: "LAQL_UNSUPPORTED_PUSHDOWN" });
+    }).rejects.toMatchObject({ code: "LAKEQL_UNSUPPORTED_PUSHDOWN" });
   });
 
   it("throws typed errors for bad head metadata and failed responses", async () => {
@@ -100,13 +100,13 @@ describe("httpStore", () => {
       baseUrl: "https://example.test/",
       fetch: async () => new Response(null, { status: 200 }),
     });
-    await expect(noLength.head("x")).rejects.toMatchObject({ code: "LAQL_OBJECT_NOT_FOUND" });
+    await expect(noLength.head("x")).rejects.toMatchObject({ code: "LAKEQL_OBJECT_NOT_FOUND" });
 
     const failed = httpStore({
       baseUrl: "https://example.test/",
       fetch: async () => new Response(null, { status: 500 }),
     });
-    await expect(failed.get("x")).rejects.toMatchObject({ code: "LAQL_OBJECT_NOT_FOUND" });
+    await expect(failed.get("x")).rejects.toMatchObject({ code: "LAKEQL_OBJECT_NOT_FOUND" });
   });
 
   it("keeps object paths inside the configured base URL", async () => {
@@ -123,16 +123,16 @@ describe("httpStore", () => {
     await store.get("dir/file name?#.parquet");
     expect(seen).toEqual(["https://example.test/data/prefix/dir/file%20name%3F%23.parquet"]);
     await expect(store.get("https://evil.test/file")).rejects.toMatchObject({
-      code: "LAQL_VALIDATION_ERROR",
+      code: "LAKEQL_VALIDATION_ERROR",
     });
     await expect(store.get("//evil.test/file")).rejects.toMatchObject({
-      code: "LAQL_VALIDATION_ERROR",
+      code: "LAKEQL_VALIDATION_ERROR",
     });
     await expect(store.get("../secret")).rejects.toMatchObject({
-      code: "LAQL_VALIDATION_ERROR",
+      code: "LAKEQL_VALIDATION_ERROR",
     });
     await expect(store.get("%2e%2e/secret")).rejects.toMatchObject({
-      code: "LAQL_VALIDATION_ERROR",
+      code: "LAKEQL_VALIDATION_ERROR",
     });
     expect(seen).toHaveLength(1);
   });

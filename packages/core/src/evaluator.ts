@@ -1,7 +1,7 @@
 import { booleanContains } from "@turf/boolean-contains";
 import { booleanIntersects } from "@turf/boolean-intersects";
 import { cellToParent, gridDisk, isValidCell, latLngToCell } from "h3-js";
-import { LaQLError } from "./errors.js";
+import { LakeqlError } from "./errors.js";
 import type { Expr, Scalar } from "./expr.js";
 import type { Row } from "./types.js";
 
@@ -98,7 +98,7 @@ export function encodeJsonLine(row: Row): Uint8Array {
 
 function rowValue(row: Row, name: string): EvalValue {
   if (!(name in row)) {
-    throw new LaQLError("LAQL_UNKNOWN_COLUMN", `Unknown column ${name}`, { column: name });
+    throw new LakeqlError("LAKEQL_UNKNOWN_COLUMN", `Unknown column ${name}`, { column: name });
   }
   const value = row[name];
   if (
@@ -110,7 +110,7 @@ function rowValue(row: Row, name: string): EvalValue {
   ) {
     return value;
   }
-  throw new LaQLError("LAQL_TYPE_ERROR", `Column ${name} is not a scalar value`, {
+  throw new LakeqlError("LAKEQL_TYPE_ERROR", `Column ${name} is not a scalar value`, {
     column: name,
     valueType: typeof value,
   });
@@ -119,7 +119,7 @@ function rowValue(row: Row, name: string): EvalValue {
 function toSqlBoolean(value: EvalValue): SqlBoolean {
   if (value === null) return null;
   if (typeof value === "boolean") return value;
-  throw new LaQLError("LAQL_TYPE_ERROR", "Predicate expression must evaluate to boolean", {
+  throw new LakeqlError("LAKEQL_TYPE_ERROR", "Predicate expression must evaluate to boolean", {
     value,
   });
 }
@@ -127,7 +127,7 @@ function toSqlBoolean(value: EvalValue): SqlBoolean {
 function compare(op: "eq" | "ne" | "lt" | "lte" | "gt" | "gte", left: EvalValue, right: EvalValue) {
   if (left === null || right === null) return null;
   if (typeof left !== typeof right && !(isNumberLike(left) && isNumberLike(right))) {
-    throw new LaQLError("LAQL_TYPE_ERROR", "Cannot compare values of different types", {
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "Cannot compare values of different types", {
       leftType: typeof left,
       rightType: typeof right,
     });
@@ -156,7 +156,7 @@ function arithmetic(
 ): EvalValue {
   if (left === null || right === null) return null;
   if (typeof left !== "number" || typeof right !== "number") {
-    throw new LaQLError("LAQL_TYPE_ERROR", "Arithmetic expressions require numeric values", {
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "Arithmetic expressions require numeric values", {
       leftType: typeof left,
       rightType: typeof right,
     });
@@ -210,7 +210,7 @@ function sqlNot(value: SqlBoolean): SqlBoolean {
 function likeMatch(value: EvalValue, pattern: string, caseInsensitive: boolean): SqlBoolean {
   if (value === null) return null;
   if (typeof value !== "string") {
-    throw new LaQLError("LAQL_TYPE_ERROR", "LIKE expects a string value", {
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "LIKE expects a string value", {
       valueType: typeof value,
     });
   }
@@ -307,7 +307,7 @@ function callFunction(name: string, args: EvalValue[]): EvalValue {
     case "h3_parent":
       return h3Parent(args);
     default:
-      throw new LaQLError("LAQL_UNSUPPORTED_PUSHDOWN", `Unsupported scalar function ${name}`, {
+      throw new LakeqlError("LAKEQL_UNSUPPORTED_PUSHDOWN", `Unsupported scalar function ${name}`, {
         function: name,
       });
   }
@@ -315,7 +315,7 @@ function callFunction(name: string, args: EvalValue[]): EvalValue {
 
 function requireArgCount(name: string, args: EvalValue[], expected: number): void {
   if (args.length !== expected) {
-    throw new LaQLError("LAQL_TYPE_ERROR", `${name}() expects ${expected} arguments`, {
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", `${name}() expects ${expected} arguments`, {
       expected,
       received: args.length,
     });
@@ -346,7 +346,7 @@ function substr(args: EvalValue[]): EvalValue {
   if (value === null || start === null || length === null) return null;
   if (typeof value !== "string") throwType("substr", "string", value);
   if (typeof start !== "number" || typeof length !== "number") {
-    throw new LaQLError("LAQL_TYPE_ERROR", "substr() start and length must be numbers");
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "substr() start and length must be numbers");
   }
   return value.slice(start, start + length);
 }
@@ -359,7 +359,7 @@ function replace(args: EvalValue[]): EvalValue {
   if (value === null || search === null || replacement === null) return null;
   if (typeof value !== "string") throwType("replace", "string", value);
   if (typeof search !== "string" || typeof replacement !== "string") {
-    throw new LaQLError("LAQL_TYPE_ERROR", "replace() search and replacement must be strings");
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "replace() search and replacement must be strings");
   }
   return value.replaceAll(search, replacement);
 }
@@ -368,7 +368,7 @@ function stPoint(args: EvalValue[]): EvalValue {
   requireArgCount("st_point", args, 2);
   const [lon, lat] = args;
   if (!finiteNumber(lon) || !finiteNumber(lat)) {
-    throw new LaQLError("LAQL_TYPE_ERROR", "st_point() expects finite lon/lat numbers");
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "st_point() expects finite lon/lat numbers");
   }
   return JSON.stringify({ type: "Point", coordinates: [lon, lat] });
 }
@@ -384,10 +384,10 @@ function stBBox(args: EvalValue[]): EvalValue {
   requireArgCount("st_bbox", args, 4);
   const [minx, miny, maxx, maxy] = args;
   if (!finiteNumber(minx) || !finiteNumber(miny) || !finiteNumber(maxx) || !finiteNumber(maxy)) {
-    throw new LaQLError("LAQL_TYPE_ERROR", "st_bbox() expects finite number bounds");
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "st_bbox() expects finite number bounds");
   }
   if (minx > maxx || miny > maxy) {
-    throw new LaQLError("LAQL_TYPE_ERROR", "st_bbox() bounds must be ordered min <= max");
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "st_bbox() bounds must be ordered min <= max");
   }
   return JSON.stringify({ type: "BBox", minx, miny, maxx, maxy });
 }
@@ -454,8 +454,8 @@ function toGeometry(parsed: Record<string, unknown>, name: string): GeoJsonGeome
     case "BBox":
       return { type: "Polygon", coordinates: [bboxRing(bboxFromRecord(parsed, name))] };
     default:
-      throw new LaQLError(
-        "LAQL_TYPE_ERROR",
+      throw new LakeqlError(
+        "LAKEQL_TYPE_ERROR",
         `${name}() supports Point, LineString, Polygon, or BBox geometry`,
       );
   }
@@ -474,11 +474,11 @@ function bboxRing(box: BBox): [number, number][] {
 function polygonRings(record: Record<string, unknown>, name: string): [number, number][][] {
   const rings = record.coordinates;
   if (!Array.isArray(rings) || rings.length === 0) {
-    throw new LaQLError("LAQL_TYPE_ERROR", `${name}() Polygon coordinates are invalid`);
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", `${name}() Polygon coordinates are invalid`);
   }
   return rings.map((ring) => {
     if (!Array.isArray(ring) || ring.length === 0 || !ring.every(isPosition)) {
-      throw new LaQLError("LAQL_TYPE_ERROR", `${name}() Polygon coordinates are invalid`);
+      throw new LakeqlError("LAKEQL_TYPE_ERROR", `${name}() Polygon coordinates are invalid`);
     }
     return closeRing(ring);
   });
@@ -535,11 +535,11 @@ function h3In(args: EvalValue[]): EvalValue {
   const cells = args[1] ?? null;
   if (cell === null || cells === null) return null;
   if (typeof cell !== "string" || typeof cells !== "string") {
-    throw new LaQLError("LAQL_TYPE_ERROR", "h3_in() expects a string cell and JSON cell list");
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "h3_in() expects a string cell and JSON cell list");
   }
   const parsed: unknown = JSON.parse(cells);
   if (!Array.isArray(parsed) || !parsed.every((value) => typeof value === "string")) {
-    throw new LaQLError("LAQL_TYPE_ERROR", "h3_in() cell list must be a JSON string array");
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "h3_in() cell list must be a JSON string array");
   }
   return parsed.includes(cell);
 }
@@ -551,12 +551,12 @@ function h3Within(args: EvalValue[]): EvalValue {
   const k = args[2] ?? null;
   if (cell === null || origin === null || k === null) return null;
   if (typeof cell !== "string" || typeof origin !== "string") {
-    throw new LaQLError("LAQL_TYPE_ERROR", "h3_within() expects string cells");
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "h3_within() expects string cells");
   }
   validateH3Cell(cell, "cell");
   validateH3Cell(origin, "origin");
   if (typeof k !== "number" || !Number.isInteger(k) || k < 0) {
-    throw new LaQLError("LAQL_TYPE_ERROR", "h3_within() expects a non-negative integer radius");
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "h3_within() expects a non-negative integer radius");
   }
   return gridDisk(origin, k).includes(cell);
 }
@@ -567,10 +567,10 @@ function h3Cell(args: EvalValue[]): EvalValue {
   const lon = args[1] ?? null;
   const res = args[2] ?? null;
   if (!finiteNumber(lat) || !finiteNumber(lon)) {
-    throw new LaQLError("LAQL_TYPE_ERROR", "h3_cell() expects finite lat/lon numbers");
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "h3_cell() expects finite lat/lon numbers");
   }
   if (typeof res !== "number" || !Number.isInteger(res) || res < 0 || res > 15) {
-    throw new LaQLError("LAQL_TYPE_ERROR", "h3_cell() expects an integer resolution 0..15");
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "h3_cell() expects an integer resolution 0..15");
   }
   return latLngToCell(lat, lon, res);
 }
@@ -583,14 +583,14 @@ function h3Parent(args: EvalValue[]): EvalValue {
   if (typeof cell !== "string") throwType("h3_parent", "string", cell);
   validateH3Cell(cell, "cell");
   if (typeof res !== "number" || !Number.isInteger(res) || res < 0 || res > 15) {
-    throw new LaQLError("LAQL_TYPE_ERROR", "h3_parent() expects an integer resolution 0..15");
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "h3_parent() expects an integer resolution 0..15");
   }
   return cellToParent(cell, res);
 }
 
 function validateH3Cell(cell: string, label: string): void {
   if (!isValidCell(cell)) {
-    throw new LaQLError("LAQL_TYPE_ERROR", `h3 cell ${label} is invalid`, { cell });
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", `h3 cell ${label} is invalid`, { cell });
   }
 }
 
@@ -604,12 +604,12 @@ function parseGeometry(value: EvalValue, name: string): Record<string, unknown> 
   try {
     parsed = JSON.parse(value);
   } catch (cause) {
-    throw new LaQLError("LAQL_TYPE_ERROR", `${name}() received invalid geometry JSON`, {
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", `${name}() received invalid geometry JSON`, {
       cause,
     });
   }
   if (!isRecord(parsed) || typeof parsed.type !== "string") {
-    throw new LaQLError("LAQL_TYPE_ERROR", `${name}() expects GeoJSON or BBox JSON`);
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", `${name}() expects GeoJSON or BBox JSON`);
   }
   return parsed;
 }
@@ -619,8 +619,8 @@ function envelopeFromGeometry(parsed: Record<string, unknown>, name: string): BB
   if (parsed.type === "Point") return pointEnvelope(parsed, name);
   if (parsed.type === "LineString") return lineStringEnvelope(parsed, name);
   if (parsed.type === "Polygon") return polygonEnvelope(parsed, name);
-  throw new LaQLError(
-    "LAQL_TYPE_ERROR",
+  throw new LakeqlError(
+    "LAKEQL_TYPE_ERROR",
     `${name}() supports Point, LineString, Polygon, or BBox geometry`,
   );
 }
@@ -628,7 +628,7 @@ function envelopeFromGeometry(parsed: Record<string, unknown>, name: string): BB
 function bboxFromRecord(record: Record<string, unknown>, name: string): BBox {
   const { minx, miny, maxx, maxy } = record;
   if (!finiteNumber(minx) || !finiteNumber(miny) || !finiteNumber(maxx) || !finiteNumber(maxy)) {
-    throw new LaQLError("LAQL_TYPE_ERROR", `${name}() BBox values must be finite numbers`);
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", `${name}() BBox values must be finite numbers`);
   }
   return { minx, miny, maxx, maxy };
 }
@@ -702,7 +702,7 @@ function geometryArea(geometry: Record<string, unknown>, name: string): number {
   }
   if (geometry.type === "Polygon") return Math.abs(ringArea(polygonPoints(geometry, name)));
   if (geometry.type === "Point" || geometry.type === "LineString") return 0;
-  throw new LaQLError("LAQL_TYPE_ERROR", `${name}() unsupported geometry type`, {
+  throw new LakeqlError("LAKEQL_TYPE_ERROR", `${name}() unsupported geometry type`, {
     type: geometry.type,
   });
 }
@@ -715,7 +715,7 @@ function geometryLength(geometry: Record<string, unknown>, name: string): number
   if (geometry.type === "LineString") return pathLength(lineStringPoints(geometry, name));
   if (geometry.type === "Polygon") return pathLength(polygonPoints(geometry, name));
   if (geometry.type === "Point") return 0;
-  throw new LaQLError("LAQL_TYPE_ERROR", `${name}() unsupported geometry type`, {
+  throw new LakeqlError("LAKEQL_TYPE_ERROR", `${name}() unsupported geometry type`, {
     type: geometry.type,
   });
 }
@@ -730,7 +730,7 @@ function geometryCentroid(geometry: Record<string, unknown>): string {
 
 function pointFromGeometry(record: Record<string, unknown>, name: string): [number, number] {
   if (record.type !== "Point" || !isPosition(record.coordinates)) {
-    throw new LaQLError("LAQL_TYPE_ERROR", `${name}() Point coordinates are invalid`);
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", `${name}() Point coordinates are invalid`);
   }
   return record.coordinates;
 }
@@ -738,7 +738,7 @@ function pointFromGeometry(record: Record<string, unknown>, name: string): [numb
 function lineStringPoints(record: Record<string, unknown>, name: string): [number, number][] {
   const points = record.coordinates;
   if (!Array.isArray(points) || points.length === 0 || !points.every(isPosition)) {
-    throw new LaQLError("LAQL_TYPE_ERROR", `${name}() LineString coordinates are invalid`);
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", `${name}() LineString coordinates are invalid`);
   }
   return points;
 }
@@ -746,11 +746,11 @@ function lineStringPoints(record: Record<string, unknown>, name: string): [numbe
 function polygonPoints(record: Record<string, unknown>, name: string): [number, number][] {
   const rings = record.coordinates;
   if (!Array.isArray(rings)) {
-    throw new LaQLError("LAQL_TYPE_ERROR", `${name}() Polygon coordinates are invalid`);
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", `${name}() Polygon coordinates are invalid`);
   }
   const points = rings.flat();
   if (points.length === 0 || !points.every(isPosition)) {
-    throw new LaQLError("LAQL_TYPE_ERROR", `${name}() Polygon coordinates are invalid`);
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", `${name}() Polygon coordinates are invalid`);
   }
   return points;
 }
@@ -813,7 +813,7 @@ function cast(args: EvalValue[]): EvalValue {
     case "boolean":
       return Boolean(value);
     default:
-      throw new LaQLError("LAQL_TYPE_ERROR", `Unsupported cast target ${target}`, { target });
+      throw new LakeqlError("LAKEQL_TYPE_ERROR", `Unsupported cast target ${target}`, { target });
   }
 }
 
@@ -841,12 +841,12 @@ function dateTrunc(args: EvalValue[]): EvalValue {
   if (part === "hour") {
     return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}T${pad(date.getUTCHours())}:00:00.000Z`;
   }
-  throw new LaQLError("LAQL_TYPE_ERROR", `Unsupported date_trunc part ${part}`, { part });
+  throw new LakeqlError("LAKEQL_TYPE_ERROR", `Unsupported date_trunc part ${part}`, { part });
 }
 
 function round(args: EvalValue[]): EvalValue {
   if (args.length < 1 || args.length > 2) {
-    throw new LaQLError("LAQL_TYPE_ERROR", "round() expects 1 or 2 arguments", {
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "round() expects 1 or 2 arguments", {
       received: args.length,
     });
   }
@@ -854,7 +854,7 @@ function round(args: EvalValue[]): EvalValue {
   const places = args[1] ?? 0;
   if (value === null || places === null) return null;
   if (typeof value !== "number" || typeof places !== "number") {
-    throw new LaQLError("LAQL_TYPE_ERROR", "round() arguments must be numbers");
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "round() arguments must be numbers");
   }
   const scale = 10 ** places;
   return Math.round(value * scale) / scale;
@@ -862,7 +862,7 @@ function round(args: EvalValue[]): EvalValue {
 
 function leastGreatest(name: string, args: EvalValue[], mode: "least" | "greatest"): EvalValue {
   if (args.length === 0) {
-    throw new LaQLError("LAQL_TYPE_ERROR", `${name}() expects at least 1 argument`);
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", `${name}() expects at least 1 argument`);
   }
   if (args.some((value) => value === null)) return null;
   let best = args[0] ?? null;
@@ -877,13 +877,13 @@ function parseDateArg(name: string, value: EvalValue): Date | null {
   if (typeof value !== "string" && typeof value !== "number") throwType(name, "date string", value);
   const date = new Date(value);
   if (Number.isNaN(date.valueOf())) {
-    throw new LaQLError("LAQL_TYPE_ERROR", `${name}() received an invalid date`, { value });
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", `${name}() received an invalid date`, { value });
   }
   return date;
 }
 
 function throwType(name: string, expected: string, value: EvalValue): never {
-  throw new LaQLError("LAQL_TYPE_ERROR", `${name}() expects ${expected}`, {
+  throw new LakeqlError("LAKEQL_TYPE_ERROR", `${name}() expects ${expected}`, {
     expected,
     received: typeof value,
   });

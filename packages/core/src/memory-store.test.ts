@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LaQLError } from "./errors.js";
+import { LakeqlError } from "./errors.js";
 import { memoryStore } from "./memory-store.js";
 import type { ObjectStore } from "./store.js";
 import { readControlSignal, throwIfAborted, withObjectStoreReadControls } from "./store.js";
@@ -30,9 +30,9 @@ describe("MemoryObjectStore", () => {
     expect(await store.getRange("x", { offset: 2, length: 3 })).toEqual(enc.encode("234"));
     expect(await store.getRange("x", { offset: 0, length: 10 })).toEqual(enc.encode("0123456789"));
 
-    await expect(store.getRange("x", { offset: 8, length: 5 })).rejects.toThrowError(LaQLError);
+    await expect(store.getRange("x", { offset: 8, length: 5 })).rejects.toThrowError(LakeqlError);
     await expect(store.getRange("missing", { offset: 0, length: 1 })).rejects.toMatchObject({
-      code: "LAQL_OBJECT_NOT_FOUND",
+      code: "LAKEQL_OBJECT_NOT_FOUND",
     });
   });
 
@@ -140,9 +140,9 @@ describe("MemoryObjectStore", () => {
     const second = controlled.get("second");
     controller.abort("stop");
 
-    await expect(second).rejects.toMatchObject({ code: "LAQL_ABORTED" });
+    await expect(second).rejects.toMatchObject({ code: "LAKEQL_ABORTED" });
     releaseRead?.();
-    await expect(first).rejects.toMatchObject({ code: "LAQL_ABORTED" });
+    await expect(first).rejects.toMatchObject({ code: "LAKEQL_ABORTED" });
     expect(peak).toBe(1);
   });
 
@@ -170,7 +170,7 @@ describe("MemoryObjectStore", () => {
 
   it("validates maxConcurrentReads", () => {
     expect(() => withObjectStoreReadControls(memoryStore(), { maxConcurrentReads: 0 })).toThrow(
-      LaQLError,
+      LakeqlError,
     );
   });
 
@@ -235,19 +235,19 @@ describe("MemoryObjectStore", () => {
     expect(() => throwIfAborted(controller.signal)).toThrow("Query aborted");
     expect(() => controlled.put("b", enc.encode("b"))).toThrow(
       expect.objectContaining({
-        code: "LAQL_ABORTED",
+        code: "LAKEQL_ABORTED",
         details: { reason: "cancelled" },
       }),
     );
     expect(() => controlled.delete("a")).toThrow(
       expect.objectContaining({
-        code: "LAQL_ABORTED",
+        code: "LAKEQL_ABORTED",
       }),
     );
     await expect(async () => {
       for await (const _object of controlled.list("")) {
         // The abort check happens before iteration starts.
       }
-    }).rejects.toMatchObject({ code: "LAQL_ABORTED" });
+    }).rejects.toMatchObject({ code: "LAKEQL_ABORTED" });
   });
 });

@@ -1,5 +1,5 @@
 import {
-  LaQLError,
+  LakeqlError,
   type ListOptions,
   type ObjectHead,
   type ObjectInfo,
@@ -52,7 +52,7 @@ export class R2ObjectStore implements ObjectStore {
 
   async getRange(path: string, range: { offset: number; length: number }): Promise<Uint8Array> {
     const object = await this.bucket.get(path, { range });
-    if (!object) throw new LaQLError("LAQL_OBJECT_NOT_FOUND", `No object at ${path}`, { path });
+    if (!object) throw new LakeqlError("LAKEQL_OBJECT_NOT_FOUND", `No object at ${path}`, { path });
     return new Uint8Array(await object.arrayBuffer());
   }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LaQLError } from "./errors.js";
+import { LakeqlError } from "./errors.js";
 import { and, between, col, eq, fn, gt, isIn, isNull, like, lit, not, or } from "./expr.js";
 import { createBookmark } from "./manifest.js";
 import { memoryStore } from "./memory-store.js";
@@ -184,7 +184,7 @@ describe("Lake query runtime", () => {
     });
 
     await expect(lake.path("table").select(["region"]).distinct().toArray()).rejects.toMatchObject({
-      code: "LAQL_BUDGET_EXCEEDED",
+      code: "LAKEQL_BUDGET_EXCEEDED",
       details: { metric: "buffered rows", limit: 1 },
     });
   });
@@ -203,14 +203,14 @@ describe("Lake query runtime", () => {
         .orderBy([{ column: "id" }])
         .limit(1)
         .topKWithState(),
-    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_TYPE_ERROR" });
     await expect(
       lake
         .path("table")
         .distinct()
         .orderBy([{ column: "id" }])
         .sortWithState(),
-    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_TYPE_ERROR" });
   });
 
   it("supports first, count, batches, NDJSON, JSON, and CSV streams", async () => {
@@ -521,7 +521,7 @@ describe("Lake query runtime", () => {
   });
 
   it("throws typed parse and validation errors", async () => {
-    expect(() => parseJsonQuery(null)).toThrowError(LaQLError);
+    expect(() => parseJsonQuery(null)).toThrowError(LakeqlError);
     expect(() => parseJsonQuery({ version: 2, from: "t" })).toThrow(/version must be 1/u);
     expect(() => parseJsonQuery({ version: 1, from: 3 })).toThrow(/from must be a string/u);
     expect(() => parseJsonQuery({ version: 1, from: "t", select: [1] })).toThrow(/select must be/u);
@@ -554,13 +554,13 @@ describe("Lake query runtime", () => {
     const { lake } = await makeLake({ rowsByPath: { table: [{ id: 1, value: 3 }] } });
 
     await expect(lake.path("missing").toArray()).rejects.toMatchObject({
-      code: "LAQL_OBJECT_NOT_FOUND",
+      code: "LAKEQL_OBJECT_NOT_FOUND",
     });
     await expect(lake.path("table").select(["missing"]).toArray()).rejects.toMatchObject({
-      code: "LAQL_UNKNOWN_COLUMN",
+      code: "LAKEQL_UNKNOWN_COLUMN",
     });
     await expect(lake.path("table").where(gt("missing", 1)).toArray()).rejects.toMatchObject({
-      code: "LAQL_UNKNOWN_COLUMN",
+      code: "LAKEQL_UNKNOWN_COLUMN",
     });
   });
 
@@ -586,7 +586,7 @@ describe("Lake query runtime", () => {
     ]);
     expect(scanner.requestedColumns[0]).toEqual(["id", "tenant", "visible"]);
 
-    expect(() => lake.path("table").select(["secret"]).toArray()).toThrowError(LaQLError);
+    expect(() => lake.path("table").select(["secret"]).toArray()).toThrowError(LakeqlError);
     expect(() => lake.path("table").select(["secret"]).toArray()).toThrow(/disallowed/u);
     expect(() => lake.path("table").where(eq("secret", "x")).toArray()).toThrow(/disallowed/u);
     expect(() =>
@@ -625,10 +625,10 @@ describe("Lake query runtime", () => {
     expect(result.stats.queryId).toBe("q_substrate");
     expect(result.stats.elapsedMs).toBe(35);
     expect(counts).toEqual([
-      { name: "laql.query.created", value: 1, tags: { queryId: "q_substrate" } },
+      { name: "lakeql.query.created", value: 1, tags: { queryId: "q_substrate" } },
     ]);
     expect(timings).toEqual([
-      { name: "laql.query.elapsed", ms: 35, tags: { queryId: "q_substrate" } },
+      { name: "lakeql.query.elapsed", ms: 35, tags: { queryId: "q_substrate" } },
     ]);
   });
 
@@ -646,24 +646,24 @@ describe("Lake query runtime", () => {
     await expect(
       (await makeLake({ rowsByPath, budget: { maxFiles: 0 } })).lake.path("table").toArray(),
     ).rejects.toMatchObject({
-      code: "LAQL_BUDGET_EXCEEDED",
+      code: "LAKEQL_BUDGET_EXCEEDED",
     });
     await expect(
       (await makeLake({ rowsByPath, budget: { maxBytes: 1 } })).lake.path("table").toArray(),
     ).rejects.toMatchObject({
-      code: "LAQL_BUDGET_EXCEEDED",
+      code: "LAKEQL_BUDGET_EXCEEDED",
     });
     await expect(
       (await makeLake({ rowsByPath, budget: { maxRowsDecoded: 1 } })).lake.path("table").toArray(),
-    ).rejects.toMatchObject({ code: "LAQL_BUDGET_EXCEEDED" });
+    ).rejects.toMatchObject({ code: "LAKEQL_BUDGET_EXCEEDED" });
     await expect(
       (await makeLake({ rowsByPath, budget: { maxOutputRows: 1 } })).lake.path("table").toArray(),
-    ).rejects.toMatchObject({ code: "LAQL_BUDGET_EXCEEDED" });
+    ).rejects.toMatchObject({ code: "LAKEQL_BUDGET_EXCEEDED" });
     await expect(
       (await makeLake({ rowsByPath, budget: { maxRangeRequests: 0 } })).lake
         .path("table")
         .toArray(),
-    ).rejects.toMatchObject({ code: "LAQL_BUDGET_EXCEEDED" });
+    ).rejects.toMatchObject({ code: "LAKEQL_BUDGET_EXCEEDED" });
 
     let now = 0;
     await expect(
@@ -679,7 +679,7 @@ describe("Lake query runtime", () => {
       ).lake
         .path("table")
         .toArray(),
-    ).rejects.toMatchObject({ code: "LAQL_BUDGET_EXCEEDED" });
+    ).rejects.toMatchObject({ code: "LAKEQL_BUDGET_EXCEEDED" });
   });
 
   it("handles empty JSON streams and no-match predicates", async () => {
@@ -724,7 +724,7 @@ describe("Lake query runtime", () => {
     });
     await store.put("table", new Uint8Array([1, 2, 3, 4]));
     await expect(lake.resume(first.bookmark).run({ slice: { maxRows: 2 } })).rejects.toMatchObject({
-      code: "LAQL_BOOKMARK_STALE",
+      code: "LAKEQL_BOOKMARK_STALE",
     });
 
     const replayed: Row[] = [];
@@ -839,7 +839,7 @@ describe("Lake query runtime", () => {
         .orderBy([{ column: "id" }])
         .toArray(),
     ).rejects.toMatchObject({
-      code: "LAQL_BUDGET_EXCEEDED",
+      code: "LAKEQL_BUDGET_EXCEEDED",
       details: { metric: "buffered rows", limit: 2, actual: 3 },
     });
 
@@ -876,7 +876,7 @@ describe("Lake query runtime", () => {
         .limit(2)
         .toArray(),
     ).rejects.toMatchObject({
-      code: "LAQL_BUDGET_EXCEEDED",
+      code: "LAKEQL_BUDGET_EXCEEDED",
       details: { metric: "buffered rows", limit: 2, actual: 3 },
     });
 
@@ -892,7 +892,7 @@ describe("Lake query runtime", () => {
         .limit(1)
         .toArray(),
     ).rejects.toMatchObject({
-      code: "LAQL_BUDGET_EXCEEDED",
+      code: "LAKEQL_BUDGET_EXCEEDED",
       details: { metric: "operator memory bytes", limit: 1 },
     });
   });
@@ -932,13 +932,13 @@ describe("Lake query runtime", () => {
         .path("table")
         .orderBy([{ column: "missing" }])
         .toArray(),
-    ).rejects.toMatchObject({ code: "LAQL_UNKNOWN_COLUMN" });
+    ).rejects.toMatchObject({ code: "LAKEQL_UNKNOWN_COLUMN" });
     await expect(
       lake
         .path("table")
         .orderBy([{ column: "value" }])
         .toArray(),
-    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_TYPE_ERROR" });
 
     const mixed = await makeLake({
       rowsByPath: { table: [{ value: 1 }, { value: "two" }] },
@@ -948,7 +948,7 @@ describe("Lake query runtime", () => {
         .path("table")
         .orderBy([{ column: "value" }])
         .toArray(),
-    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_TYPE_ERROR" });
   });
 
   it("serializes and resumes top-k operator state", async () => {
@@ -1005,7 +1005,7 @@ describe("Lake query runtime", () => {
         .orderBy([{ column: "id" }])
         .limit(3)
         .topKWithState({ operatorState: { spillRef: "topk-state" } }),
-    ).rejects.toMatchObject({ code: "LAQL_BOOKMARK_INVALID" });
+    ).rejects.toMatchObject({ code: "LAKEQL_BOOKMARK_INVALID" });
 
     await expect(
       second.lake
@@ -1013,21 +1013,21 @@ describe("Lake query runtime", () => {
         .orderBy([{ column: "id", direction: "desc" }])
         .limit(3)
         .topKWithState({ operatorState: partial.operatorState }),
-    ).rejects.toMatchObject({ code: "LAQL_BOOKMARK_STALE" });
+    ).rejects.toMatchObject({ code: "LAKEQL_BOOKMARK_STALE" });
     await expect(
       second.lake
         .path("table")
         .orderBy([{ column: "id" }])
         .limit(2)
         .topKWithState({ operatorState: partial.operatorState }),
-    ).rejects.toMatchObject({ code: "LAQL_BOOKMARK_STALE" });
+    ).rejects.toMatchObject({ code: "LAKEQL_BOOKMARK_STALE" });
     await expect(
       second.lake
         .path("table")
         .orderBy([{ column: "id" }])
         .limit(3)
         .topKWithState({ operatorState: new TextEncoder().encode("{}") }),
-    ).rejects.toMatchObject({ code: "LAQL_BOOKMARK_INVALID" });
+    ).rejects.toMatchObject({ code: "LAKEQL_BOOKMARK_INVALID" });
 
     const nested = await makeLake({
       rowsByPath: { table: [{ id: 1, payload: { nested: true } }] },
@@ -1039,7 +1039,7 @@ describe("Lake query runtime", () => {
         .orderBy([{ column: "id" }])
         .limit(1)
         .topKWithState(),
-    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_TYPE_ERROR" });
   });
 
   it("serializes and resumes full sort operator state", async () => {
@@ -1116,19 +1116,19 @@ describe("Lake query runtime", () => {
         .path("table")
         .orderBy([{ column: "id" }])
         .sortWithState({ operatorState: spilled.operatorState }),
-    ).rejects.toMatchObject({ code: "LAQL_BOOKMARK_INVALID" });
+    ).rejects.toMatchObject({ code: "LAKEQL_BOOKMARK_INVALID" });
     await expect(
       second.lake
         .path("table")
         .orderBy([{ column: "id", direction: "desc" }])
         .sortWithState({ operatorState: partial.operatorState }),
-    ).rejects.toMatchObject({ code: "LAQL_BOOKMARK_STALE" });
+    ).rejects.toMatchObject({ code: "LAKEQL_BOOKMARK_STALE" });
     await expect(
       second.lake
         .path("table")
         .orderBy([{ column: "id" }])
         .sortWithState({ operatorState: new TextEncoder().encode("{}") }),
-    ).rejects.toMatchObject({ code: "LAQL_BOOKMARK_INVALID" });
+    ).rejects.toMatchObject({ code: "LAKEQL_BOOKMARK_INVALID" });
   });
 
   it("propagates typed spill budget failures through stateful operators", async () => {
@@ -1147,7 +1147,7 @@ describe("Lake query runtime", () => {
         .limit(2)
         .topKWithState({ spill: memorySpillAdapter({ maxBytes: 1 }) }),
     ).rejects.toMatchObject({
-      code: "LAQL_BUDGET_EXCEEDED",
+      code: "LAKEQL_BUDGET_EXCEEDED",
       details: { metric: "spill bytes", limit: 1 },
     });
 
@@ -1157,7 +1157,7 @@ describe("Lake query runtime", () => {
         .orderBy([{ column: "id" }])
         .sortWithState({ spill: memorySpillAdapter({ maxBytes: 1 }) }),
     ).rejects.toMatchObject({
-      code: "LAQL_BUDGET_EXCEEDED",
+      code: "LAKEQL_BUDGET_EXCEEDED",
       details: { metric: "spill bytes", limit: 1 },
     });
 
@@ -1170,7 +1170,7 @@ describe("Lake query runtime", () => {
           { spill: memorySpillAdapter({ maxBytes: 1 }) },
         ),
     ).rejects.toMatchObject({
-      code: "LAQL_BUDGET_EXCEEDED",
+      code: "LAKEQL_BUDGET_EXCEEDED",
       details: { metric: "spill bytes", limit: 1 },
     });
   });
@@ -1180,7 +1180,7 @@ describe("Lake query runtime", () => {
     const query = lake.path("table");
 
     await expect(query.run({ slice: { maxRows: 0 } })).rejects.toMatchObject({
-      code: "LAQL_TYPE_ERROR",
+      code: "LAKEQL_TYPE_ERROR",
     });
     await expect(
       query.run({
@@ -1193,7 +1193,7 @@ describe("Lake query runtime", () => {
           }),
         },
       }),
-    ).rejects.toMatchObject({ code: "LAQL_BOOKMARK_STALE" });
+    ).rejects.toMatchObject({ code: "LAKEQL_BOOKMARK_STALE" });
     expect(() =>
       lake
         .resume(
@@ -1204,7 +1204,7 @@ describe("Lake query runtime", () => {
           }),
         )
         .run({ slice: { maxRows: 1 } }),
-    ).toThrowError(LaQLError);
+    ).toThrowError(LakeqlError);
   });
 
   it("aggregates grouped rows with bounded group counts", async () => {
@@ -1272,7 +1272,7 @@ describe("Lake query runtime", () => {
         .path("table")
         .groupBy(["region"])
         .aggregate({ rows: { op: "count" } }, { maxGroups: 1 }),
-    ).rejects.toMatchObject({ code: "LAQL_GROUP_LIMIT_EXCEEDED" });
+    ).rejects.toMatchObject({ code: "LAKEQL_GROUP_LIMIT_EXCEEDED" });
 
     await expect(
       (await makeLake({ rowsByPath, budget: { maxMemoryBytes: 1 } })).lake
@@ -1280,7 +1280,7 @@ describe("Lake query runtime", () => {
         .groupBy(["region"])
         .aggregate({ rows: { op: "count" } }),
     ).rejects.toMatchObject({
-      code: "LAQL_BUDGET_EXCEEDED",
+      code: "LAKEQL_BUDGET_EXCEEDED",
       details: { metric: "operator memory bytes", limit: 1 },
     });
 
@@ -1307,7 +1307,7 @@ describe("Lake query runtime", () => {
         .groupBy(["region"])
         .aggregate({ rows: { op: "count" } }),
     ).rejects.toMatchObject({
-      code: "LAQL_BUDGET_EXCEEDED",
+      code: "LAKEQL_BUDGET_EXCEEDED",
       details: { metric: "output rows", limit: 1, actual: 2 },
     });
   });
@@ -1525,20 +1525,20 @@ describe("Lake query runtime", () => {
         .path("table")
         .groupBy(["region"])
         .aggregateWithState(spec, { operatorState: { spillRef: "agg-state" } }),
-    ).rejects.toMatchObject({ code: "LAQL_BOOKMARK_INVALID" });
+    ).rejects.toMatchObject({ code: "LAKEQL_BOOKMARK_INVALID" });
 
     await expect(
       second.lake
         .path("table")
         .groupBy(["tenant"])
         .aggregateWithState(spec, { operatorState: partial.operatorState }),
-    ).rejects.toMatchObject({ code: "LAQL_BOOKMARK_STALE" });
+    ).rejects.toMatchObject({ code: "LAKEQL_BOOKMARK_STALE" });
     await expect(
       second.lake
         .path("table")
         .groupBy(["region"])
         .aggregateWithState(spec, { operatorState: new TextEncoder().encode("{}") }),
-    ).rejects.toMatchObject({ code: "LAQL_BOOKMARK_INVALID" });
+    ).rejects.toMatchObject({ code: "LAKEQL_BOOKMARK_INVALID" });
 
     const missingState = deserializeAggregateOperatorState(partial.operatorState);
     delete missingState.groups[0]?.states.rows;
@@ -1547,7 +1547,7 @@ describe("Lake query runtime", () => {
         .path("table")
         .groupBy(["region"])
         .aggregateWithState(spec, { operatorState: missingState }),
-    ).rejects.toMatchObject({ code: "LAQL_BOOKMARK_INVALID" });
+    ).rejects.toMatchObject({ code: "LAKEQL_BOOKMARK_INVALID" });
 
     const mismatchedState = deserializeAggregateOperatorState(partial.operatorState);
     const rowsState = mismatchedState.groups[0]?.states.rows;
@@ -1557,7 +1557,7 @@ describe("Lake query runtime", () => {
         .path("table")
         .groupBy(["region"])
         .aggregateWithState(spec, { operatorState: mismatchedState }),
-    ).rejects.toMatchObject({ code: "LAQL_BOOKMARK_INVALID" });
+    ).rejects.toMatchObject({ code: "LAKEQL_BOOKMARK_INVALID" });
 
     expect(() =>
       deserializeAggregateOperatorState({ version: 1, groupColumns: [], spec: {}, groups: [{}] }),
@@ -1570,7 +1570,7 @@ describe("Lake query runtime", () => {
         .path("table")
         .groupBy(["region"])
         .aggregateWithState({ firstPayload: { op: "first", column: "payload" } }),
-    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_TYPE_ERROR" });
   });
 
   it("validates aggregate requests and value types", async () => {
@@ -1585,21 +1585,21 @@ describe("Lake query runtime", () => {
         .path("table")
         .groupBy([""])
         .aggregate({ rows: { op: "count" } }),
-    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_TYPE_ERROR" });
     await expect(lake.path("table").groupBy(["region"]).aggregate({})).rejects.toMatchObject({
-      code: "LAQL_TYPE_ERROR",
+      code: "LAKEQL_TYPE_ERROR",
     });
     await expect(
       lake
         .path("table")
         .groupBy(["region"])
         .aggregate({ total: { op: "sum", column: "amount" } }),
-    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_TYPE_ERROR" });
     await expect(
       lake
         .path("table")
         .groupBy(["missing"])
         .aggregate({ rows: { op: "count" } }),
-    ).rejects.toMatchObject({ code: "LAQL_UNKNOWN_COLUMN" });
+    ).rejects.toMatchObject({ code: "LAKEQL_UNKNOWN_COLUMN" });
   });
 });

@@ -20,7 +20,7 @@ const plan = planFiles(table, {
 });
 ```
 
-For object-store table layouts, load by table location. LaQL first reads
+For object-store table layouts, load by table location. Lakeql first reads
 `metadata/version-hint.text`, then falls back to listing `metadata/vN.metadata.json`
 files and choosing the highest version:
 
@@ -56,7 +56,7 @@ name:
 const row = table.projectRow({ id: 1, country: "US" }, { select: ["id", "nation"] });
 ```
 
-Strict mode includes supported Iceberg position and equality delete files in the plan and throws `LAQL_UNSUPPORTED_DELETE_FILES` for unknown delete formats, including deletion-vector metadata. Use `ignore-deletes` only when raw scans are acceptable; use `ignore-unsupported-deletes` to carry supported delete metadata while dropping unsupported formats.
+Strict mode includes supported Iceberg position and equality delete files in the plan and throws `LAKEQL_UNSUPPORTED_DELETE_FILES` for unknown delete formats, including deletion-vector metadata. Use `ignore-deletes` only when raw scans are acceptable; use `ignore-unsupported-deletes` to carry supported delete metadata while dropping unsupported formats.
 
 `planFiles(table, options)` is the standalone planning contract. `IcebergTable.planFiles(options)` remains as a thin alias. Plans report `deleteFilesPlanned` and `deleteFilesIgnored` so callers can audit delete handling without walking every planned file.
 
@@ -74,7 +74,7 @@ for await (const rows of scanPlannedIcebergRows({
 
 `readIcebergParquetDeletes` decodes Iceberg position-delete and equality-delete
 Parquet files. Deletion-vector metadata is rejected by strict planning because vector
-decoding is not implemented in LaQL.
+decoding is not implemented in Lakeql.
 
 `applyIcebergDeletes` is also available when a caller already has decoded delete rows and wants to filter one data-file batch directly. This low-level helper can apply caller-supplied decoded deletion-vector positions, but `planFiles` will not plan deletion-vector metadata as supported:
 

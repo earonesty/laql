@@ -122,35 +122,35 @@ describe("broadcastJoin", () => {
         rightKey: "id",
         maxRightRows: 1,
       }),
-    ).rejects.toMatchObject({ code: "LAQL_BUDGET_EXCEEDED" });
+    ).rejects.toMatchObject({ code: "LAKEQL_BUDGET_EXCEEDED" });
     await expect(
       broadcastJoin([{ id: 1 }], [{ id: 1 }], {
         leftKey: "",
         rightKey: "id",
         maxRightRows: 1,
       }),
-    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_TYPE_ERROR" });
     await expect(
       broadcastJoin([{ id: 1 }], [{ id: 1 }], {
         leftKey: ["id", "tenant"],
         rightKey: ["id"],
         maxRightRows: 1,
       }),
-    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_TYPE_ERROR" });
     await expect(
       broadcastJoin([{ id: 1 }], [{ missing: 1 }], {
         leftKey: "id",
         rightKey: "id",
         maxRightRows: 1,
       }),
-    ).rejects.toMatchObject({ code: "LAQL_UNKNOWN_COLUMN" });
+    ).rejects.toMatchObject({ code: "LAKEQL_UNKNOWN_COLUMN" });
     await expect(
       broadcastJoin([{ id: { nested: true } }], [{ id: { nested: true } }], {
         leftKey: "id",
         rightKey: "id",
         maxRightRows: 1,
       }),
-    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_TYPE_ERROR" });
     await expect(
       broadcastJoin([{ id: 1 }], [{ id: 1 }], {
         leftKey: "id",
@@ -158,7 +158,7 @@ describe("broadcastJoin", () => {
         maxRightRows: 1,
         type: "outer" as never,
       }),
-    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_TYPE_ERROR" });
   });
 });
 
@@ -299,27 +299,27 @@ describe("lookupJoin", () => {
         rightKey: "id",
         maxRightRows: 1,
       }),
-    ).rejects.toMatchObject({ code: "LAQL_BUDGET_EXCEEDED" });
+    ).rejects.toMatchObject({ code: "LAKEQL_BUDGET_EXCEEDED" });
     await expect(
       lookupJoin([{ id: 1 }], () => [{ id: 1 }], {
         leftKey: "",
         rightKey: "id",
         maxRightRows: 1,
       }),
-    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_TYPE_ERROR" });
     await expect(
       lookupJoin([{ id: 1 }], () => [{ missing: 1 }], {
         leftKey: "id",
         rightKey: "id",
         maxRightRows: 1,
       }),
-    ).rejects.toMatchObject({ code: "LAQL_UNKNOWN_COLUMN" });
+    ).rejects.toMatchObject({ code: "LAKEQL_UNKNOWN_COLUMN" });
     await expect(
       lookupJoin([{ id: { nested: true } }], () => [], {
         leftKey: "id",
         rightKey: "id",
         maxRightRows: 1,
       }),
-    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_TYPE_ERROR" });
   });
 });

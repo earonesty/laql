@@ -1,6 +1,6 @@
 # lakeql-s3
 
-S3-compatible SigV4 object-store adapter for LaQL.
+S3-compatible SigV4 object-store adapter for Lakeql.
 
 ## Ownership
 

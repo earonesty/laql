@@ -9,7 +9,7 @@ import {
   gt,
   isIn,
   isNull,
-  LaQLError,
+  LakeqlError,
   like,
   lit,
   memoryStore,
@@ -215,7 +215,7 @@ describe("loadIcebergTable", () => {
     });
 
     await expect(catalog.listTables()).rejects.toMatchObject({
-      code: "LAQL_CATALOG_ERROR",
+      code: "LAKEQL_CATALOG_ERROR",
     });
   });
 
@@ -384,7 +384,7 @@ describe("loadIcebergTable", () => {
         ],
       }),
     ).rejects.toMatchObject({
-      code: "LAQL_VALIDATION_ERROR",
+      code: "LAKEQL_VALIDATION_ERROR",
       details: { formatVersion: 1 },
     });
   });
@@ -1264,7 +1264,7 @@ describe("loadIcebergTable", () => {
         metadataPath,
       });
 
-      expect(() => table.planFiles()).toThrowError(LaQLError);
+      expect(() => table.planFiles()).toThrowError(LakeqlError);
       expect(() => table.planFiles()).toThrow(/delete files/u);
       expect(
         table.planFiles({ readMode: "ignore-unsupported-deletes" }).files[0]?.deleteFiles,
@@ -1313,7 +1313,7 @@ describe("loadIcebergTable", () => {
         rows: [{ id: 1 }],
         positionDeletes: [{ path: "data/a.parquet", position: -1 }],
       }),
-    ).toThrowError(LaQLError);
+    ).toThrowError(LakeqlError);
 
     expect(() =>
       applyIcebergDeletes({
@@ -1451,7 +1451,7 @@ describe("loadIcebergTable", () => {
       })) {
         // The abort check happens before reads start.
       }
-    }).rejects.toMatchObject({ code: "LAQL_ABORTED" });
+    }).rejects.toMatchObject({ code: "LAKEQL_ABORTED" });
 
     const abortAfterDelete = new AbortController();
     let dataReads = 0;
@@ -1470,7 +1470,7 @@ describe("loadIcebergTable", () => {
       })) {
         // The abort check happens after delete reads and before data reads.
       }
-    }).rejects.toMatchObject({ code: "LAQL_ABORTED" });
+    }).rejects.toMatchObject({ code: "LAKEQL_ABORTED" });
     expect(dataReads).toBe(0);
   });
 
@@ -1496,7 +1496,7 @@ describe("loadIcebergTable", () => {
       })) {
         // The timeout is checked after the slow data read returns.
       }
-    }).rejects.toMatchObject({ code: "LAQL_ABORTED" });
+    }).rejects.toMatchObject({ code: "LAKEQL_ABORTED" });
   });
 
   it("applies fixture equality delete files while scanning planned Parquet rows", async () => {
@@ -1858,7 +1858,7 @@ describe("loadIcebergTable", () => {
     });
 
     await expect(table.appendOutputManifest({ manifest })).rejects.toMatchObject({
-      code: "LAQL_VALIDATION_ERROR",
+      code: "LAKEQL_VALIDATION_ERROR",
     });
   });
 
@@ -1947,7 +1947,7 @@ describe("loadIcebergTable", () => {
           },
         ],
       }),
-    ).rejects.toMatchObject({ code: "LAQL_ICEBERG_COMMIT_CONFLICT" });
+    ).rejects.toMatchObject({ code: "LAKEQL_ICEBERG_COMMIT_CONFLICT" });
 
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({
@@ -1993,7 +1993,7 @@ describe("loadIcebergTable", () => {
           },
         ],
       }),
-    ).rejects.toMatchObject({ code: "LAQL_ICEBERG_COMMIT_CONFLICT" });
+    ).rejects.toMatchObject({ code: "LAKEQL_ICEBERG_COMMIT_CONFLICT" });
   });
 
   it("requires conditional writes for default object-store appends", async () => {
@@ -2024,7 +2024,7 @@ describe("loadIcebergTable", () => {
           },
         ],
       }),
-    ).rejects.toMatchObject({ code: "LAQL_CATALOG_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_CATALOG_ERROR" });
   });
 
   it("treats version-hint compare-and-swap failure as an append conflict", async () => {
@@ -2056,7 +2056,7 @@ describe("loadIcebergTable", () => {
           },
         ],
       }),
-    ).rejects.toMatchObject({ code: "LAQL_ICEBERG_COMMIT_CONFLICT" });
+    ).rejects.toMatchObject({ code: "LAKEQL_ICEBERG_COMMIT_CONFLICT" });
   });
 
   it("turns REST catalog commit conflicts into Iceberg commit conflicts", async () => {
@@ -2085,7 +2085,7 @@ describe("loadIcebergTable", () => {
           },
         ],
       }),
-    ).rejects.toMatchObject({ code: "LAQL_ICEBERG_COMMIT_CONFLICT" });
+    ).rejects.toMatchObject({ code: "LAKEQL_ICEBERG_COMMIT_CONFLICT" });
   });
 
   it("rejects malformed Iceberg REST load responses", async () => {
@@ -2097,7 +2097,7 @@ describe("loadIcebergTable", () => {
         table: "places",
         fetch: async () => jsonResponse({ metadata: {} }),
       }),
-    ).rejects.toMatchObject({ code: "LAQL_CATALOG_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_CATALOG_ERROR" });
 
     await expect(
       loadIcebergTableFromRest({
@@ -2107,7 +2107,7 @@ describe("loadIcebergTable", () => {
         table: "places",
         fetch: async () => new Response("nope", { status: 200 }),
       }),
-    ).rejects.toMatchObject({ code: "LAQL_CATALOG_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_CATALOG_ERROR" });
 
     await expect(
       loadIcebergTableFromRest({
@@ -2117,7 +2117,7 @@ describe("loadIcebergTable", () => {
         table: "places",
         fetch: async () => jsonResponse({ error: { message: "boom" } }, 500),
       }),
-    ).rejects.toMatchObject({ code: "LAQL_CATALOG_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_CATALOG_ERROR" });
 
     expect(() =>
       icebergRestCatalog({
@@ -2136,13 +2136,13 @@ describe("loadIcebergTable", () => {
 
     for (const catalog of catalogs) {
       await expect(catalog.loadTable(store)).rejects.toMatchObject({
-        code: "LAQL_CATALOG_ERROR",
+        code: "LAKEQL_CATALOG_ERROR",
       });
       await expect(catalog.listTables()).rejects.toMatchObject({
-        code: "LAQL_CATALOG_ERROR",
+        code: "LAKEQL_CATALOG_ERROR",
       });
       await expect(catalog.commitAppend({} as IcebergCommitInput)).rejects.toMatchObject({
-        code: "LAQL_CATALOG_ERROR",
+        code: "LAKEQL_CATALOG_ERROR",
       });
     }
 
@@ -2156,30 +2156,30 @@ describe("loadIcebergTable", () => {
 
   it("fails loudly for missing or malformed metadata", async () => {
     await expect(loadIcebergTable({ store, metadataPath: "missing.json" })).rejects.toMatchObject({
-      code: "LAQL_OBJECT_NOT_FOUND",
+      code: "LAKEQL_OBJECT_NOT_FOUND",
     });
 
     await store.put("bad.json", new TextEncoder().encode('{"format-version":3}'));
     await expect(loadIcebergTable({ store, metadataPath: "bad.json" })).rejects.toMatchObject({
-      code: "LAQL_CATALOG_ERROR",
+      code: "LAKEQL_CATALOG_ERROR",
     });
 
     await store.put("bad-syntax.json", new TextEncoder().encode("{"));
     await expect(
       loadIcebergTable({ store, metadataPath: "bad-syntax.json" }),
     ).rejects.toMatchObject({
-      code: "LAQL_CATALOG_ERROR",
+      code: "LAKEQL_CATALOG_ERROR",
     });
 
     await store.put("null.json", new TextEncoder().encode("null"));
     await expect(loadIcebergTable({ store, metadataPath: "null.json" })).rejects.toMatchObject({
-      code: "LAQL_CATALOG_ERROR",
+      code: "LAKEQL_CATALOG_ERROR",
     });
 
     await store.put("missing-arrays.json", new TextEncoder().encode('{"format-version":2}'));
     await expect(
       loadIcebergTable({ store, metadataPath: "missing-arrays.json" }),
-    ).rejects.toMatchObject({ code: "LAQL_CATALOG_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_CATALOG_ERROR" });
 
     await store.put(
       "invalid-required.json",
@@ -2187,7 +2187,7 @@ describe("loadIcebergTable", () => {
     );
     await expect(
       loadIcebergTable({ store, metadataPath: "invalid-required.json" }),
-    ).rejects.toMatchObject({ code: "LAQL_CATALOG_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_CATALOG_ERROR" });
 
     const badHintStore = memoryStore();
     await badHintStore.put(
@@ -2196,11 +2196,11 @@ describe("loadIcebergTable", () => {
     );
     await expect(
       loadIcebergTableFromObjectStore({ store: badHintStore, tableLocation: "tables/bad" }),
-    ).rejects.toMatchObject({ code: "LAQL_CATALOG_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_CATALOG_ERROR" });
 
     await expect(
       loadIcebergTableFromObjectStore({ store: memoryStore(), tableLocation: "tables/missing" }),
-    ).rejects.toMatchObject({ code: "LAQL_OBJECT_NOT_FOUND" });
+    ).rejects.toMatchObject({ code: "LAKEQL_OBJECT_NOT_FOUND" });
 
     const missingManifestStore = memoryStore();
     await missingManifestStore.put(
@@ -2227,7 +2227,7 @@ describe("loadIcebergTable", () => {
     );
     await expect(
       loadIcebergTable({ store: missingManifestStore, metadataPath: "metadata.json" }),
-    ).rejects.toMatchObject({ code: "LAQL_OBJECT_NOT_FOUND" });
+    ).rejects.toMatchObject({ code: "LAKEQL_OBJECT_NOT_FOUND" });
 
     const malformedManifestStore = memoryStore();
     await malformedManifestStore.put(
@@ -2255,7 +2255,7 @@ describe("loadIcebergTable", () => {
     await malformedManifestStore.put("bad.manifest.json", new TextEncoder().encode("{}"));
     await expect(
       loadIcebergTable({ store: malformedManifestStore, metadataPath: "metadata.json" }),
-    ).rejects.toMatchObject({ code: "LAQL_CATALOG_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_CATALOG_ERROR" });
 
     const missingManifestListStore = memoryStore();
     await missingManifestListStore.put(
@@ -2282,7 +2282,7 @@ describe("loadIcebergTable", () => {
     );
     await expect(
       loadIcebergTable({ store: missingManifestListStore, metadataPath: "metadata.json" }),
-    ).rejects.toMatchObject({ code: "LAQL_OBJECT_NOT_FOUND" });
+    ).rejects.toMatchObject({ code: "LAKEQL_OBJECT_NOT_FOUND" });
 
     const malformedManifestListStore = memoryStore();
     await malformedManifestListStore.put(
@@ -2310,7 +2310,7 @@ describe("loadIcebergTable", () => {
     await malformedManifestListStore.put("bad.manifest-list.json", new TextEncoder().encode("{}"));
     await expect(
       loadIcebergTable({ store: malformedManifestListStore, metadataPath: "metadata.json" }),
-    ).rejects.toMatchObject({ code: "LAQL_CATALOG_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_CATALOG_ERROR" });
 
     await malformedManifestListStore.put(
       "bad.manifest-list.json",
@@ -2318,7 +2318,7 @@ describe("loadIcebergTable", () => {
     );
     await expect(
       loadIcebergTable({ store: malformedManifestListStore, metadataPath: "metadata.json" }),
-    ).rejects.toMatchObject({ code: "LAQL_CATALOG_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_CATALOG_ERROR" });
   });
 
   it("rejects unsupported Iceberg metadata features before planning", async () => {
@@ -2350,7 +2350,7 @@ describe("loadIcebergTable", () => {
     await expect(
       loadIcebergTable({ store, metadataPath: "unsupported-partition-transform.json" }),
     ).rejects.toMatchObject({
-      code: "LAQL_UNSUPPORTED_ICEBERG_FEATURE",
+      code: "LAKEQL_UNSUPPORTED_ICEBERG_FEATURE",
       details: { transform: "bucket[16]" },
     });
 
@@ -2370,7 +2370,7 @@ describe("loadIcebergTable", () => {
     );
     await expect(
       loadIcebergTable({ store, metadataPath: "unsupported-sort-order.json" }),
-    ).rejects.toMatchObject({ code: "LAQL_UNSUPPORTED_ICEBERG_FEATURE" });
+    ).rejects.toMatchObject({ code: "LAKEQL_UNSUPPORTED_ICEBERG_FEATURE" });
 
     await store.put(
       "unsupported-feature-flags.json",
@@ -2384,7 +2384,7 @@ describe("loadIcebergTable", () => {
     await expect(
       loadIcebergTable({ store, metadataPath: "unsupported-feature-flags.json" }),
     ).rejects.toMatchObject({
-      code: "LAQL_UNSUPPORTED_ICEBERG_FEATURE",
+      code: "LAKEQL_UNSUPPORTED_ICEBERG_FEATURE",
       details: { featureProperty: "features" },
     });
 
@@ -2447,7 +2447,7 @@ describe("loadIcebergTable", () => {
     await expect(
       loadIcebergTable({ store: manifestListStore, metadataPath: "metadata.json" }),
     ).rejects.toMatchObject({
-      code: "LAQL_UNSUPPORTED_ICEBERG_FEATURE",
+      code: "LAKEQL_UNSUPPORTED_ICEBERG_FEATURE",
       details: { content: 9 },
     });
   });
@@ -2527,10 +2527,10 @@ describe("loadIcebergTable", () => {
         metadataPath: "metadata.json",
         signal: controller.signal,
       }),
-    ).rejects.toMatchObject({ code: "LAQL_ABORTED" });
+    ).rejects.toMatchObject({ code: "LAKEQL_ABORTED" });
     await expect(
       loadIcebergTable({ store: slowStore, metadataPath: "metadata.json", maxElapsedMs: 1 }),
-    ).rejects.toMatchObject({ code: "LAQL_ABORTED" });
+    ).rejects.toMatchObject({ code: "LAKEQL_ABORTED" });
   });
 
   it("rejects unsafe manifest-sourced paths before store reads", async () => {
@@ -2571,7 +2571,7 @@ describe("loadIcebergTable", () => {
     );
     await expect(
       loadIcebergTable({ store: unsafeDataPathStore, metadataPath: "metadata.json" }),
-    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_VALIDATION_ERROR" });
 
     const unsafeManifestRefStore = memoryStore();
     await unsafeManifestRefStore.put(
@@ -2598,13 +2598,13 @@ describe("loadIcebergTable", () => {
     );
     await expect(
       loadIcebergTable({ store: unsafeManifestRefStore, metadataPath: "metadata.json" }),
-    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_VALIDATION_ERROR" });
   });
 
   it("validates append inputs and snapshot schemas", async () => {
     const table = await loadIcebergTable({ store, metadataPath: ICEBERG.metadataFile });
     await expect(table.appendFiles({ files: [] })).rejects.toMatchObject({
-      code: "LAQL_VALIDATION_ERROR",
+      code: "LAKEQL_VALIDATION_ERROR",
     });
 
     const badSchemaStore = memoryStore();

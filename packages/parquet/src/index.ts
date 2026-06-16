@@ -6,7 +6,7 @@ import {
   type Expr,
   Lake,
   type LakeConfig,
-  LaQLError,
+  LakeqlError,
   type ObjectStore,
   type OutputManifest,
   type OutputManifestEntry,
@@ -174,7 +174,7 @@ export async function asyncBufferFromStore(
   throwIfAborted(options?.budget.signal);
   const head = await controlledStore.head(path);
   if (!head) {
-    throw new LaQLError("LAQL_OBJECT_NOT_FOUND", `No object at ${path}`, { path });
+    throw new LakeqlError("LAKEQL_OBJECT_NOT_FOUND", `No object at ${path}`, { path });
   }
   const buffer: StoreAsyncBuffer = {
     byteLength: head.size,
@@ -255,8 +255,8 @@ export async function* readParquetObjectBatches(
       rowGroupStart = rowGroupEnd;
     }
   } catch (cause) {
-    if (cause instanceof LaQLError) throw cause;
-    throw new LaQLError("LAQL_PARQUET_READ_ERROR", `Failed to read ${path}`, { path, cause });
+    if (cause instanceof LakeqlError) throw cause;
+    throw new LakeqlError("LAKEQL_PARQUET_READ_ERROR", `Failed to read ${path}`, { path, cause });
   }
 }
 
@@ -289,8 +289,8 @@ export async function readIcebergParquetDeletes(
         equalityDeletes: decodeEqualityDeleteRows(await readParquetObjects(store, deleteFile.path)),
       };
     case "deletion-vector":
-      throw new LaQLError(
-        "LAQL_UNSUPPORTED_DELETE_FILES",
+      throw new LakeqlError(
+        "LAKEQL_UNSUPPORTED_DELETE_FILES",
         "Iceberg deletion vectors are not Parquet delete files",
         { path: deleteFile.path, content: deleteFile.content },
       );
@@ -313,8 +313,8 @@ export async function writeParquet(
       writeMode,
     );
   } catch (cause) {
-    if (cause instanceof LaQLError) throw cause;
-    throw new LaQLError("LAQL_PARQUET_WRITE_ERROR", `Failed to write ${path}`, { path, cause });
+    if (cause instanceof LakeqlError) throw cause;
+    throw new LakeqlError("LAKEQL_PARQUET_WRITE_ERROR", `Failed to write ${path}`, { path, cause });
   }
 }
 
@@ -608,7 +608,7 @@ export class ParquetScanAdapter implements ScanAdapter {
         try {
           yield normalizeDecodedRows(await parquetReadObjects(readOptions));
         } catch (cause) {
-          throw new LaQLError("LAQL_PARQUET_READ_ERROR", `Failed to read ${path}`, { path, cause });
+          throw new LakeqlError("LAKEQL_PARQUET_READ_ERROR", `Failed to read ${path}`, { path, cause });
         }
       }
       rowGroupStart = rowGroupEnd;
@@ -696,8 +696,8 @@ function rejectUnsupportedParquetSchemaNode(
   if (isSupportedNestedParquetGroup(element)) {
     return skipParquetSchemaSubtree(schema, index);
   }
-  throw new LaQLError(
-    "LAQL_UNSUPPORTED_PARQUET_FEATURE",
+  throw new LakeqlError(
+    "LAKEQL_UNSUPPORTED_PARQUET_FEATURE",
     "Parquet struct columns are not supported",
     {
       column: nodePath.join("."),
@@ -750,8 +750,8 @@ function rejectUnsupportedParquetLeaf(element: ParquetSchemaElement, path: strin
     decimalPrecision !== undefined &&
     decimalPrecision > 15
   ) {
-    throw new LaQLError(
-      "LAQL_UNSUPPORTED_PARQUET_FEATURE",
+    throw new LakeqlError(
+      "LAKEQL_UNSUPPORTED_PARQUET_FEATURE",
       "Parquet decimals above precision 15 are not supported",
       { column, feature: "decimal-precision", precision: decimalPrecision },
     );
@@ -759,8 +759,8 @@ function rejectUnsupportedParquetLeaf(element: ParquetSchemaElement, path: strin
 
   const timestampUnit = parquetTimestampUnit(element);
   if (timestampUnit === "MICROS" || timestampUnit === "NANOS") {
-    throw new LaQLError(
-      "LAQL_UNSUPPORTED_PARQUET_FEATURE",
+    throw new LakeqlError(
+      "LAKEQL_UNSUPPORTED_PARQUET_FEATURE",
       "Parquet timestamps below millisecond precision are not supported",
       { column, feature: "timestamp-precision", unit: timestampUnit.toLowerCase() },
     );
@@ -852,13 +852,13 @@ function validatePartitionedWriteOptions(
   maxRowsPerFile: number,
 ): void {
   if (!prefix || prefix.replace(/\/+$/u, "") === "") {
-    throw new LaQLError("LAQL_TYPE_ERROR", "Parquet output prefix must be non-empty");
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "Parquet output prefix must be non-empty");
   }
   if (options.rows.length === 0) {
-    throw new LaQLError("LAQL_VALIDATION_ERROR", "Cannot write an empty row set");
+    throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Cannot write an empty row set");
   }
   if (!Number.isInteger(maxRowsPerFile) || maxRowsPerFile < 1) {
-    throw new LaQLError("LAQL_TYPE_ERROR", "maxRowsPerFile must be a positive integer", {
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "maxRowsPerFile must be a positive integer", {
       maxRowsPerFile,
     });
   }
@@ -866,7 +866,7 @@ function validatePartitionedWriteOptions(
     options.maxBytesPerFile !== undefined &&
     (!Number.isInteger(options.maxBytesPerFile) || options.maxBytesPerFile < 1)
   ) {
-    throw new LaQLError("LAQL_TYPE_ERROR", "maxBytesPerFile must be a positive integer", {
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "maxBytesPerFile must be a positive integer", {
       maxBytesPerFile: options.maxBytesPerFile,
     });
   }
@@ -875,7 +875,7 @@ function validatePartitionedWriteOptions(
   const partitionBy = options.partitionBy ?? [];
   const uniquePartitions = new Set(partitionBy);
   if (uniquePartitions.size !== partitionBy.length) {
-    throw new LaQLError("LAQL_VALIDATION_ERROR", "partitionBy columns must be unique", {
+    throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "partitionBy columns must be unique", {
       partitionBy,
     });
   }
@@ -888,7 +888,7 @@ function partitionRows(rows: Row[], partitionBy: string[]): RowPartition[] {
     for (const column of partitionBy) {
       const raw = row[column];
       if (!isPartitionValue(raw)) {
-        throw new LaQLError("LAQL_VALIDATION_ERROR", "Partition values must be scalar", {
+        throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Partition values must be scalar", {
           column,
         });
       }
@@ -930,7 +930,7 @@ function partitionOutputPath(
 function validateOptionalOutputPathComponent(name: string, value: string | undefined): void {
   if (value === undefined) return;
   if (typeof value !== "string" || value.trim() === "") {
-    throw new LaQLError("LAQL_TYPE_ERROR", `${name} must be a non-empty string`, { [name]: value });
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", `${name} must be a non-empty string`, { [name]: value });
   }
 }
 
@@ -939,7 +939,7 @@ function validateInsertRows(rows: Row[], validation: InsertValidationRules | und
   for (const column of validation.required ?? []) {
     const missingIndex = rows.findIndex((row) => row[column] === null || row[column] === undefined);
     if (missingIndex !== -1) {
-      throw new LaQLError("LAQL_VALIDATION_ERROR", "Required column is missing", {
+      throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Required column is missing", {
         column,
         rowIndex: missingIndex,
       });
@@ -956,7 +956,7 @@ function validateInsertRows(rows: Row[], validation: InsertValidationRules | und
 
 function validateUniqueRows(rows: Row[], columns: string[]): void {
   if (columns.length === 0) {
-    throw new LaQLError("LAQL_VALIDATION_ERROR", "Unique constraints must name columns");
+    throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Unique constraints must name columns");
   }
   const seen = new Map<string, number>();
   for (const [rowIndex, row] of rows.entries()) {
@@ -965,7 +965,7 @@ function validateUniqueRows(rows: Row[], columns: string[]): void {
       .join("|");
     const existing = seen.get(key);
     if (existing !== undefined) {
-      throw new LaQLError("LAQL_VALIDATION_ERROR", "Unique constraint violation", {
+      throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Unique constraint violation", {
         columns,
         firstRowIndex: existing,
         rowIndex,
@@ -984,7 +984,7 @@ function validateRange(
     const value = row[column];
     if (value === null || value === undefined) continue;
     if (!isComparableInsertValue(value)) {
-      throw new LaQLError("LAQL_VALIDATION_ERROR", "Range constraints require comparable values", {
+      throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Range constraints require comparable values", {
         column,
         rowIndex,
       });
@@ -993,7 +993,7 @@ function validateRange(
       (range.min !== undefined && compareInsertValues(value, range.min, column, rowIndex) < 0) ||
       (range.max !== undefined && compareInsertValues(value, range.max, column, rowIndex) > 0)
     ) {
-      throw new LaQLError("LAQL_VALIDATION_ERROR", "Range constraint violation", {
+      throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Range constraint violation", {
         column,
         rowIndex,
       });
@@ -1008,7 +1008,7 @@ function validateEnum(rows: Row[], column: string, values: InsertValue[]): void 
     if (raw === undefined) continue;
     const value = normalizeInsertValue(raw, column);
     if (!allowed.has(insertValueKey(value))) {
-      throw new LaQLError("LAQL_VALIDATION_ERROR", "Enum constraint violation", {
+      throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Enum constraint violation", {
         column,
         rowIndex,
       });
@@ -1026,7 +1026,7 @@ function normalizeInsertValue(value: unknown, column: string): InsertValue {
   ) {
     return value;
   }
-  throw new LaQLError("LAQL_VALIDATION_ERROR", "Insert constraints require scalar values", {
+  throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Insert constraints require scalar values", {
     column,
   });
 }
@@ -1046,7 +1046,7 @@ function compareInsertValues(
   rowIndex: number,
 ): number {
   if (typeof left !== typeof right) {
-    throw new LaQLError("LAQL_VALIDATION_ERROR", "Range constraint types must match row values", {
+    throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Range constraint types must match row values", {
       column,
       rowIndex,
     });
@@ -1114,7 +1114,7 @@ function rowsToColumnData(
     ...new Set(rows.flatMap((row) => Object.keys(row).filter((key) => !partitionColumns.has(key)))),
   ].sort();
   if (columns.length === 0) {
-    throw new LaQLError("LAQL_VALIDATION_ERROR", "At least one non-partition column is required");
+    throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "At least one non-partition column is required");
   }
 
   return columns.map((name) => {
@@ -1135,25 +1135,25 @@ function normalizeColumnValue(value: unknown, column: string): ColumnValue {
   }
   if (typeof value === "number") {
     if (!Number.isFinite(value)) {
-      throw new LaQLError("LAQL_VALIDATION_ERROR", "Numeric column values must be finite", {
+      throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Numeric column values must be finite", {
         column,
       });
     }
     return value;
   }
-  throw new LaQLError("LAQL_VALIDATION_ERROR", "Column values must be scalar", { column });
+  throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Column values must be scalar", { column });
 }
 
 function inferColumnType(column: string, data: ColumnValue[]): BasicType {
   const values = data.filter((value) => value !== null);
   if (values.length === 0) {
-    throw new LaQLError("LAQL_VALIDATION_ERROR", "Cannot infer type for all-null column", {
+    throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Cannot infer type for all-null column", {
       column,
     });
   }
   const kinds = new Set(values.map((value) => typeof value));
   if (kinds.size !== 1) {
-    throw new LaQLError("LAQL_VALIDATION_ERROR", "Column values must have one scalar type", {
+    throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Column values must have one scalar type", {
       column,
     });
   }
@@ -1168,7 +1168,7 @@ function inferColumnType(column: string, data: ColumnValue[]): BasicType {
     case "number":
       return data.every((value) => value === null || isInt32Value(value)) ? "INT32" : "DOUBLE";
     default:
-      throw new LaQLError("LAQL_VALIDATION_ERROR", "Unsupported column value type", { column });
+      throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Unsupported column value type", { column });
   }
 }
 
@@ -1204,8 +1204,8 @@ async function writeEncodedParquet(
   try {
     return await putParquetBytes(store, path, bytes, contentType, writeMode);
   } catch (cause) {
-    if (cause instanceof LaQLError) throw cause;
-    throw new LaQLError("LAQL_PARQUET_WRITE_ERROR", `Failed to write ${path}`, { path, cause });
+    if (cause instanceof LakeqlError) throw cause;
+    throw new LakeqlError("LAKEQL_PARQUET_WRITE_ERROR", `Failed to write ${path}`, { path, cause });
   }
 }
 
@@ -1217,7 +1217,7 @@ async function putParquetBytes(
   writeMode: WriteParquetOptions["writeMode"] = "overwrite",
 ): Promise<{ path: string; byteSize: number; etag?: string }> {
   if (writeMode === "create" && (await store.head(path)) !== null) {
-    throw new LaQLError("LAQL_VALIDATION_ERROR", "Parquet output already exists", { path });
+    throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Parquet output already exists", { path });
   }
   await store.put(path, bytes, {
     contentType: contentType ?? "application/vnd.apache.parquet",
@@ -1243,7 +1243,7 @@ async function contentHash(bytes: Uint8Array): Promise<string> {
 
 function validateWriteMode(writeMode: WriteParquetOptions["writeMode"]): void {
   if (writeMode !== undefined && writeMode !== "overwrite" && writeMode !== "create") {
-    throw new LaQLError("LAQL_TYPE_ERROR", "writeMode must be overwrite or create", { writeMode });
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "writeMode must be overwrite or create", { writeMode });
   }
 }
 
@@ -1254,7 +1254,7 @@ function decodePositionDeleteRows(
     const path = row.file_path;
     const position = row.pos;
     if (typeof path !== "string" || path.length === 0) {
-      throw new LaQLError("LAQL_VALIDATION_ERROR", "Iceberg position delete file_path is invalid", {
+      throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Iceberg position delete file_path is invalid", {
         rowIndex,
         path,
       });
@@ -1270,7 +1270,7 @@ function decodePositionDeleteRows(
       numericPosition < 0 ||
       (typeof position === "bigint" && BigInt(numericPosition) !== position)
     ) {
-      throw new LaQLError("LAQL_VALIDATION_ERROR", "Iceberg position delete pos is invalid", {
+      throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Iceberg position delete pos is invalid", {
         rowIndex,
         position,
       });
@@ -1287,7 +1287,7 @@ function decodeEqualityDeleteRows(
     for (const [column, value] of Object.entries(row)) {
       if (column.startsWith("_")) continue;
       if (!isIcebergEqualityValue(value)) {
-        throw new LaQLError("LAQL_VALIDATION_ERROR", "Iceberg equality delete value is invalid", {
+        throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Iceberg equality delete value is invalid", {
           rowIndex,
           column,
         });
@@ -1296,7 +1296,7 @@ function decodeEqualityDeleteRows(
     }
     const columns = Object.keys(equalityRow).sort();
     if (columns.length === 0) {
-      throw new LaQLError("LAQL_VALIDATION_ERROR", "Iceberg equality delete requires columns", {
+      throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Iceberg equality delete requires columns", {
         rowIndex,
       });
     }

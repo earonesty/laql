@@ -1,4 +1,4 @@
-import { LaQLError } from "./errors.js";
+import { LakeqlError } from "./errors.js";
 import type { Bookmark } from "./types.js";
 
 export interface CacheEntry<T> {
@@ -50,7 +50,7 @@ export class CacheApiCache implements CacheAdapter<Uint8Array> {
 
   constructor(cache: Cache, options: CacheApiCacheOptions = {}) {
     this.cache = cache;
-    this.namespace = options.namespace ?? "laql";
+    this.namespace = options.namespace ?? "lakeql";
     this.now = options.now ?? Date.now;
   }
 
@@ -58,7 +58,7 @@ export class CacheApiCache implements CacheAdapter<Uint8Array> {
     const request = this.request(key);
     const response = await this.cache.match(request);
     if (!response) return undefined;
-    const expiresAtHeader = response.headers.get("x-laql-expires-at");
+    const expiresAtHeader = response.headers.get("x-lakeql-expires-at");
     const expiresAt = expiresAtHeader === null ? undefined : Number(expiresAtHeader);
     if (expiresAt !== undefined && expiresAt <= this.now()) {
       await this.cache.delete(request);
@@ -73,7 +73,7 @@ export class CacheApiCache implements CacheAdapter<Uint8Array> {
 
   async set(key: string, entry: CacheEntry<Uint8Array>): Promise<void> {
     const headers = new Headers({ "content-type": "application/octet-stream" });
-    if (entry.expiresAt !== undefined) headers.set("x-laql-expires-at", String(entry.expiresAt));
+    if (entry.expiresAt !== undefined) headers.set("x-lakeql-expires-at", String(entry.expiresAt));
     await this.cache.put(this.request(key), new Response(toArrayBuffer(entry.value), { headers }));
   }
 
@@ -82,7 +82,7 @@ export class CacheApiCache implements CacheAdapter<Uint8Array> {
   }
 
   private request(key: string): Request {
-    return new Request(`https://cache.laql.invalid/${this.namespace}/${encodeURIComponent(key)}`);
+    return new Request(`https://cache.lakeql.invalid/${this.namespace}/${encodeURIComponent(key)}`);
   }
 }
 
@@ -136,13 +136,13 @@ export class MemorySpillAdapter implements SpillAdapter {
 
   async write(id: string, data: Uint8Array): Promise<SpillRef> {
     if (!id) {
-      throw new LaQLError("LAQL_TYPE_ERROR", "spill id must be non-empty");
+      throw new LakeqlError("LAKEQL_TYPE_ERROR", "spill id must be non-empty");
     }
     const nextBytes =
       this.currentBytes() - (this.entries.get(id)?.byteLength ?? 0) + data.byteLength;
     if (this.maxBytes !== undefined && nextBytes > this.maxBytes) {
-      throw new LaQLError(
-        "LAQL_BUDGET_EXCEEDED",
+      throw new LakeqlError(
+        "LAKEQL_BUDGET_EXCEEDED",
         `Query exceeded spill bytes budget (${nextBytes} > ${this.maxBytes}). Add a partition filter, date filter, h3 filter, or limit.`,
         { metric: "spill bytes", limit: this.maxBytes, actual: nextBytes },
       );
@@ -156,7 +156,7 @@ export class MemorySpillAdapter implements SpillAdapter {
     const id = spillId(ref);
     const data = this.entries.get(id);
     if (!data) {
-      throw new LaQLError("LAQL_OBJECT_NOT_FOUND", `No spill entry ${id}`, { id });
+      throw new LakeqlError("LAKEQL_OBJECT_NOT_FOUND", `No spill entry ${id}`, { id });
     }
     return copyBytes(data);
   }

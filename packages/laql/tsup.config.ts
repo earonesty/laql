@@ -1,6 +1,6 @@
 import { defineConfig } from "tsup";
 
-// `laql` is published as a single self-contained package: the internal
+// `lakeql` is published as a single self-contained package: the internal
 // `lakeql-*` workspace sources are inlined, while the real runtime dependencies
 // (Parquet/Avro/crypto/geo libraries) stay external and are declared in
 // package.json so consumers install one package with a small dependency set.

@@ -197,7 +197,7 @@ describe("s3Store", () => {
     await expect(store.get("missing")).resolves.toBeNull();
     await expect(store.head("missing")).resolves.toBeNull();
     await expect(store.getRange("missing", { offset: 0, length: 1 })).rejects.toMatchObject({
-      code: "LAQL_OBJECT_NOT_FOUND",
+      code: "LAKEQL_OBJECT_NOT_FOUND",
     });
   });
 
@@ -205,12 +205,12 @@ describe("s3Store", () => {
     const noLength = s3Store(
       options(async () => new Response(null, { status: 200 })) as typeof fetch,
     );
-    await expect(noLength.head("key")).rejects.toMatchObject({ code: "LAQL_OBJECT_NOT_FOUND" });
+    await expect(noLength.head("key")).rejects.toMatchObject({ code: "LAKEQL_OBJECT_NOT_FOUND" });
 
     const failed = s3Store(
       options(async () => new Response(null, { status: 500 })) as typeof fetch,
     );
-    await expect(failed.delete("key")).rejects.toMatchObject({ code: "LAQL_OBJECT_NOT_FOUND" });
+    await expect(failed.delete("key")).rejects.toMatchObject({ code: "LAKEQL_OBJECT_NOT_FOUND" });
   });
 
   it("passes session tokens and stream bodies through signed requests", async () => {
@@ -297,16 +297,16 @@ describe("s3Store", () => {
     await store.get("dir/file name?#.parquet");
     expect(seen).toEqual(["https://s3.example.test/bucket/dir/file%20name%3F%23.parquet"]);
     await expect(store.get("../../other-bucket/key")).rejects.toMatchObject({
-      code: "LAQL_VALIDATION_ERROR",
+      code: "LAKEQL_VALIDATION_ERROR",
     });
     await expect(store.get("%2e%2e/key")).rejects.toMatchObject({
-      code: "LAQL_VALIDATION_ERROR",
+      code: "LAKEQL_VALIDATION_ERROR",
     });
     await expect(store.get("/bucket/key")).rejects.toMatchObject({
-      code: "LAQL_VALIDATION_ERROR",
+      code: "LAKEQL_VALIDATION_ERROR",
     });
     await expect(store.get("https://evil.test/key")).rejects.toMatchObject({
-      code: "LAQL_VALIDATION_ERROR",
+      code: "LAKEQL_VALIDATION_ERROR",
     });
     expect(seen).toHaveLength(1);
   });

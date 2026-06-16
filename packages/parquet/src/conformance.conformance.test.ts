@@ -10,7 +10,7 @@ const parquetFiles = existsSync(parquetTestingDir)
   ? listFiles(parquetTestingDir).filter((path) => path.endsWith(".parquet"))
   : [];
 const describeExternal =
-  process.env.LAQL_CONFORMANCE === "1" && parquetFiles.length > 0 ? describe : describe.skip;
+  process.env.LAKEQL_CONFORMANCE === "1" && parquetFiles.length > 0 ? describe : describe.skip;
 
 describeExternal("apache/parquet-testing conformance", () => {
   it.each(parquetFiles)("decodes %s through the public reader", async (file) => {

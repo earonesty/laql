@@ -16,7 +16,7 @@ const result = await table.appendFiles({
 });
 ```
 
-Use `icebergRestCatalog` to commit appends through an Iceberg REST catalog. LaQL
+Use `icebergRestCatalog` to commit appends through an Iceberg REST catalog. Lakeql
 writes the new manifest and metadata objects to the configured `ObjectStore`,
 then posts a table update with an `assert-ref-snapshot-id` requirement for the
 current `main` branch:
@@ -41,7 +41,7 @@ await table.appendFiles({
 
 When a catalog returns a committed `metadataPath`, `appendFiles()` reports that
 catalog path in its result; otherwise it reports the deterministic next metadata
-path LaQL wrote.
+path Lakeql wrote.
 
 Output manifests produced by write tasks can be committed directly when their entries include Iceberg metadata:
 

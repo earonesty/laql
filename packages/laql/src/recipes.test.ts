@@ -146,7 +146,7 @@ describe("docs recipes", () => {
   });
 
   it("runs the compact recipe against the sales fixture", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "laql-recipe-compact-"));
+    const dir = await mkdtemp(join(tmpdir(), "lakeql-recipe-compact-"));
     try {
       const output = join(dir, "sales");
       const result = await runCli([

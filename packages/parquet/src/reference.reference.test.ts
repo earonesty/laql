@@ -22,11 +22,11 @@ import { parquetWriteBuffer } from "hyparquet-writer";
 import { describe, expect, it } from "vitest";
 import { createParquetLake } from "./index.js";
 
-const describeReference = process.env.LAQL_REFERENCE === "1" ? describe : describe.skip;
+const describeReference = process.env.LAKEQL_REFERENCE === "1" ? describe : describe.skip;
 
 describeReference("DuckDB reference comparisons", () => {
   it("matches DuckDB for a filtered sales Parquet scan", async () => {
-    const laqlRows = await laqlRowsFor(SALES.file, async (lake) =>
+    const lakeqlRows = await lakeqlRowsFor(SALES.file, async (lake) =>
       lake
         .path(SALES.file)
         .select(["store_id", "region", "amount"])
@@ -37,18 +37,18 @@ describeReference("DuckDB reference comparisons", () => {
       `select store_id, region, amount from read_parquet('${sqlString(fixturePath(SALES.file))}') where region = 'west'`,
     );
 
-    expect(canonicalRows(laqlRows)).toEqual(canonicalRows(referenceRows));
+    expect(canonicalRows(lakeqlRows)).toEqual(canonicalRows(referenceRows));
   });
 
   it("matches DuckDB for primitive and nullable Parquet values", async () => {
-    const laqlRows = await laqlRowsFor(TYPES.file, async (lake) =>
+    const lakeqlRows = await lakeqlRowsFor(TYPES.file, async (lake) =>
       lake.path(TYPES.file).select(["id", "big", "flag", "name", "score"]).toArray(),
     );
     const referenceRows = await duckDbRows(
       `select id, big, flag, name, score from read_parquet('${sqlString(fixturePath(TYPES.file))}') order by id`,
     );
 
-    expect(canonicalRows(laqlRows)).toEqual(canonicalRows(referenceRows));
+    expect(canonicalRows(lakeqlRows)).toEqual(canonicalRows(referenceRows));
   });
 
   it("matches DuckDB for date and timestamp logical values", async () => {
@@ -80,7 +80,7 @@ describeReference("DuckDB reference comparisons", () => {
         schema,
       }),
     );
-    const dir = mkdtempSync(join(tmpdir(), "laql-parquet-reference-"));
+    const dir = mkdtempSync(join(tmpdir(), "lakeql-parquet-reference-"));
     const path = join(dir, "logical.parquet");
     writeFileSync(path, bytes);
 
@@ -88,7 +88,7 @@ describeReference("DuckDB reference comparisons", () => {
       const store = memoryStore();
       await store.put("logical.parquet", bytes);
       const lake = createParquetLake({ store });
-      const laqlRows = (await lake.path("logical.parquet").toArray()).map((row) => ({
+      const lakeqlRows = (await lake.path("logical.parquet").toArray()).map((row) => ({
         id: row.id,
         event_date: isoDateString(row.event_date),
         event_ts: isoDateString(row.event_ts),
@@ -102,14 +102,14 @@ describeReference("DuckDB reference comparisons", () => {
         order by id
       `);
 
-      expect(canonicalRows(laqlRows)).toEqual(canonicalRows(referenceRows));
+      expect(canonicalRows(lakeqlRows)).toEqual(canonicalRows(referenceRows));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it("matches DuckDB-authored decimal, time, date, and timestamp logical values", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "laql-duckdb-parquet-reference-"));
+    const dir = mkdtempSync(join(tmpdir(), "lakeql-duckdb-parquet-reference-"));
     const path = join(dir, "duckdb-logicals.parquet");
     const connection = await DuckDBConnection.create();
     try {
@@ -138,7 +138,7 @@ describeReference("DuckDB reference comparisons", () => {
       const store = memoryStore();
       await store.put("duckdb-logicals.parquet", readFileSync(path));
       const lake = createParquetLake({ store });
-      const laqlRows = (await lake.path("duckdb-logicals.parquet").toArray()).map((row) => ({
+      const lakeqlRows = (await lake.path("duckdb-logicals.parquet").toArray()).map((row) => ({
         id: row.id,
         amount: row.amount,
         event_time: row.event_time === null ? null : String(row.event_time),
@@ -156,7 +156,7 @@ describeReference("DuckDB reference comparisons", () => {
         order by id
       `);
 
-      expect(canonicalRows(laqlRows)).toEqual(
+      expect(canonicalRows(lakeqlRows)).toEqual(
         canonicalRows(referenceRows.getRowObjectsJson() as Row[]),
       );
     } finally {
@@ -166,7 +166,7 @@ describeReference("DuckDB reference comparisons", () => {
   });
 
   it("matches DuckDB-authored unsigned integer and binary values", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "laql-duckdb-parquet-reference-"));
+    const dir = mkdtempSync(join(tmpdir(), "lakeql-duckdb-parquet-reference-"));
     const path = join(dir, "duckdb-unsigned-binary.parquet");
     const connection = await DuckDBConnection.create();
     try {
@@ -197,7 +197,7 @@ describeReference("DuckDB reference comparisons", () => {
       const store = memoryStore();
       await store.put("duckdb-unsigned-binary.parquet", readFileSync(path));
       const lake = createParquetLake({ store });
-      const laqlRows = (await lake.path("duckdb-unsigned-binary.parquet").toArray()).map((row) => ({
+      const lakeqlRows = (await lake.path("duckdb-unsigned-binary.parquet").toArray()).map((row) => ({
         id: row.id,
         u8: row.u8,
         u16: row.u16,
@@ -217,7 +217,7 @@ describeReference("DuckDB reference comparisons", () => {
         order by id
       `);
 
-      expect(canonicalRows(laqlRows)).toEqual(
+      expect(canonicalRows(lakeqlRows)).toEqual(
         canonicalRows(referenceRows.getRowObjectsJson() as Row[]),
       );
     } finally {
@@ -249,7 +249,7 @@ describeReference("DuckDB reference comparisons", () => {
         schema,
       }),
     );
-    const dir = mkdtempSync(join(tmpdir(), "laql-parquet-reference-"));
+    const dir = mkdtempSync(join(tmpdir(), "lakeql-parquet-reference-"));
     const path = join(dir, "fixed-len.parquet");
     writeFileSync(path, bytes);
 
@@ -257,7 +257,7 @@ describeReference("DuckDB reference comparisons", () => {
       const store = memoryStore();
       await store.put("fixed-len.parquet", bytes);
       const lake = createParquetLake({ store });
-      const laqlRows = (await lake.path("fixed-len.parquet").toArray()).map((row) => ({
+      const lakeqlRows = (await lake.path("fixed-len.parquet").toArray()).map((row) => ({
         id: row.id,
         fixed: row.fixed === null ? null : bytesToHex(row.fixed),
       }));
@@ -267,14 +267,14 @@ describeReference("DuckDB reference comparisons", () => {
         order by id
       `);
 
-      expect(canonicalRows(laqlRows)).toEqual(canonicalRows(referenceRows));
+      expect(canonicalRows(lakeqlRows)).toEqual(canonicalRows(referenceRows));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it("matches DuckDB-authored list and map values", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "laql-duckdb-parquet-reference-"));
+    const dir = mkdtempSync(join(tmpdir(), "lakeql-duckdb-parquet-reference-"));
     const path = join(dir, "duckdb-nested.parquet");
     const connection = await DuckDBConnection.create();
     try {
@@ -299,7 +299,7 @@ describeReference("DuckDB reference comparisons", () => {
       const store = memoryStore();
       await store.put("duckdb-nested.parquet", readFileSync(path));
       const lake = createParquetLake({ store });
-      const laqlRows = (await lake.path("duckdb-nested.parquet").toArray()).map((row) => ({
+      const lakeqlRows = (await lake.path("duckdb-nested.parquet").toArray()).map((row) => ({
         id: row.id,
         nums: row.nums === null ? null : stableStringify(row.nums),
         attrs: row.attrs === null ? null : stableStringify(row.attrs),
@@ -313,7 +313,7 @@ describeReference("DuckDB reference comparisons", () => {
         order by id
       `);
 
-      expect(canonicalRows(laqlRows)).toEqual(
+      expect(canonicalRows(lakeqlRows)).toEqual(
         canonicalRows(referenceRows.getRowObjectsJson() as Row[]),
       );
     } finally {
@@ -323,7 +323,7 @@ describeReference("DuckDB reference comparisons", () => {
   });
 
   it("matches DuckDB-authored null-heavy scalar and nested values", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "laql-duckdb-parquet-reference-"));
+    const dir = mkdtempSync(join(tmpdir(), "lakeql-duckdb-parquet-reference-"));
     const path = join(dir, "duckdb-null-heavy.parquet");
     const connection = await DuckDBConnection.create();
     try {
@@ -373,7 +373,7 @@ describeReference("DuckDB reference comparisons", () => {
       const store = memoryStore();
       await store.put("duckdb-null-heavy.parquet", readFileSync(path));
       const lake = createParquetLake({ store });
-      const laqlRows = (await lake.path("duckdb-null-heavy.parquet").toArray()).map((row) => ({
+      const lakeqlRows = (await lake.path("duckdb-null-heavy.parquet").toArray()).map((row) => ({
         id: row.id,
         maybe_int: row.maybe_int,
         maybe_bool: row.maybe_bool,
@@ -401,7 +401,7 @@ describeReference("DuckDB reference comparisons", () => {
         order by id
       `);
 
-      expect(canonicalRows(laqlRows)).toEqual(
+      expect(canonicalRows(lakeqlRows)).toEqual(
         canonicalRows(referenceRows.getRowObjectsJson() as Row[]),
       );
     } finally {
@@ -438,7 +438,7 @@ describeReference("DuckDB reference comparisons", () => {
         schema,
       }),
     );
-    const dir = mkdtempSync(join(tmpdir(), "laql-parquet-reference-"));
+    const dir = mkdtempSync(join(tmpdir(), "lakeql-parquet-reference-"));
     const path = join(dir, "utc-adjusted-ms.parquet");
     writeFileSync(path, bytes);
     const connection = await DuckDBConnection.create();
@@ -447,7 +447,7 @@ describeReference("DuckDB reference comparisons", () => {
       const store = memoryStore();
       await store.put("utc-adjusted-ms.parquet", bytes);
       const lake = createParquetLake({ store });
-      const laqlRows = (await lake.path("utc-adjusted-ms.parquet").toArray()).map((row) => ({
+      const lakeqlRows = (await lake.path("utc-adjusted-ms.parquet").toArray()).map((row) => ({
         id: row.id,
         ts_utc: isoDateString(row.ts_utc),
       }));
@@ -458,7 +458,7 @@ describeReference("DuckDB reference comparisons", () => {
         order by id
       `);
 
-      expect(canonicalRows(laqlRows)).toEqual(
+      expect(canonicalRows(lakeqlRows)).toEqual(
         canonicalRows(referenceRows.getRowObjectsJson() as Row[]),
       );
     } finally {
@@ -472,7 +472,7 @@ describeReference("DuckDB reference comparisons", () => {
       name: "string equality",
       fixture: SALES.file,
       select: ["store_id", "region"],
-      laql: (lake: ReturnType<typeof createParquetLake>) =>
+      lakeql: (lake: ReturnType<typeof createParquetLake>) =>
         lake.path(SALES.file).select(["store_id", "region"]).where(eq("region", "east")).toArray(),
       sql: `select store_id, region from read_parquet('${sqlString(fixturePath(SALES.file))}') where region = 'east'`,
     },
@@ -480,7 +480,7 @@ describeReference("DuckDB reference comparisons", () => {
       name: "boolean equality",
       fixture: TYPES.file,
       select: ["id", "flag"],
-      laql: (lake: ReturnType<typeof createParquetLake>) =>
+      lakeql: (lake: ReturnType<typeof createParquetLake>) =>
         lake.path(TYPES.file).select(["id", "flag"]).where(eq("flag", true)).toArray(),
       sql: `select id, flag from read_parquet('${sqlString(fixturePath(TYPES.file))}') where flag = true`,
     },
@@ -488,7 +488,7 @@ describeReference("DuckDB reference comparisons", () => {
       name: "null predicate",
       fixture: TYPES.file,
       select: ["id", "name"],
-      laql: (lake: ReturnType<typeof createParquetLake>) =>
+      lakeql: (lake: ReturnType<typeof createParquetLake>) =>
         lake.path(TYPES.file).select(["id", "name"]).where(isNull("name")).toArray(),
       sql: `select id, name from read_parquet('${sqlString(fixturePath(TYPES.file))}') where name is null`,
     },
@@ -496,7 +496,7 @@ describeReference("DuckDB reference comparisons", () => {
       name: "numeric greater-than",
       fixture: STATS.file,
       select: ["id", "metric"],
-      laql: (lake: ReturnType<typeof createParquetLake>) =>
+      lakeql: (lake: ReturnType<typeof createParquetLake>) =>
         lake.path(STATS.file).select(["id", "metric"]).where(gt("metric", 205)).toArray(),
       sql: `select id, metric from read_parquet('${sqlString(fixturePath(STATS.file))}') where metric > 205`,
     },
@@ -504,7 +504,7 @@ describeReference("DuckDB reference comparisons", () => {
       name: "numeric between",
       fixture: STATS.file,
       select: ["id", "metric"],
-      laql: (lake: ReturnType<typeof createParquetLake>) =>
+      lakeql: (lake: ReturnType<typeof createParquetLake>) =>
         lake
           .path(STATS.file)
           .select(["id", "metric"])
@@ -516,7 +516,7 @@ describeReference("DuckDB reference comparisons", () => {
       name: "numeric in",
       fixture: STATS.file,
       select: ["id", "metric"],
-      laql: (lake: ReturnType<typeof createParquetLake>) =>
+      lakeql: (lake: ReturnType<typeof createParquetLake>) =>
         lake
           .path(STATS.file)
           .select(["id", "metric"])
@@ -528,7 +528,7 @@ describeReference("DuckDB reference comparisons", () => {
       name: "string like",
       fixture: STATS.file,
       select: ["id", "label"],
-      laql: (lake: ReturnType<typeof createParquetLake>) =>
+      lakeql: (lake: ReturnType<typeof createParquetLake>) =>
         lake.path(STATS.file).select(["id", "label"]).where(like("label", "g2")).toArray(),
       sql: `select id, label from read_parquet('${sqlString(fixturePath(STATS.file))}') where label like 'g2'`,
     },
@@ -536,7 +536,7 @@ describeReference("DuckDB reference comparisons", () => {
       name: "and/or/not composition",
       fixture: STATS.file,
       select: ["id", "metric", "label"],
-      laql: (lake: ReturnType<typeof createParquetLake>) =>
+      lakeql: (lake: ReturnType<typeof createParquetLake>) =>
         lake
           .path(STATS.file)
           .select(["id", "metric", "label"])
@@ -545,10 +545,10 @@ describeReference("DuckDB reference comparisons", () => {
       sql: `select id, metric, label from read_parquet('${sqlString(fixturePath(STATS.file))}') where (label = 'g0' or label = 'g2') and not (metric > 205)`,
     },
   ])("matches DuckDB for $name predicates", async (testCase) => {
-    const laqlRows = await laqlRowsFor(testCase.fixture, testCase.laql);
+    const lakeqlRows = await lakeqlRowsFor(testCase.fixture, testCase.lakeql);
     const referenceRows = await duckDbRows(testCase.sql);
 
-    expect(canonicalRows(laqlRows)).toEqual(canonicalRows(referenceRows));
+    expect(canonicalRows(lakeqlRows)).toEqual(canonicalRows(referenceRows));
   });
 
   it("keeps row-group pruning expectations aligned with reference-compared predicates", async () => {
@@ -573,7 +573,7 @@ describeReference("DuckDB reference comparisons", () => {
   });
 });
 
-async function laqlRowsFor(
+async function lakeqlRowsFor(
   fixture: string,
   query: (lake: ReturnType<typeof createParquetLake>) => Promise<Row[]>,
 ): Promise<Row[]> {

@@ -13,4 +13,4 @@ const query = lake.query({
 });
 ```
 
-Invalid shapes throw typed `LAQL_PARSE_ERROR` or `LAQL_TYPE_ERROR` errors depending on where validation fails.
+Invalid shapes throw typed `LAKEQL_PARSE_ERROR` or `LAKEQL_TYPE_ERROR` errors depending on where validation fails.

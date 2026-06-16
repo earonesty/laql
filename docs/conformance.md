@@ -75,7 +75,7 @@ Local conformance skips missing external fixtures by default. Dedicated CI can r
 Iceberg matrix with:
 
 ```sh
-LAQL_REQUIRE_EXTERNAL_ICEBERG=1 pnpm test:conformance
+LAKEQL_REQUIRE_EXTERNAL_ICEBERG=1 pnpm test:conformance
 ```
 
 That mode fails if `fixtures/external/iceberg-reference/` has no discovered reference cases.
@@ -105,15 +105,15 @@ pnpm test:reference
 Run S3-compatible provider checks against MinIO by setting the endpoint and credentials:
 
 ```sh
-LAQL_MINIO_ENDPOINT=http://127.0.0.1:9000 \
-LAQL_MINIO_ACCESS_KEY=minioadmin \
-LAQL_MINIO_SECRET_KEY=minioadmin \
-LAQL_REST_CATALOG_URL=http://127.0.0.1:8181 \
+LAKEQL_MINIO_ENDPOINT=http://127.0.0.1:9000 \
+LAKEQL_MINIO_ACCESS_KEY=minioadmin \
+LAKEQL_MINIO_SECRET_KEY=minioadmin \
+LAKEQL_REST_CATALOG_URL=http://127.0.0.1:8181 \
 pnpm test:providers
 ```
 
 The CI provider job starts MinIO and `apache/iceberg-rest-fixture` before running this lane.
-Set `LAQL_REQUIRE_PROVIDERS=1` when the lane should fail instead of skipping missing provider
+Set `LAKEQL_REQUIRE_PROVIDERS=1` when the lane should fail instead of skipping missing provider
 endpoints; CI sets this for the provider job.
 
 Pass `--force` to replace an existing external checkout:

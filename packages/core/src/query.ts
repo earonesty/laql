@@ -1,4 +1,4 @@
-import { LaQLError } from "./errors.js";
+import { LakeqlError } from "./errors.js";
 import { encodeJsonLine, evaluate, jsonSafeValue, matches } from "./evaluator.js";
 import type { Expr } from "./expr.js";
 import { col, eq, gt, gte, isIn, isNotNull, isNull, lt, lte, ne, notIn } from "./expr.js";
@@ -353,7 +353,7 @@ export class ResumedQuery {
 
   run(options: QueryRunOptions): Promise<SliceResult> {
     if (this.bookmark.query === undefined) {
-      throw new LaQLError("LAQL_BOOKMARK_INVALID", "Bookmark does not contain a resumable query");
+      throw new LakeqlError("LAKEQL_BOOKMARK_INVALID", "Bookmark does not contain a resumable query");
     }
     return this.lake.createResult(this.bookmark.query).slice({
       ...options.slice,
@@ -512,7 +512,7 @@ export class QueryResult {
     validateQueryInit(config);
     this.config = config;
     this.stats = initialStats(config.queryId);
-    config.metrics?.count("laql.query.created", 1, { queryId: config.queryId });
+    config.metrics?.count("lakeql.query.created", 1, { queryId: config.queryId });
   }
 
   async *rows(): AsyncIterable<Row> {
@@ -560,7 +560,7 @@ export class QueryResult {
       }
     }
     stats.elapsedMs = config.now() - startedAt;
-    config.metrics?.timing("laql.query.elapsed", stats.elapsedMs, { queryId: stats.queryId });
+    config.metrics?.timing("lakeql.query.elapsed", stats.elapsedMs, { queryId: stats.queryId });
   }
 
   async *batches(): AsyncIterable<Row[]> {
@@ -628,7 +628,7 @@ export class QueryResult {
       }
     }
     stats.elapsedMs = config.now() - startedAt;
-    config.metrics?.timing("laql.query.elapsed", stats.elapsedMs, { queryId: stats.queryId });
+    config.metrics?.timing("lakeql.query.elapsed", stats.elapsedMs, { queryId: stats.queryId });
   }
 
   async toArray(): Promise<Row[]> {
@@ -640,13 +640,13 @@ export class QueryResult {
   async topKWithState(options: TopKOptions = {}): Promise<TopKResult> {
     const config = this.config;
     if (config.orderBy === undefined) {
-      throw new LaQLError("LAQL_TYPE_ERROR", "topKWithState requires orderBy");
+      throw new LakeqlError("LAKEQL_TYPE_ERROR", "topKWithState requires orderBy");
     }
     if (config.limit === undefined) {
-      throw new LaQLError("LAQL_TYPE_ERROR", "topKWithState requires limit");
+      throw new LakeqlError("LAKEQL_TYPE_ERROR", "topKWithState requires limit");
     }
     if (config.distinct === true) {
-      throw new LaQLError("LAQL_TYPE_ERROR", "topKWithState does not support distinct queries");
+      throw new LakeqlError("LAKEQL_TYPE_ERROR", "topKWithState does not support distinct queries");
     }
     const orderBy = normalizeOrderBy(config.orderBy);
     const topK = (config.offset ?? 0) + config.limit;
@@ -681,10 +681,10 @@ export class QueryResult {
   async sortWithState(options: SortOptions = {}): Promise<SortResult> {
     const config = this.config;
     if (config.orderBy === undefined) {
-      throw new LaQLError("LAQL_TYPE_ERROR", "sortWithState requires orderBy");
+      throw new LakeqlError("LAKEQL_TYPE_ERROR", "sortWithState requires orderBy");
     }
     if (config.distinct === true) {
-      throw new LaQLError("LAQL_TYPE_ERROR", "sortWithState does not support distinct queries");
+      throw new LakeqlError("LAKEQL_TYPE_ERROR", "sortWithState does not support distinct queries");
     }
     const orderBy = normalizeOrderBy(config.orderBy);
     const runs = await sortRunsFromState(orderBy, options);
@@ -740,7 +740,7 @@ export class QueryResult {
 
   async slice(options: SliceOptions): Promise<SliceResult> {
     if (!Number.isInteger(options.maxRows) || options.maxRows <= 0) {
-      throw new LaQLError("LAQL_TYPE_ERROR", "slice maxRows must be a positive integer");
+      throw new LakeqlError("LAKEQL_TYPE_ERROR", "slice maxRows must be a positive integer");
     }
     const manifest = await this.taskManifest();
     const startOffset = options.bookmark?.position.rowOffset ?? 0;
@@ -818,8 +818,8 @@ export class QueryResult {
       let group = groups.get(key);
       if (!group) {
         if (options.maxGroups !== undefined && groups.size >= options.maxGroups) {
-          throw new LaQLError(
-            "LAQL_GROUP_LIMIT_EXCEEDED",
+          throw new LakeqlError(
+            "LAKEQL_GROUP_LIMIT_EXCEEDED",
             `Query exceeded group budget (${groups.size + 1} > ${options.maxGroups})`,
             { limit: options.maxGroups, actual: groups.size + 1 },
           );
@@ -1457,7 +1457,7 @@ function serializeSortRunRows(rows: Record<string, OperatorSnapshotValue>[]): Ui
 function deserializeSortRunRows(bytes: Uint8Array): Row[] {
   const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
   if (!Array.isArray(parsed) || !parsed.every(isTopKSnapshotRow)) {
-    throw new LaQLError("LAQL_BOOKMARK_INVALID", "Sort run state is invalid");
+    throw new LakeqlError("LAKEQL_BOOKMARK_INVALID", "Sort run state is invalid");
   }
   return parsed.map((row) => ({ ...row }));
 }
@@ -1473,7 +1473,7 @@ async function topKRowsFromState(
       ? await options.spill.read(options.operatorState.spillRef)
       : options.operatorState;
   if (isSpilledOperatorState(state)) {
-    throw new LaQLError("LAQL_BOOKMARK_INVALID", "Top-k spill state requires a spill adapter", {
+    throw new LakeqlError("LAKEQL_BOOKMARK_INVALID", "Top-k spill state requires a spill adapter", {
       spillRef: state.spillRef,
     });
   }
@@ -1484,7 +1484,7 @@ async function topKRowsFromState(
     snapshot.offset !== offset ||
     snapshot.limit !== limit
   ) {
-    throw new LaQLError("LAQL_BOOKMARK_STALE", "Top-k operator state does not match request", {
+    throw new LakeqlError("LAKEQL_BOOKMARK_STALE", "Top-k operator state does not match request", {
       stateOrderBy: snapshot.orderBy,
       orderBy,
       stateOffset: snapshot.offset,
@@ -1502,14 +1502,14 @@ async function sortRunsFromState(orderBy: OrderByTerm[], options: SortOptions): 
       ? await options.spill.read(options.operatorState.spillRef)
       : options.operatorState;
   if (isSpilledOperatorState(state)) {
-    throw new LaQLError("LAQL_BOOKMARK_INVALID", "Sort spill state requires a spill adapter", {
+    throw new LakeqlError("LAKEQL_BOOKMARK_INVALID", "Sort spill state requires a spill adapter", {
       spillRef: state.spillRef,
     });
   }
   if (state === undefined) return [];
   const snapshot = deserializeSortOperatorState(state);
   if (stableStringify(snapshot.orderBy) !== stableStringify(orderBy)) {
-    throw new LaQLError("LAQL_BOOKMARK_STALE", "Sort operator state does not match request", {
+    throw new LakeqlError("LAKEQL_BOOKMARK_STALE", "Sort operator state does not match request", {
       stateOrderBy: snapshot.orderBy,
       orderBy,
     });
@@ -1521,8 +1521,8 @@ async function sortRunsFromState(orderBy: OrderByTerm[], options: SortOptions): 
       continue;
     }
     if (options.spill === undefined) {
-      throw new LaQLError(
-        "LAQL_BOOKMARK_INVALID",
+      throw new LakeqlError(
+        "LAKEQL_BOOKMARK_INVALID",
         "Sort run spill state requires a spill adapter",
         {
           spillRef: run.spillRef,
@@ -1575,7 +1575,7 @@ async function sortOperatorState(
 
 function validateTopKOperatorState(value: unknown): TopKOperatorState {
   if (!isTopKOperatorState(value)) {
-    throw new LaQLError("LAQL_BOOKMARK_INVALID", "Top-k operator state is invalid");
+    throw new LakeqlError("LAKEQL_BOOKMARK_INVALID", "Top-k operator state is invalid");
   }
   return {
     version: 1,
@@ -1588,7 +1588,7 @@ function validateTopKOperatorState(value: unknown): TopKOperatorState {
 
 function validateSortOperatorState(value: unknown): SortOperatorState {
   if (!isSortOperatorState(value)) {
-    throw new LaQLError("LAQL_BOOKMARK_INVALID", "Sort operator state is invalid");
+    throw new LakeqlError("LAKEQL_BOOKMARK_INVALID", "Sort operator state is invalid");
   }
   return {
     version: 1,
@@ -1608,7 +1608,7 @@ async function aggregateGroupsFromState(
       ? await options.spill.read(options.operatorState.spillRef)
       : options.operatorState;
   if (isSpilledOperatorState(state)) {
-    throw new LaQLError("LAQL_BOOKMARK_INVALID", "Aggregate spill state requires a spill adapter", {
+    throw new LakeqlError("LAKEQL_BOOKMARK_INVALID", "Aggregate spill state requires a spill adapter", {
       spillRef: state.spillRef,
     });
   }
@@ -1617,7 +1617,7 @@ async function aggregateGroupsFromState(
     stableStringify(snapshot.groupColumns) !== stableStringify(groupColumns) ||
     stableStringify(snapshot.spec) !== stableStringify(spec)
   ) {
-    throw new LaQLError("LAQL_BOOKMARK_STALE", "Aggregate operator state does not match request", {
+    throw new LakeqlError("LAKEQL_BOOKMARK_STALE", "Aggregate operator state does not match request", {
       stateGroupColumns: snapshot.groupColumns,
       groupColumns,
     });
@@ -1640,7 +1640,7 @@ function aggregateGroupFromSnapshot(
   for (const [alias, aggregate] of Object.entries(spec)) {
     const state = snapshot.states[alias];
     if (state === undefined) {
-      throw new LaQLError("LAQL_BOOKMARK_INVALID", `Missing aggregate state ${alias}`);
+      throw new LakeqlError("LAKEQL_BOOKMARK_INVALID", `Missing aggregate state ${alias}`);
     }
     states[alias] = aggregateStateFromSnapshot(aggregate, state);
     stateSpecs.set(states[alias], aggregate);
@@ -1653,7 +1653,7 @@ function aggregateStateFromSnapshot(
   snapshot: AggregateStateSnapshot,
 ): AggregateState {
   if (snapshot.op !== aggregate.op) {
-    throw new LaQLError("LAQL_BOOKMARK_INVALID", "Aggregate state operation mismatch", {
+    throw new LakeqlError("LAKEQL_BOOKMARK_INVALID", "Aggregate state operation mismatch", {
       expected: aggregate.op,
       actual: snapshot.op,
     });
@@ -1697,7 +1697,7 @@ function aggregateOperatorState(
 
 function validateAggregateOperatorState(value: unknown): AggregateOperatorState {
   if (!isAggregateOperatorState(value)) {
-    throw new LaQLError("LAQL_BOOKMARK_INVALID", "Aggregate operator state is invalid");
+    throw new LakeqlError("LAKEQL_BOOKMARK_INVALID", "Aggregate operator state is invalid");
   }
   return value;
 }
@@ -1847,26 +1847,26 @@ function snapshotValue(value: unknown): AggregateSnapshotValue {
   ) {
     return value;
   }
-  throw new LaQLError("LAQL_TYPE_ERROR", "Aggregate operator state values must be JSON scalars", {
+  throw new LakeqlError("LAKEQL_TYPE_ERROR", "Aggregate operator state values must be JSON scalars", {
     value,
   });
 }
 
 function aggregateValue(row: Row, alias: string, aggregate: AggregateExpr | undefined): unknown {
-  if (!aggregate) throw new LaQLError("LAQL_VALIDATION_ERROR", `Missing aggregate ${alias}`);
+  if (!aggregate) throw new LakeqlError("LAKEQL_VALIDATION_ERROR", `Missing aggregate ${alias}`);
   if (aggregate.op === "count" && aggregate.column === undefined && aggregate.expr === undefined) {
     return true;
   }
   if (aggregate.expr !== undefined) return evaluate(aggregate.expr, row);
   if (aggregate.column === undefined) {
-    throw new LaQLError("LAQL_TYPE_ERROR", `${aggregate.op} requires a column`, { aggregate });
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", `${aggregate.op} requires a column`, { aggregate });
   }
   return valueForColumn(row, aggregate.column);
 }
 
 function valueForColumn(row: Row, column: string): unknown {
   if (!(column in row)) {
-    throw new LaQLError("LAQL_UNKNOWN_COLUMN", `Unknown column ${column}`, { column });
+    throw new LakeqlError("LAKEQL_UNKNOWN_COLUMN", `Unknown column ${column}`, { column });
   }
   return row[column];
 }
@@ -1877,23 +1877,23 @@ function validateAggregateRequest(
   options: AggregateOptions,
 ): void {
   if (groupColumns.some((column) => typeof column !== "string" || column.length === 0)) {
-    throw new LaQLError("LAQL_TYPE_ERROR", "groupBy columns must be non-empty strings");
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "groupBy columns must be non-empty strings");
   }
   if (Object.keys(spec).length === 0) {
-    throw new LaQLError("LAQL_TYPE_ERROR", "aggregate spec must contain at least one aggregate");
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "aggregate spec must contain at least one aggregate");
   }
   if (
     options.maxGroups !== undefined &&
     (!Number.isInteger(options.maxGroups) || options.maxGroups < 1)
   ) {
-    throw new LaQLError("LAQL_TYPE_ERROR", "maxGroups must be a positive integer");
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "maxGroups must be a positive integer");
   }
   if (options.orderBy !== undefined) normalizeOrderBy(options.orderBy);
   if (options.limit !== undefined && (!Number.isInteger(options.limit) || options.limit < 0)) {
-    throw new LaQLError("LAQL_TYPE_ERROR", "aggregate limit must be a non-negative integer");
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "aggregate limit must be a non-negative integer");
   }
   if (options.offset !== undefined && (!Number.isInteger(options.offset) || options.offset < 0)) {
-    throw new LaQLError("LAQL_TYPE_ERROR", "aggregate offset must be a non-negative integer");
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "aggregate offset must be a non-negative integer");
   }
   for (const aggregate of Object.values(spec)) validateAggregateExpr(aggregate);
 }
@@ -1925,22 +1925,22 @@ function validateAggregateExpr(aggregate: AggregateExpr): void {
     "any",
   ];
   if (!ops.includes(aggregate.op)) {
-    throw new LaQLError("LAQL_TYPE_ERROR", `Unsupported aggregate ${aggregate.op}`, { aggregate });
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", `Unsupported aggregate ${aggregate.op}`, { aggregate });
   }
   if (aggregate.column !== undefined && aggregate.expr !== undefined) {
-    throw new LaQLError("LAQL_TYPE_ERROR", "aggregate cannot specify both column and expr", {
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "aggregate cannot specify both column and expr", {
       aggregate,
     });
   }
   if (aggregate.op !== "count" && aggregate.column === undefined && aggregate.expr === undefined) {
-    throw new LaQLError("LAQL_TYPE_ERROR", `${aggregate.op} requires a column or expression`, {
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", `${aggregate.op} requires a column or expression`, {
       aggregate,
     });
   }
 }
 
 function throwAggregateType(op: string): never {
-  throw new LaQLError("LAQL_TYPE_ERROR", `${op} aggregate received an incompatible value`, { op });
+  throw new LakeqlError("LAKEQL_TYPE_ERROR", `${op} aggregate received an incompatible value`, { op });
 }
 
 export function parseJsonQuery(input: unknown): PathQueryInit {
@@ -2106,17 +2106,17 @@ function parseNonNegativeInt(value: unknown, field: string): number {
 
 function validateQueryInit(init: PathQueryInit): void {
   if (init.limit !== undefined && (!Number.isInteger(init.limit) || init.limit < 0)) {
-    throw new LaQLError("LAQL_TYPE_ERROR", "limit must be a non-negative integer");
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "limit must be a non-negative integer");
   }
   if (init.offset !== undefined && (!Number.isInteger(init.offset) || init.offset < 0)) {
-    throw new LaQLError("LAQL_TYPE_ERROR", "offset must be a non-negative integer");
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "offset must be a non-negative integer");
   }
   if (init.batchSize !== undefined && (!Number.isInteger(init.batchSize) || init.batchSize <= 0)) {
-    throw new LaQLError("LAQL_TYPE_ERROR", "batchSize must be a positive integer");
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "batchSize must be a positive integer");
   }
   if (init.orderBy !== undefined) normalizeOrderBy(init.orderBy);
   if (init.distinct !== undefined && typeof init.distinct !== "boolean") {
-    throw new LaQLError("LAQL_TYPE_ERROR", "distinct must be a boolean");
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "distinct must be a boolean");
   }
 }
 
@@ -2166,12 +2166,12 @@ function cloneBookmarkQuery(init: PathQueryInit): BookmarkQuery {
 
 function normalizeAllowedColumns(columns: string[]): string[] {
   if (!Array.isArray(columns) || columns.length === 0) {
-    throw new LaQLError("LAQL_TYPE_ERROR", "policy allowedColumns must be non-empty strings");
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "policy allowedColumns must be non-empty strings");
   }
   const unique = new Set<string>();
   for (const column of columns) {
     if (typeof column !== "string" || column.length === 0) {
-      throw new LaQLError("LAQL_TYPE_ERROR", "policy allowedColumns must be non-empty strings");
+      throw new LakeqlError("LAKEQL_TYPE_ERROR", "policy allowedColumns must be non-empty strings");
     }
     unique.add(column);
   }
@@ -2187,7 +2187,7 @@ function combineWhere(queryWhere: Expr | undefined, rowFilter: Expr | undefined)
 function policyLimit(limit: number | undefined, maxLimit: number | undefined): number | undefined {
   if (maxLimit === undefined) return limit;
   if (!Number.isInteger(maxLimit) || maxLimit < 0) {
-    throw new LaQLError("LAQL_TYPE_ERROR", "policy maxLimit must be a non-negative integer");
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "policy maxLimit must be a non-negative integer");
   }
   return limit === undefined ? maxLimit : Math.min(limit, maxLimit);
 }
@@ -2206,7 +2206,7 @@ function validatePolicyColumns(
   collectExprColumns(effectiveWhere, requested);
   for (const column of requested) {
     if (!allowed.has(column)) {
-      throw new LaQLError("LAQL_VALIDATION_ERROR", "Query references a disallowed column", {
+      throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Query references a disallowed column", {
         column,
       });
     }
@@ -2217,7 +2217,7 @@ async function expandPaths(store: ObjectStore, pattern: string): Promise<ObjectI
   if (!hasGlob(pattern)) {
     const head = await store.head(pattern);
     if (!head) {
-      throw new LaQLError("LAQL_OBJECT_NOT_FOUND", `No object at ${pattern}`, { path: pattern });
+      throw new LakeqlError("LAKEQL_OBJECT_NOT_FOUND", `No object at ${pattern}`, { path: pattern });
     }
     const object: ObjectInfo = { path: pattern, size: head.size };
     if (head.etag !== undefined) object.etag = head.etag;
@@ -2350,7 +2350,7 @@ function project(
   const out: Row = {};
   for (const column of select ?? []) {
     if (!(column in row)) {
-      throw new LaQLError("LAQL_UNKNOWN_COLUMN", `Unknown column ${column}`, { column });
+      throw new LakeqlError("LAKEQL_UNKNOWN_COLUMN", `Unknown column ${column}`, { column });
     }
     out[column] = row[column];
   }
@@ -2369,19 +2369,19 @@ function addDistinctRow(seen: Set<string>, row: Row, budget: QueryBudget): boole
 
 function normalizeOrderBy(terms: OrderByTerm[]): OrderByTerm[] {
   if (!Array.isArray(terms) || terms.length === 0) {
-    throw new LaQLError("LAQL_TYPE_ERROR", "orderBy must contain at least one term");
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "orderBy must contain at least one term");
   }
   return terms.map((term) => {
     if (typeof term.column !== "string" || term.column.length === 0) {
-      throw new LaQLError("LAQL_TYPE_ERROR", "orderBy columns must be non-empty strings");
+      throw new LakeqlError("LAKEQL_TYPE_ERROR", "orderBy columns must be non-empty strings");
     }
     const direction = term.direction ?? "asc";
     if (direction !== "asc" && direction !== "desc") {
-      throw new LaQLError("LAQL_TYPE_ERROR", "orderBy direction must be asc or desc", { term });
+      throw new LakeqlError("LAKEQL_TYPE_ERROR", "orderBy direction must be asc or desc", { term });
     }
     const nulls = term.nulls ?? (direction === "asc" ? "last" : "first");
     if (nulls !== "first" && nulls !== "last") {
-      throw new LaQLError("LAQL_TYPE_ERROR", "orderBy nulls must be first or last", { term });
+      throw new LakeqlError("LAKEQL_TYPE_ERROR", "orderBy nulls must be first or last", { term });
     }
     return { column: term.column, direction, nulls };
   });
@@ -2463,7 +2463,7 @@ function validateSortRow(row: Row, orderBy: OrderByTerm[]): void {
     const value = valueForColumn(row, term.column);
     if (value === null || value === undefined) continue;
     if (!isSortableValue(value)) {
-      throw new LaQLError("LAQL_TYPE_ERROR", "orderBy values must be scalar", {
+      throw new LakeqlError("LAKEQL_TYPE_ERROR", "orderBy values must be scalar", {
         column: term.column,
       });
     }
@@ -2479,12 +2479,12 @@ function compareSortValues(left: unknown, right: unknown, term: OrderByTerm): nu
     return leftNull ? nullOrder : -nullOrder;
   }
   if (!isSortableValue(left) || !isSortableValue(right)) {
-    throw new LaQLError("LAQL_TYPE_ERROR", "orderBy values must be scalar", {
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "orderBy values must be scalar", {
       column: term.column,
     });
   }
   if (typeof left !== typeof right) {
-    throw new LaQLError("LAQL_TYPE_ERROR", "orderBy values must have matching types", {
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "orderBy values must have matching types", {
       column: term.column,
     });
   }
@@ -2614,8 +2614,8 @@ function estimateOperatorMemoryBytes(value: unknown): number {
 }
 
 function throwBudget(metric: string, limit: number, actual: number): never {
-  throw new LaQLError(
-    "LAQL_BUDGET_EXCEEDED",
+  throw new LakeqlError(
+    "LAKEQL_BUDGET_EXCEEDED",
     `Query exceeded ${metric} budget (${actual} > ${limit}). Add a partition filter, date filter, h3 filter, or limit.`,
     { metric, limit, actual },
   );
@@ -2644,7 +2644,7 @@ function initialStats(queryId: string): QueryStats {
 }
 
 function throwParse(message: string): never {
-  throw new LaQLError("LAQL_PARSE_ERROR", message);
+  throw new LakeqlError("LAKEQL_PARSE_ERROR", message);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

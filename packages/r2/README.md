@@ -1,6 +1,6 @@
 # lakeql-r2
 
-Cloudflare R2 object-store adapter for LaQL.
+Cloudflare R2 object-store adapter for Lakeql.
 
 ## Ownership
 

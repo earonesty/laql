@@ -1,6 +1,6 @@
 # lakeql-geo
 
-Geospatial and H3 expression builders for LaQL.
+Geospatial and H3 expression builders for Lakeql.
 
 ## Ownership
 

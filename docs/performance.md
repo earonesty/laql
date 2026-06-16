@@ -1,6 +1,6 @@
 # Performance
 
-LaQL keeps reads bounded by batches and row groups. Projection is derived from `select`, `where`, and `orderBy`, so scans only request needed physical columns where the Parquet adapter can do so.
+Lakeql keeps reads bounded by batches and row groups. Projection is derived from `select`, `where`, and `orderBy`, so scans only request needed physical columns where the Parquet adapter can do so.
 
 Use `explain()` to inspect planned files and projected columns:
 

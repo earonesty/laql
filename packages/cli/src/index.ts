@@ -7,7 +7,7 @@ import {
   type Expr,
   evaluate,
   fingerprint,
-  LaQLError,
+  LakeqlError,
   type MemoryObjectStore,
   matches,
   memoryStore,
@@ -70,7 +70,7 @@ export async function runCli(argv: string[]): Promise<CliResult> {
         return fail(`Command ${args.command} is not implemented yet\n${usage()}\n`, 2);
     }
   } catch (error) {
-    if (error instanceof LaQLError) return fail(`${error.code}: ${error.message}\n`, 1);
+    if (error instanceof LakeqlError) return fail(`${error.code}: ${error.message}\n`, 1);
     if (error instanceof Error) return fail(`${error.message}\n`, 1);
     return fail("Unknown CLI error\n", 1);
   }
@@ -140,7 +140,7 @@ async function explain(args: ParsedArgs): Promise<string> {
   const lake = createParquetLake({ store });
   const ast = parseCliSql(sql, key);
   if (hasAggregation(ast)) {
-    throw new LaQLError("LAQL_SQL_UNSUPPORTED", "EXPLAIN for aggregate SQL is not supported");
+    throw new LakeqlError("LAKEQL_SQL_UNSUPPORTED", "EXPLAIN for aggregate SQL is not supported");
   }
   return `${(await builderFromAst(lake.path(key), ast).explain()).text}\n`;
 }
@@ -208,7 +208,7 @@ async function writeRows(outputPrefix: string, rows: Row[], args: ParsedArgs): P
   for (const file of result.files) {
     const bytes = await outStore.get(file.path);
     if (bytes === null) {
-      throw new LaQLError("LAQL_OBJECT_NOT_FOUND", `No generated output at ${file.path}`, {
+      throw new LakeqlError("LAKEQL_OBJECT_NOT_FOUND", `No generated output at ${file.path}`, {
         path: file.path,
       });
     }
@@ -236,7 +236,7 @@ async function writeRows(outputPrefix: string, rows: Row[], args: ParsedArgs): P
     await writeOutputManifest(outStore, args.manifest, manifest);
     const bytes = await outStore.get(args.manifest);
     if (bytes === null) {
-      throw new LaQLError("LAQL_OBJECT_NOT_FOUND", `No generated output at ${args.manifest}`, {
+      throw new LakeqlError("LAKEQL_OBJECT_NOT_FOUND", `No generated output at ${args.manifest}`, {
         path: args.manifest,
       });
     }
@@ -275,18 +275,18 @@ async function materializeCteIfNeeded(
 ): Promise<ReturnType<typeof parseSql>> {
   if (ast.cte === undefined) return ast;
   if (ast.source !== ast.cte.name) {
-    throw new LaQLError("LAQL_SQL_UNSUPPORTED", "CTEs are only supported as the outer FROM source");
+    throw new LakeqlError("LAKEQL_SQL_UNSUPPORTED", "CTEs are only supported as the outer FROM source");
   }
   if (ast.join !== undefined || ast.subqueryJoin !== undefined) {
-    throw new LaQLError("LAQL_SQL_UNSUPPORTED", "CTEs inside JOINs are not supported yet");
+    throw new LakeqlError("LAKEQL_SQL_UNSUPPORTED", "CTEs inside JOINs are not supported yet");
   }
   const cteRows = hasAggregation(ast.cte.query)
     ? await aggregateRowsFromAst(lake.path(ast.cte.query.source), ast.cte.query)
     : await builderFromAst(lake.path(ast.cte.query.source), ast.cte.query).toArray();
   if (cteRows.length === 0) {
-    throw new LaQLError("LAQL_SQL_UNSUPPORTED", "Empty CTE results are not supported yet");
+    throw new LakeqlError("LAKEQL_SQL_UNSUPPORTED", "Empty CTE results are not supported yet");
   }
-  const prefix = `__laql_cte/${ast.cte.name}`;
+  const prefix = `__lakeql_cte/${ast.cte.name}`;
   await writePartitionedParquet(store, prefix, {
     rows: cteRows,
     maxRowsPerFile: cteRows.length,
@@ -306,7 +306,7 @@ async function resolveScalarSubqueries(
       ? await aggregateRowsFromAst(lake.path(subquery.query.source), subquery.query)
       : await builderFromAst(lake.path(subquery.query.source), subquery.query).toArray();
     if (rows.length > 1) {
-      throw new LaQLError("LAQL_SQL_UNSUPPORTED", "Scalar subquery returned more than one row");
+      throw new LakeqlError("LAKEQL_SQL_UNSUPPORTED", "Scalar subquery returned more than one row");
     }
     values.set(id, rows.length === 0 ? null : (rows[0]?.[subquery.column] ?? null));
   }
@@ -328,10 +328,10 @@ async function resolveScalarSubqueries(
 function replaceScalarSubqueryExpr(expr: Expr, values: Map<string, unknown>): Expr {
   switch (expr.kind) {
     case "call":
-      if (expr.fn === "__laql_scalar_subquery") {
+      if (expr.fn === "__lakeql_scalar_subquery") {
         const id = expr.args[0];
         if (id?.kind !== "literal" || typeof id.value !== "string" || !values.has(id.value)) {
-          throw new LaQLError("LAQL_SQL_UNSUPPORTED", "Invalid scalar subquery placeholder");
+          throw new LakeqlError("LAKEQL_SQL_UNSUPPORTED", "Invalid scalar subquery placeholder");
         }
         return { kind: "literal", value: values.get(id.value) as string | number | boolean | null };
       }
@@ -392,10 +392,10 @@ async function joinRowsFromAst(
   ast: ReturnType<typeof parseSql>,
   args: ParsedArgs,
 ): Promise<Row[]> {
-  if (ast.join === undefined) throw new LaQLError("LAQL_VALIDATION_ERROR", "Missing SQL JOIN");
+  if (ast.join === undefined) throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Missing SQL JOIN");
   const join = ast.join;
   if (hasAggregation(ast)) {
-    throw new LaQLError("LAQL_SQL_UNSUPPORTED", "Aggregate SQL over JOIN is not supported yet");
+    throw new LakeqlError("LAKEQL_SQL_UNSUPPORTED", "Aggregate SQL over JOIN is not supported yet");
   }
   const leftAlias = leftJoinAlias(ast);
   const plan = planJoinSides(ast, leftAlias, join.alias);
@@ -441,7 +441,7 @@ function planJoinSides(
   leftAlias: string,
   rightAlias: string,
 ): JoinSidePlan {
-  if (ast.join === undefined) throw new LaQLError("LAQL_VALIDATION_ERROR", "Missing SQL JOIN");
+  if (ast.join === undefined) throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Missing SQL JOIN");
   const leftPredicates: Expr[] = [];
   const rightPredicates: Expr[] = [];
   const residualPredicates: Expr[] = [];
@@ -684,11 +684,11 @@ async function subqueryJoinRowsFromAst(
   args: ParsedArgs,
 ): Promise<Row[]> {
   if (ast.subqueryJoin === undefined) {
-    throw new LaQLError("LAQL_VALIDATION_ERROR", "Missing SQL IN subquery");
+    throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Missing SQL IN subquery");
   }
   if (hasAggregation(ast)) {
-    throw new LaQLError(
-      "LAQL_SQL_UNSUPPORTED",
+    throw new LakeqlError(
+      "LAKEQL_SQL_UNSUPPORTED",
       "Aggregate SQL over IN subquery is not supported yet",
     );
   }
@@ -775,8 +775,8 @@ function validateAggregateProjection(ast: ReturnType<typeof parseSql>): void {
     const { column } = selectColumn(select);
     if (column === "*") continue;
     if (!groupColumns.has(column)) {
-      throw new LaQLError(
-        "LAQL_SQL_UNSUPPORTED",
+      throw new LakeqlError(
+        "LAKEQL_SQL_UNSUPPORTED",
         `Aggregate SQL can only select grouped columns or aggregate expressions, not ${column}`,
       );
     }
@@ -812,7 +812,7 @@ function projectAggregateRows(
 
 function hiddenAggregateAlias(ast: ReturnType<typeof parseSql>): string {
   const reserved = new Set([...(ast.select ?? []), ...Object.keys(ast.aggregates ?? {})]);
-  let alias = "__laql_group_count";
+  let alias = "__lakeql_group_count";
   while (reserved.has(alias)) alias = `_${alias}`;
   return alias;
 }
@@ -907,7 +907,7 @@ function applyDefaultSource(
 
 function addDefaultFrom(sql: string): string {
   if (!/^\s*select\b/iu.test(sql)) {
-    throw new LaQLError("LAQL_PARSE_ERROR", "SQL must start with SELECT");
+    throw new LakeqlError("LAKEQL_PARSE_ERROR", "SQL must start with SELECT");
   }
   const clause = /\b(where|group\s+by|having|order\s+by|limit|offset)\b/iu.exec(sql);
   if (clause === null || clause.index === undefined) return `${sql} from input`;
@@ -977,7 +977,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     } else if (arg === "--job-id") {
       index += 1;
       args.jobId = requireValue(rest, index, arg);
-    } else throw new LaQLError("LAQL_PARSE_ERROR", `Unknown argument ${arg}`);
+    } else throw new LakeqlError("LAKEQL_PARSE_ERROR", `Unknown argument ${arg}`);
   }
   return args;
 }
@@ -985,30 +985,30 @@ function parseArgs(argv: string[]): ParsedArgs {
 function parseTableArg(value: string): { name: string; path: string } {
   const separator = value.indexOf("=");
   if (separator <= 0 || separator === value.length - 1) {
-    throw new LaQLError("LAQL_PARSE_ERROR", "--table must be name=path.parquet");
+    throw new LakeqlError("LAKEQL_PARSE_ERROR", "--table must be name=path.parquet");
   }
   const name = value.slice(0, separator);
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)) {
-    throw new LaQLError("LAQL_PARSE_ERROR", "--table name must be a SQL identifier");
+    throw new LakeqlError("LAKEQL_PARSE_ERROR", "--table name must be a SQL identifier");
   }
   return { name, path: value.slice(separator + 1) };
 }
 
 function parseFormat(value: string): "csv" | "json" | "ndjson" {
   if (value === "csv" || value === "json" || value === "ndjson") return value;
-  throw new LaQLError("LAQL_PARSE_ERROR", "--format must be csv, json, or ndjson");
+  throw new LakeqlError("LAKEQL_PARSE_ERROR", "--format must be csv, json, or ndjson");
 }
 
 function requireValue(args: string[], index: number, flag: string): string {
   const value = args[index];
   if (value === undefined || value.startsWith("--")) {
-    throw new LaQLError("LAQL_PARSE_ERROR", `${flag} requires a value`);
+    throw new LakeqlError("LAKEQL_PARSE_ERROR", `${flag} requires a value`);
   }
   return value;
 }
 
 function requireOption(value: string | undefined, flag: string): string {
-  if (value === undefined) throw new LaQLError("LAQL_PARSE_ERROR", `${flag} is required`);
+  if (value === undefined) throw new LakeqlError("LAKEQL_PARSE_ERROR", `${flag} is required`);
   return value;
 }
 
@@ -1017,14 +1017,14 @@ function parseCsv(value: string, flag: string): string[] {
     .split(",")
     .map((part) => part.trim())
     .filter((part) => part.length > 0);
-  if (values.length === 0) throw new LaQLError("LAQL_PARSE_ERROR", `${flag} must not be empty`);
+  if (values.length === 0) throw new LakeqlError("LAKEQL_PARSE_ERROR", `${flag} must not be empty`);
   return values;
 }
 
 function parsePositiveInt(value: string, flag: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new LaQLError("LAQL_PARSE_ERROR", `${flag} must be a positive integer`);
+    throw new LakeqlError("LAKEQL_PARSE_ERROR", `${flag} must be a positive integer`);
   }
   return parsed;
 }

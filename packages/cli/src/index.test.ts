@@ -156,7 +156,7 @@ describe("runCli", () => {
     ]);
 
     expect(result).toMatchObject({ exitCode: 1 });
-    expect(result.stderr).toContain("LAQL_BUDGET_EXCEEDED");
+    expect(result.stderr).toContain("LAKEQL_BUDGET_EXCEEDED");
   });
 
   it("executes bounded SQL joins with multiple equality keys", async () => {
@@ -612,7 +612,7 @@ describe("runCli", () => {
       aggregateExplain,
     ]) {
       expect(result).toMatchObject({ exitCode: 1 });
-      expect(result.stderr).toContain("LAQL_SQL_UNSUPPORTED");
+      expect(result.stderr).toContain("LAKEQL_SQL_UNSUPPORTED");
     }
   });
 
@@ -811,7 +811,7 @@ describe("runCli", () => {
     ]);
 
     expect(result).toMatchObject({ exitCode: 1 });
-    expect(result.stderr).toContain("LAQL_SQL_UNSUPPORTED");
+    expect(result.stderr).toContain("LAKEQL_SQL_UNSUPPORTED");
   });
 
   it("applies HAVING before aggregate ordering and limiting", async () => {
@@ -929,7 +929,7 @@ describe("runCli", () => {
   });
 
   it("writes query results to local Parquet files", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "laql-cli-"));
+    const dir = await mkdtemp(join(tmpdir(), "lakeql-cli-"));
     const output = join(dir, "west");
     const result = await runCli([
       "write",
@@ -958,7 +958,7 @@ describe("runCli", () => {
   });
 
   it("writes output manifests for local write commands", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "laql-cli-manifest-"));
+    const dir = await mkdtemp(join(tmpdir(), "lakeql-cli-manifest-"));
     const output = join(dir, "west");
     const manifestPath = join(dir, "manifest.json");
     const result = await runCli([
@@ -1006,7 +1006,7 @@ describe("runCli", () => {
   });
 
   it("compacts a local Parquet file into rewritten output files", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "laql-cli-compact-"));
+    const dir = await mkdtemp(join(tmpdir(), "lakeql-cli-compact-"));
     const output = join(dir, "sales");
     const result = await runCli([
       "compact",
@@ -1055,7 +1055,7 @@ describe("runCli", () => {
     });
     await expect(runCli(["query", "--path"])).resolves.toMatchObject({
       exitCode: 1,
-      stderr: expect.stringContaining("LAQL_PARSE_ERROR"),
+      stderr: expect.stringContaining("LAKEQL_PARSE_ERROR"),
     });
     await expect(runCli(["query", "--nope"])).resolves.toMatchObject({
       exitCode: 1,
@@ -1105,7 +1105,7 @@ describe("runCli", () => {
 });
 
 async function storesFixturePath(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "laql-cli-join-"));
+  const dir = await mkdtemp(join(tmpdir(), "lakeql-cli-join-"));
   const path = join(dir, "stores.parquet");
   const key = "tmp/stores.parquet";
   const store = memoryStore();

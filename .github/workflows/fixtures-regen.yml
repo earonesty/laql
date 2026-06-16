@@ -33,7 +33,7 @@ jobs:
       - name: Run external conformance
         run: pnpm test:conformance
         env:
-          LAQL_REQUIRE_EXTERNAL_ICEBERG: "1"
+          LAKEQL_REQUIRE_EXTERNAL_ICEBERG: "1"
 
       - name: Open fixture update pull request
         uses: peter-evans/create-pull-request@v6

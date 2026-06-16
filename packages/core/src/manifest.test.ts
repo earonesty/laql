@@ -202,17 +202,17 @@ describe("task and output manifests", () => {
   it("rejects missing or malformed persisted output manifests", async () => {
     const store = memoryStore();
     await expect(readOutputManifest(store, "missing.json")).rejects.toMatchObject({
-      code: "LAQL_OBJECT_NOT_FOUND",
+      code: "LAKEQL_OBJECT_NOT_FOUND",
     });
 
     await store.put("bad-json.json", new TextEncoder().encode("{"));
     await expect(readOutputManifest(store, "bad-json.json")).rejects.toMatchObject({
-      code: "LAQL_VALIDATION_ERROR",
+      code: "LAKEQL_VALIDATION_ERROR",
     });
 
     await store.put("bad-shape.json", new TextEncoder().encode('{"version":1,"entries":[{}]}'));
     await expect(readOutputManifest(store, "bad-shape.json")).rejects.toMatchObject({
-      code: "LAQL_VALIDATION_ERROR",
+      code: "LAKEQL_VALIDATION_ERROR",
     });
 
     await store.put(
@@ -229,7 +229,7 @@ describe("task and output manifests", () => {
       ),
     );
     await expect(readOutputManifest(store, "bad-entry.json")).rejects.toMatchObject({
-      code: "LAQL_VALIDATION_ERROR",
+      code: "LAKEQL_VALIDATION_ERROR",
     });
   });
 });
@@ -315,13 +315,13 @@ describe("bookmarks and checkpoints", () => {
     ).resolves.toEqual(inlineSortBookmark);
     expect(stableStringify(inlineSortBookmark)).toContain('"sort":"BwgJ"');
     await expect(verifyPaginationToken(`${token.slice(0, -1)}x`, "secret")).rejects.toMatchObject({
-      code: "LAQL_BOOKMARK_INVALID",
+      code: "LAKEQL_BOOKMARK_INVALID",
     });
     await expect(verifyPaginationToken(token, "wrong")).rejects.toMatchObject({
-      code: "LAQL_BOOKMARK_INVALID",
+      code: "LAKEQL_BOOKMARK_INVALID",
     });
     await expect(verifyPaginationToken("not-a-token", "secret")).rejects.toMatchObject({
-      code: "LAQL_BOOKMARK_INVALID",
+      code: "LAKEQL_BOOKMARK_INVALID",
     });
   });
 
@@ -565,7 +565,7 @@ describe("bookmarks and checkpoints", () => {
     for (const bookmark of invalidBookmarks) {
       const token = await signRawPayload(stableStringify(bookmark), "secret");
       await expect(verifyPaginationToken(token, "secret")).rejects.toMatchObject({
-        code: "LAQL_BOOKMARK_INVALID",
+        code: "LAKEQL_BOOKMARK_INVALID",
       });
     }
   });

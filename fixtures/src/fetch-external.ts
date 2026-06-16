@@ -50,7 +50,7 @@ if (existsSync(parquetTestingDest) && !force) {
   process.exit(0);
 }
 
-const tempRoot = fileURLToPath(new URL(`laql-external-${process.pid}/`, `file://${tmpdir()}/`));
+const tempRoot = fileURLToPath(new URL(`lakeql-external-${process.pid}/`, `file://${tmpdir()}/`));
 const checkout = join(tempRoot, "parquet-testing");
 
 rmSync(tempRoot, { recursive: true, force: true });

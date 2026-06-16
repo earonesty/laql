@@ -146,7 +146,7 @@ Each is **independent of the lake engine** and is the highest-ROI work in the re
 ## Non-negotiables
 
 - **Never silently wrong:** unsupported CSV/JSON shapes, Arrow types we can't map,
-  etc. get a typed `LAQL_*` rejection — same discipline as Parquet/Iceberg today.
+  etc. get a typed `LAKEQL_*` rejection — same discipline as Parquet/Iceberg today.
 - **Resource budgets apply to ingest too:** in-memory + CSV/JSON ingestion must
   respect `maxBytes` / `maxBufferedRows` / spill, not load unbounded files into a
   tab.

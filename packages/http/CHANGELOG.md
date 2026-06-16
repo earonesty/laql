@@ -7,7 +7,7 @@
 - 7402210: Bind the default global `fetch` to `globalThis` in `httpStore`. Browsers throw
   `TypeError: Illegal invocation` when `fetch` is invoked as a method with a
   non-global `this`; Node and workerd tolerated it, so this only surfaced when
-  running LaQL directly in a browser (e.g. the playground). A caller-supplied
+  running Lakeql directly in a browser (e.g. the playground). A caller-supplied
   `fetch` is still used as-is.
 - ec16676: Make `httpStore` robust against static hosts that compress responses and treat
   `Range` as advisory (e.g. GitHub Pages), which previously corrupted Parquet

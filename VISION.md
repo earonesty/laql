@@ -610,7 +610,7 @@ ambiguous aliases
 Example error:
 
 ```txt
-LAQL_TYPE_ERROR
+LAKEQL_TYPE_ERROR
 
 st_intersects(left, right) expects geometry-compatible values.
 
@@ -725,7 +725,7 @@ Resume re-plans and validates the fingerprint.
 Mismatch fails loudly:
 
 ```txt
-LAQL_BOOKMARK_STALE
+LAKEQL_BOOKMARK_STALE
 ```
 
 Task manifests are deterministic too: the same normalized query, snapshot,
@@ -803,7 +803,7 @@ The spill adapter and the checkpoint store are the same abstraction.
 Large operator state is externalized so bookmarks stay small enough for a queue message, a KV value, or a URL:
 
 ```txt
-_laql/tmp/query-<id>/state/
+_lakeql/tmp/query-<id>/state/
 ```
 
 ## Worker slicing
@@ -872,7 +872,7 @@ Tokens that cross a trust boundary are HMAC-signed or stored server-side by id.
 Forged or corrupted positions fail loudly:
 
 ```txt
-LAQL_BOOKMARK_INVALID
+LAKEQL_BOOKMARK_INVALID
 ```
 
 ## Resumable writes
@@ -1133,7 +1133,7 @@ lake.table("events", { readMode: "ignore-unsupported-deletes" })
 Strict failure:
 
 ```txt
-LAQL_UNSUPPORTED_DELETE_FILES
+LAKEQL_UNSUPPORTED_DELETE_FILES
 
 Snapshot 482719204991 contains equality delete files.
 This engine build applies position deletes only.
@@ -1470,11 +1470,11 @@ These are not required for correctness.
 Supported sidecars:
 
 ```txt
-_laql/index/bbox
-_laql/index/h3
-_laql/index/bloom
-_laql/index/minmax
-_laql/index/textgram
+_lakeql/index/bbox
+_lakeql/index/h3
+_lakeql/index/bloom
+_lakeql/index/minmax
+_lakeql/index/textgram
 ```
 
 Index metadata:
@@ -1488,13 +1488,13 @@ Index metadata:
     {
       "type": "h3",
       "column": "h3_8",
-      "path": "_laql/index/h3/h3_8/",
+      "path": "_lakeql/index/h3/h3_8/",
       "granularity": "file"
     },
     {
       "type": "bbox",
       "columns": ["minx", "miny", "maxx", "maxy"],
-      "path": "_laql/index/bbox/geom/",
+      "path": "_lakeql/index/bbox/geom/",
       "granularity": "row_group"
     }
   ]
@@ -1638,7 +1638,7 @@ budget: {
 If exceeded:
 
 ```txt
-LAQL_BUDGET_EXCEEDED
+LAKEQL_BUDGET_EXCEEDED
 
 Query would scan 14,822 files.
 Budget allows 500 files.
@@ -1904,10 +1904,10 @@ lakeql compact events \
 `lakeql` can expose a safe query endpoint.
 
 ```ts
-import { laqlHandler } from "lakeql/cloudflare";
+import { lakeqlHandler } from "lakeql/cloudflare";
 
 export default {
-  fetch: laqlHandler({
+  fetch: lakeqlHandler({
     store: env.DATA_BUCKET,
     catalog: icebergRestCatalog({
       url: env.ICEBERG_REST_URL,
@@ -2057,7 +2057,7 @@ Memory-safe aggregation requires a budget:
 If exceeded:
 
 ```txt
-LAQL_GROUP_LIMIT_EXCEEDED
+LAKEQL_GROUP_LIMIT_EXCEEDED
 
 Aggregation produced more than 10,000 groups.
 Use a lower-cardinality group key or increase maxGroups.
@@ -2126,7 +2126,7 @@ await lake.table("events")
 Spill files are temporary and namespaced:
 
 ```txt
-_laql/tmp/query-<id>/
+_lakeql/tmp/query-<id>/
 ```
 
 ---
@@ -2268,7 +2268,7 @@ await lake.table("events").insert(rows, {
 Validation failures:
 
 ```txt
-LAQL_VALIDATION_ERROR
+LAKEQL_VALIDATION_ERROR
 
 Column "lat" must be between -90 and 90.
 
@@ -2360,7 +2360,7 @@ Errors are structured.
 try {
   await query.toArray();
 } catch (e) {
-  if (e instanceof LaQLError) {
+  if (e instanceof LakeqlError) {
     console.error(e.code);
     console.error(e.message);
     console.error(e.details);
@@ -2371,21 +2371,21 @@ try {
 Codes:
 
 ```txt
-LAQL_PARSE_ERROR
-LAQL_TYPE_ERROR
-LAQL_UNKNOWN_TABLE
-LAQL_UNKNOWN_COLUMN
-LAQL_UNSUPPORTED_PUSHDOWN
-LAQL_BUDGET_EXCEEDED
-LAQL_OBJECT_NOT_FOUND
-LAQL_CATALOG_ERROR
-LAQL_ICEBERG_COMMIT_CONFLICT
-LAQL_UNSUPPORTED_DELETE_FILES
-LAQL_PARQUET_READ_ERROR
-LAQL_PARQUET_WRITE_ERROR
-LAQL_VALIDATION_ERROR
-LAQL_BOOKMARK_STALE
-LAQL_BOOKMARK_INVALID
+LAKEQL_PARSE_ERROR
+LAKEQL_TYPE_ERROR
+LAKEQL_UNKNOWN_TABLE
+LAKEQL_UNKNOWN_COLUMN
+LAKEQL_UNSUPPORTED_PUSHDOWN
+LAKEQL_BUDGET_EXCEEDED
+LAKEQL_OBJECT_NOT_FOUND
+LAKEQL_CATALOG_ERROR
+LAKEQL_ICEBERG_COMMIT_CONFLICT
+LAKEQL_UNSUPPORTED_DELETE_FILES
+LAKEQL_PARQUET_READ_ERROR
+LAKEQL_PARQUET_WRITE_ERROR
+LAKEQL_VALIDATION_ERROR
+LAKEQL_BOOKMARK_STALE
+LAKEQL_BOOKMARK_INVALID
 ```
 
 ---

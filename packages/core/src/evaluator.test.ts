@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LaQLError } from "./errors.js";
+import { LakeqlError } from "./errors.js";
 import { evaluate, jsonSafeValue, matches } from "./evaluator.js";
 import {
   and,
@@ -255,10 +255,10 @@ describe("evaluate", () => {
     const openTri = '{"type":"Polygon","coordinates":[[[0,0],[4,0],[0,4]]]}';
     expect(evaluate(fn("st_contains", openTri, inside), {})).toBe(true);
 
-    // Geometry types LaQL cannot evaluate are rejected, not silently coerced.
+    // Geometry types Lakeql cannot evaluate are rejected, not silently coerced.
     expect(() =>
       evaluate(fn("st_intersects", '{"type":"MultiPoint","coordinates":[[0,0]]}', triA), {}),
-    ).toThrowError(LaQLError);
+    ).toThrowError(LakeqlError);
   });
 
   it("returns null from null-propagating functions", () => {
@@ -317,64 +317,64 @@ describe("evaluate", () => {
   });
 
   it("throws typed errors for unknown columns and functions", () => {
-    expect(() => evaluate(eq("missing", 1), row)).toThrowError(LaQLError);
-    expect(() => evaluate(eq("city", 1), row)).toThrowError(LaQLError);
-    expect(() => evaluate(eq("nested", 1), { nested: { value: 1 } })).toThrowError(LaQLError);
-    expect(() => evaluate(fn("not_a_function", 1), row)).toThrowError(LaQLError);
-    expect(() => evaluate(fn("lower"), row)).toThrowError(LaQLError);
-    expect(() => evaluate(fn("lower", 1), row)).toThrowError(LaQLError);
-    expect(() => evaluate(fn("substr", col("city"), "x", 1), row)).toThrowError(LaQLError);
-    expect(() => evaluate(fn("replace", col("city"), 1, "x"), row)).toThrowError(LaQLError);
-    expect(() => evaluate(fn("cast", col("city"), "unknown"), row)).toThrowError(LaQLError);
-    expect(() => evaluate(fn("date_trunc", 1, col("date")), row)).toThrowError(LaQLError);
-    expect(() => evaluate(fn("date_trunc", "week", col("date")), row)).toThrowError(LaQLError);
-    expect(() => evaluate(fn("year", "not-a-date"), row)).toThrowError(LaQLError);
-    expect(() => evaluate(fn("round"), row)).toThrowError(LaQLError);
-    expect(() => evaluate(fn("round", col("city")), row)).toThrowError(LaQLError);
-    expect(() => evaluate(fn("least"), row)).toThrowError(LaQLError);
-    expect(() => evaluate(fn("st_bbox", -118, 34, -119, 35), row)).toThrowError(LaQLError);
-    expect(() => evaluate(fn("st_bbox", "x", 34, -118, 35), row)).toThrowError(LaQLError);
-    expect(() => evaluate(fn("st_point", "x", 34), row)).toThrowError(LaQLError);
-    expect(() => evaluate(fn("st_x", col("polygon")), row)).toThrowError(LaQLError);
+    expect(() => evaluate(eq("missing", 1), row)).toThrowError(LakeqlError);
+    expect(() => evaluate(eq("city", 1), row)).toThrowError(LakeqlError);
+    expect(() => evaluate(eq("nested", 1), { nested: { value: 1 } })).toThrowError(LakeqlError);
+    expect(() => evaluate(fn("not_a_function", 1), row)).toThrowError(LakeqlError);
+    expect(() => evaluate(fn("lower"), row)).toThrowError(LakeqlError);
+    expect(() => evaluate(fn("lower", 1), row)).toThrowError(LakeqlError);
+    expect(() => evaluate(fn("substr", col("city"), "x", 1), row)).toThrowError(LakeqlError);
+    expect(() => evaluate(fn("replace", col("city"), 1, "x"), row)).toThrowError(LakeqlError);
+    expect(() => evaluate(fn("cast", col("city"), "unknown"), row)).toThrowError(LakeqlError);
+    expect(() => evaluate(fn("date_trunc", 1, col("date")), row)).toThrowError(LakeqlError);
+    expect(() => evaluate(fn("date_trunc", "week", col("date")), row)).toThrowError(LakeqlError);
+    expect(() => evaluate(fn("year", "not-a-date"), row)).toThrowError(LakeqlError);
+    expect(() => evaluate(fn("round"), row)).toThrowError(LakeqlError);
+    expect(() => evaluate(fn("round", col("city")), row)).toThrowError(LakeqlError);
+    expect(() => evaluate(fn("least"), row)).toThrowError(LakeqlError);
+    expect(() => evaluate(fn("st_bbox", -118, 34, -119, 35), row)).toThrowError(LakeqlError);
+    expect(() => evaluate(fn("st_bbox", "x", 34, -118, 35), row)).toThrowError(LakeqlError);
+    expect(() => evaluate(fn("st_point", "x", 34), row)).toThrowError(LakeqlError);
+    expect(() => evaluate(fn("st_x", col("polygon")), row)).toThrowError(LakeqlError);
     expect(() =>
       evaluate(fn("st_envelope", '{"type":"MultiPoint","coordinates":[]}'), row),
-    ).toThrowError(LaQLError);
+    ).toThrowError(LakeqlError);
     expect(() => evaluate(fn("st_intersects", "not-json", col("geom")), row)).toThrowError(
-      LaQLError,
+      LakeqlError,
     );
-    expect(() => evaluate(fn("st_intersects", "{}", col("geom")), row)).toThrowError(LaQLError);
+    expect(() => evaluate(fn("st_intersects", "{}", col("geom")), row)).toThrowError(LakeqlError);
     expect(() =>
       evaluate(fn("st_intersects", '{"type":"LineString","coordinates":[]}', col("geom")), row),
-    ).toThrowError(LaQLError);
+    ).toThrowError(LakeqlError);
     expect(() =>
       evaluate(fn("st_intersects", '{"type":"Point","coordinates":["x",1]}', col("geom")), row),
-    ).toThrowError(LaQLError);
+    ).toThrowError(LakeqlError);
     expect(() =>
       evaluate(fn("st_intersects", '{"type":"Polygon","coordinates":[]}', col("geom")), row),
-    ).toThrowError(LaQLError);
+    ).toThrowError(LakeqlError);
     expect(() =>
       evaluate(fn("st_length", '{"type":"LineString","coordinates":[]}'), row),
-    ).toThrowError(LaQLError);
+    ).toThrowError(LakeqlError);
     expect(() =>
       evaluate(fn("st_area", '{"type":"MultiPoint","coordinates":[]}'), row),
-    ).toThrowError(LaQLError);
+    ).toThrowError(LakeqlError);
     expect(() =>
       evaluate(fn("st_length", '{"type":"MultiPoint","coordinates":[]}'), row),
-    ).toThrowError(LaQLError);
+    ).toThrowError(LakeqlError);
     expect(() => evaluate(fn("st_area", '{"type":"Polygon","coordinates":{}}'), row)).toThrowError(
-      LaQLError,
+      LakeqlError,
     );
-    expect(() => evaluate(fn("h3_in", col("h3_8"), "{}"), row)).toThrowError(LaQLError);
-    expect(() => evaluate(fn("h3_in", 1, "[]"), row)).toThrowError(LaQLError);
-    expect(() => evaluate(fn("h3_within", 1, "8829a1d757fffff", 1), row)).toThrowError(LaQLError);
+    expect(() => evaluate(fn("h3_in", col("h3_8"), "{}"), row)).toThrowError(LakeqlError);
+    expect(() => evaluate(fn("h3_in", 1, "[]"), row)).toThrowError(LakeqlError);
+    expect(() => evaluate(fn("h3_within", 1, "8829a1d757fffff", 1), row)).toThrowError(LakeqlError);
     expect(() => evaluate(fn("h3_within", col("h3_8"), "8829a1d757fffff", -1), row)).toThrowError(
-      LaQLError,
+      LakeqlError,
     );
-    expect(() => evaluate(fn("h3_within", col("h3_8"), "invalid", 1), row)).toThrowError(LaQLError);
-    expect(() => evaluate(fn("h3_cell", 34.05, -118.24, 16), row)).toThrowError(LaQLError);
-    expect(() => evaluate(fn("h3_parent", "invalid", 7), row)).toThrowError(LaQLError);
-    expect(() => evaluate(like("amount", "%"), row)).toThrowError(LaQLError);
-    expect(() => matches(lit(1), row)).toThrowError(LaQLError);
+    expect(() => evaluate(fn("h3_within", col("h3_8"), "invalid", 1), row)).toThrowError(LakeqlError);
+    expect(() => evaluate(fn("h3_cell", 34.05, -118.24, 16), row)).toThrowError(LakeqlError);
+    expect(() => evaluate(fn("h3_parent", "invalid", 7), row)).toThrowError(LakeqlError);
+    expect(() => evaluate(like("amount", "%"), row)).toThrowError(LakeqlError);
+    expect(() => matches(lit(1), row)).toThrowError(LakeqlError);
   });
 
   it("maps unsafe bigint values to strings for JSON output", () => {

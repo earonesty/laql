@@ -3,8 +3,8 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../../.." && pwd)
-IMAGE=${LAQL_ICEBERG_FIXTURE_IMAGE:-laql-iceberg-fixtures}
-OUT_DIR=${LAQL_ICEBERG_FIXTURE_OUT:-$REPO_ROOT/fixtures/external/iceberg-reference}
+IMAGE=${LAKEQL_ICEBERG_FIXTURE_IMAGE:-lakeql-iceberg-fixtures}
+OUT_DIR=${LAKEQL_ICEBERG_FIXTURE_OUT:-$REPO_ROOT/fixtures/external/iceberg-reference}
 
 if ! docker info >/dev/null 2>&1; then
   echo "Docker is required to generate Iceberg reference fixtures, but the daemon is not reachable." >&2

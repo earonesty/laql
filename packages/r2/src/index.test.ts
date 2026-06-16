@@ -104,7 +104,7 @@ describe("r2Store", () => {
     await store.delete("a.txt");
     await expect(store.get("a.txt")).resolves.toBeNull();
     await expect(store.getRange("missing.txt", { offset: 0, length: 1 })).rejects.toMatchObject({
-      code: "LAQL_OBJECT_NOT_FOUND",
+      code: "LAKEQL_OBJECT_NOT_FOUND",
     });
   });
 

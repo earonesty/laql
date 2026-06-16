@@ -45,7 +45,7 @@ jobs:
       - name: Run external conformance lane
         run: pnpm test:conformance
         env:
-          LAQL_REQUIRE_EXTERNAL_ICEBERG: "1"
+          LAKEQL_REQUIRE_EXTERNAL_ICEBERG: "1"
 
   reference:
     runs-on: ubuntu-latest
@@ -84,7 +84,7 @@ jobs:
 
       - name: Start MinIO
         run: |
-          docker run -d --name laql-minio \
+          docker run -d --name lakeql-minio \
             -p 9000:9000 \
             -e MINIO_ROOT_USER=minioadmin \
             -e MINIO_ROOT_PASSWORD=minioadmin \
@@ -95,12 +95,12 @@ jobs:
             fi
             sleep 1
           done
-          docker logs laql-minio
+          docker logs lakeql-minio
           exit 1
 
       - name: Start Iceberg REST fixture
         run: |
-          docker run -d --name laql-iceberg-rest \
+          docker run -d --name lakeql-iceberg-rest \
             -p 8181:8181 \
             apache/iceberg-rest-fixture:latest
           for i in $(seq 1 60); do
@@ -109,18 +109,18 @@ jobs:
             fi
             sleep 1
           done
-          docker logs laql-iceberg-rest
+          docker logs lakeql-iceberg-rest
           exit 1
 
       - name: Run provider conformance
         run: pnpm test:providers
         env:
-          LAQL_REQUIRE_PROVIDERS: "1"
-          LAQL_MINIO_ENDPOINT: http://127.0.0.1:9000
-          LAQL_MINIO_ACCESS_KEY: minioadmin
-          LAQL_MINIO_SECRET_KEY: minioadmin
-          LAQL_MINIO_BUCKET: laql-provider
-          LAQL_REST_CATALOG_URL: http://127.0.0.1:8181
+          LAKEQL_REQUIRE_PROVIDERS: "1"
+          LAKEQL_MINIO_ENDPOINT: http://127.0.0.1:9000
+          LAKEQL_MINIO_ACCESS_KEY: minioadmin
+          LAKEQL_MINIO_SECRET_KEY: minioadmin
+          LAKEQL_MINIO_BUCKET: lakeql-provider
+          LAKEQL_REST_CATALOG_URL: http://127.0.0.1:8181
 
   benchmark:
     runs-on: ubuntu-latest

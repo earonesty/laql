@@ -2,9 +2,9 @@ import { memoryStore } from "lakeql-core";
 import { describe, expect, it } from "vitest";
 import { icebergRestCatalog } from "./index.js";
 
-const catalogUrl = process.env.LAQL_REST_CATALOG_URL;
-const namespacePrefix = process.env.LAQL_REST_CATALOG_NAMESPACE ?? "laql_provider";
-const requireProviders = process.env.LAQL_REQUIRE_PROVIDERS === "1";
+const catalogUrl = process.env.LAKEQL_REST_CATALOG_URL;
+const namespacePrefix = process.env.LAKEQL_REST_CATALOG_NAMESPACE ?? "lakeql_provider";
+const requireProviders = process.env.LAKEQL_REQUIRE_PROVIDERS === "1";
 
 const describeRestCatalog = catalogUrl === undefined ? describe.skip : describe;
 const describeMissingRestCatalog =
@@ -12,7 +12,7 @@ const describeMissingRestCatalog =
 
 describeMissingRestCatalog("Iceberg REST catalog provider conformance", () => {
   it("requires Iceberg REST catalog provider environment", () => {
-    throw new Error("LAQL_REST_CATALOG_URL is required when LAQL_REQUIRE_PROVIDERS=1");
+    throw new Error("LAKEQL_REST_CATALOG_URL is required when LAKEQL_REQUIRE_PROVIDERS=1");
   });
 });
 

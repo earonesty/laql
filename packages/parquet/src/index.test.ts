@@ -12,7 +12,7 @@ import {
   gte,
   isIn,
   isNull,
-  LaQLError,
+  LakeqlError,
   like,
   lit,
   lt,
@@ -196,17 +196,17 @@ describe("readParquetObjects", () => {
     expect(last.big).toBe(9007199254740991n + BigInt(TYPES.rows - 1));
   });
 
-  it("fails loudly with LAQL_OBJECT_NOT_FOUND on a missing object", async () => {
+  it("fails loudly with LAKEQL_OBJECT_NOT_FOUND on a missing object", async () => {
     await expect(readParquetObjects(store, "data/nope.parquet")).rejects.toMatchObject({
-      code: "LAQL_OBJECT_NOT_FOUND",
+      code: "LAKEQL_OBJECT_NOT_FOUND",
     });
   });
 
-  it("wraps decode failures in LAQL_PARQUET_READ_ERROR", async () => {
+  it("wraps decode failures in LAKEQL_PARQUET_READ_ERROR", async () => {
     await store.put("data/garbage.parquet", new TextEncoder().encode("not parquet bytes"));
-    await expect(readParquetObjects(store, "data/garbage.parquet")).rejects.toThrowError(LaQLError);
+    await expect(readParquetObjects(store, "data/garbage.parquet")).rejects.toThrowError(LakeqlError);
     await expect(readParquetObjects(store, "data/garbage.parquet")).rejects.toMatchObject({
-      code: "LAQL_PARQUET_READ_ERROR",
+      code: "LAKEQL_PARQUET_READ_ERROR",
     });
   });
 });
@@ -235,7 +235,7 @@ describe("writeParquet", () => {
     });
   });
 
-  it("wraps writer failures in LAQL_PARQUET_WRITE_ERROR", async () => {
+  it("wraps writer failures in LAKEQL_PARQUET_WRITE_ERROR", async () => {
     await expect(
       writeParquet(memoryStore(), "out/bad.parquet", {
         columnData: [
@@ -243,7 +243,7 @@ describe("writeParquet", () => {
           { name: "name", data: ["a"], type: "STRING" },
         ],
       }),
-    ).rejects.toMatchObject({ code: "LAQL_PARQUET_WRITE_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_PARQUET_WRITE_ERROR" });
   });
 
   it("enforces create-only output mode for direct writes", async () => {
@@ -258,7 +258,7 @@ describe("writeParquet", () => {
         writeMode: "create",
         columnData: [{ name: "id", data: [2], type: "INT32" }],
       }),
-    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_VALIDATION_ERROR" });
 
     await writeParquet(outStore, "out/create.parquet", {
       writeMode: "overwrite",
@@ -273,7 +273,7 @@ describe("writeParquet", () => {
         writeMode: "append" as never,
         columnData: [{ name: "id", data: [1], type: "INT32" }],
       }),
-    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_TYPE_ERROR" });
   });
 
   it("matches the fixed write-golden fixture bytes", async () => {
@@ -330,19 +330,19 @@ describe("readIcebergParquetDeletes", () => {
         content: "position-delete",
         path: "deletes/bad-position.parquet",
       }),
-    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_VALIDATION_ERROR" });
     await expect(
       readIcebergParquetDeletes(outStore, {
         content: "equality-delete",
         path: "deletes/bad-equality.parquet",
       }),
-    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_VALIDATION_ERROR" });
     await expect(
       readIcebergParquetDeletes(outStore, {
         content: "deletion-vector",
         path: "deletes/vector.dv",
       }),
-    ).rejects.toMatchObject({ code: "LAQL_UNSUPPORTED_DELETE_FILES" });
+    ).rejects.toMatchObject({ code: "LAKEQL_UNSUPPORTED_DELETE_FILES" });
   });
 });
 
@@ -460,7 +460,7 @@ describe("writePartitionedParquet", () => {
     const first = await writePartitionedParquet(outStore, "out/retry", options);
 
     await expect(writePartitionedParquet(outStore, "out/retry", options)).rejects.toMatchObject({
-      code: "LAQL_VALIDATION_ERROR",
+      code: "LAKEQL_VALIDATION_ERROR",
     });
 
     await writePartitionedParquet(outStore, "out/retry", {
@@ -889,100 +889,100 @@ describe("writePartitionedParquet", () => {
 
     await expect(
       writePartitionedParquet(outStore, "", { rows: [{ id: 1 }] }),
-    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_TYPE_ERROR" });
     await expect(
       writePartitionedParquet(outStore, "out/empty", { rows: [] }),
-    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_VALIDATION_ERROR" });
     await expect(
       writePartitionedParquet(outStore, "out/duplicate-partitions", {
         rows: [{ date: "2026-01-01", id: 1 }],
         partitionBy: ["date", "date"],
       }),
-    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_VALIDATION_ERROR" });
     await expect(
       writePartitionedParquet(outStore, "out/bad-limit", {
         rows: [{ id: 1 }],
         maxRowsPerFile: 0,
       }),
-    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_TYPE_ERROR" });
     await expect(
       writePartitionedParquet(outStore, "out/bad-byte-limit", {
         rows: [{ id: 1 }],
         maxBytesPerFile: 0,
       }),
-    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_TYPE_ERROR" });
     await expect(
       writePartitionedParquet(outStore, "out/bad-task", {
         rows: [{ id: 1 }],
         taskId: "",
       }),
-    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_TYPE_ERROR" });
     await expect(
       writePartitionedParquet(outStore, "out/bad-idempotency", {
         rows: [{ id: 1 }],
         idempotencyKey: " ",
       }),
-    ).rejects.toMatchObject({ code: "LAQL_TYPE_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_TYPE_ERROR" });
     await expect(
       writePartitionedParquet(outStore, "out/bad-partition", {
         rows: [{ date: null, id: 1 }],
         partitionBy: ["date"],
       }),
-    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_VALIDATION_ERROR" });
     await expect(
       writePartitionedParquet(outStore, "out/mixed", { rows: [{ value: 1 }, { value: "x" }] }),
-    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_VALIDATION_ERROR" });
     await expect(
       writePartitionedParquet(outStore, "out/non-finite", { rows: [{ value: Number.NaN }] }),
-    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_VALIDATION_ERROR" });
     await expect(
       writePartitionedParquet(outStore, "out/object", { rows: [{ value: { nested: true } }] }),
-    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_VALIDATION_ERROR" });
     await expect(
       writePartitionedParquet(outStore, "out/all-null", { rows: [{ value: null }] }),
-    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_VALIDATION_ERROR" });
     await expect(
       writePartitionedParquet(outStore, "out/partition-only", {
         rows: [{ date: "2026-01-01" }],
         partitionBy: ["date"],
       }),
-    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_VALIDATION_ERROR" });
     await expect(
       writePartitionedParquet(outStore, "out/missing-required", {
         rows: [{ id: 1 }, { id: null }],
         validation: { required: ["id"] },
       }),
-    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_VALIDATION_ERROR" });
     await expect(
       writePartitionedParquet(outStore, "out/duplicate", {
         rows: [{ id: 1 }, { id: 1 }],
         validation: { unique: [["id"]] },
       }),
-    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_VALIDATION_ERROR" });
     await expect(
       writePartitionedParquet(outStore, "out/empty-unique", {
         rows: [{ id: 1 }],
         validation: { unique: [[]] },
       }),
-    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_VALIDATION_ERROR" });
     await expect(
       writePartitionedParquet(outStore, "out/range", {
         rows: [{ score: 101 }],
         validation: { ranges: { score: { min: 0, max: 100 } } },
       }),
-    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_VALIDATION_ERROR" });
     await expect(
       writePartitionedParquet(outStore, "out/range-type", {
         rows: [{ score: "101" }],
         validation: { ranges: { score: { min: 0, max: 100 } } },
       }),
-    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_VALIDATION_ERROR" });
     await expect(
       writePartitionedParquet(outStore, "out/enum", {
         rows: [{ category: "c" }],
         validation: { enums: { category: ["a", "b"] } },
       }),
-    ).rejects.toMatchObject({ code: "LAQL_VALIDATION_ERROR" });
+    ).rejects.toMatchObject({ code: "LAKEQL_VALIDATION_ERROR" });
   });
 });
 
@@ -1053,7 +1053,7 @@ describe("createParquetLake", () => {
   it("enforces typed query budgets", async () => {
     const lake = createParquetLake({ store, budget: { maxRowsDecoded: 2 } });
     await expect(lake.path(`data/${SALES.file}`).toArray()).rejects.toMatchObject({
-      code: "LAQL_BUDGET_EXCEEDED",
+      code: "LAKEQL_BUDGET_EXCEEDED",
     });
   });
 
@@ -1090,7 +1090,7 @@ describe("createParquetLake", () => {
           },
           { maxGroups: GROUPBY.groups - 1 },
         ),
-    ).rejects.toMatchObject({ code: "LAQL_GROUP_LIMIT_EXCEEDED" });
+    ).rejects.toMatchObject({ code: "LAKEQL_GROUP_LIMIT_EXCEEDED" });
   });
 
   it("queries geo and h3 fixtures with function predicates", async () => {
@@ -1359,9 +1359,9 @@ describe("createParquetLake", () => {
     expect(explain.json.filesSkipped).toBe(1);
   });
 
-  it("rejects invalid JSON queries with LAQL_PARSE_ERROR", () => {
+  it("rejects invalid JSON queries with LAKEQL_PARSE_ERROR", () => {
     const lake = createParquetLake({ store });
-    expect(() => lake.query({ version: 2, from: `data/${SALES.file}` })).toThrowError(LaQLError);
+    expect(() => lake.query({ version: 2, from: `data/${SALES.file}` })).toThrowError(LakeqlError);
     expect(() => lake.query({ version: 2, from: `data/${SALES.file}` })).toThrowError(
       /version must be 1/u,
     );
@@ -1512,7 +1512,7 @@ describe("rejectUnsupportedParquetSchema", () => {
           { name: "street", type: "BYTE_ARRAY", converted_type: "UTF8" },
         ]),
       ),
-    ).toThrowError(LaQLError);
+    ).toThrowError(LakeqlError);
     expect(() =>
       rejectUnsupportedParquetSchema(
         metadataWithSchema([
@@ -1602,7 +1602,7 @@ describe("rejectUnsupportedParquetSchema", () => {
         ]),
         undefined,
       ),
-    ).toThrowError(LaQLError);
+    ).toThrowError(LakeqlError);
   });
 });
 

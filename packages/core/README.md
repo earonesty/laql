@@ -14,7 +14,7 @@ to decode Parquet or load Iceberg metadata; adapters implement those pieces.
 - Object storage: `ObjectStore`, `ConditionalObjectStore`, `memoryStore`, and read-control helpers.
 - Resource controls: `maxBytes`, `maxFiles`, `maxRowsDecoded`, `maxRangeRequests`, `maxBufferedRows`, `maxMemoryBytes`, `maxConcurrentReads`, `maxElapsedMs`, and `signal`.
 - Manifests and resumability: output manifests, task checkpoints, bookmarks, and sidecar indexes.
-- Errors: `LaQLError`, stable error codes, and `isLaQLError`.
+- Errors: `LakeqlError`, stable error codes, and `isLakeqlError`.
 
 Use this package when building a new storage or scan adapter. Application code usually imports the
 aggregate `lakeql` package unless it needs a lower-level contract.

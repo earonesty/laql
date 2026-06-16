@@ -1,4 +1,4 @@
-import { LaQLError } from "./errors.js";
+import { LakeqlError } from "./errors.js";
 
 export type Scalar = string | number | boolean | bigint | null;
 
@@ -175,7 +175,7 @@ export function isNotNull(column: ColumnInput): NullCheckExpr {
 
 function logical(op: "and" | "or", operands: Expr[]): LogicalExpr {
   if (operands.length < 2) {
-    throw new LaQLError("LAQL_TYPE_ERROR", `${op}() requires at least 2 operands`, {
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", `${op}() requires at least 2 operands`, {
       received: operands.length,
     });
   }

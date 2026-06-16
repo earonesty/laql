@@ -899,7 +899,7 @@ async function avroObjectContainer(
   });
   const encoder = new avro.streams.BlockEncoder(type, {
     codec: "null",
-    syncMarker: Buffer.from("laql-iceberg-avr", "utf8"),
+    syncMarker: Buffer.from("lakeql-iceberg-avr", "utf8"),
   });
   const chunks: Uint8Array[] = [];
   encoder.on("data", (chunk: Uint8Array) => chunks.push(chunk));

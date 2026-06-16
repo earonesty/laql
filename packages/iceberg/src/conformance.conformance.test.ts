@@ -33,11 +33,11 @@ const requiredExternalCases = [
   "schema-evolution",
   "snapshot-history",
 ] as const;
-const requiresExternalIceberg = process.env.LAQL_REQUIRE_EXTERNAL_ICEBERG === "1";
+const requiresExternalIceberg = process.env.LAKEQL_REQUIRE_EXTERNAL_ICEBERG === "1";
 const describeExternal =
-  process.env.LAQL_CONFORMANCE === "1" && cases.length > 0 ? describe : describe.skip;
+  process.env.LAKEQL_CONFORMANCE === "1" && cases.length > 0 ? describe : describe.skip;
 const describeMissingRequired =
-  process.env.LAQL_CONFORMANCE === "1" && requiresExternalIceberg && cases.length === 0
+  process.env.LAKEQL_CONFORMANCE === "1" && requiresExternalIceberg && cases.length === 0
     ? describe
     : describe.skip;
 

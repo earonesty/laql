@@ -34,7 +34,7 @@ const lake = createLake({
 
 lakeql reads Parquet metadata and row groups with range requests. Peak row buffering is controlled by
 `maxBufferedRows`; object-read fanout is controlled by `maxConcurrentReads`; cancellation rejects at
-await boundaries with `LAQL_ABORTED`.
+await boundaries with `LAKEQL_ABORTED`.
 
 ## Deployable example
 

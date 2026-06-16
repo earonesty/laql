@@ -142,10 +142,10 @@ node packages/cli/dist/bin.js query \
   --sql "select store_id, amount where region = 'west' order by amount asc limit 2"
 ```
 
-Invalid SQL is rejected with `LAQL_PARSE_ERROR`. Valid SQL outside the supported
+Invalid SQL is rejected with `LAKEQL_PARSE_ERROR`. Valid SQL outside the supported
 execution subset, including broad join forms, unsupported subqueries, nested or
 recursive CTEs, simple `CASE <expr>` forms, and broad SQL execution, is rejected with
-`LAQL_SQL_UNSUPPORTED`.
+`LAKEQL_SQL_UNSUPPORTED`.
 
 ## Feature Matrix
 
@@ -153,16 +153,16 @@ recursive CTEs, simple `CASE <expr>` forms, and broad SQL execution, is rejected
 | --- | --- | --- | --- |
 | Standard `SELECT ... FROM ...` | Supported |  | CLI also supports omitted `from input` for `--path` queries. |
 | `WHERE`, `ORDER BY`, `LIMIT`, `OFFSET` | Supported |  | Expressions use SQL three-valued null semantics. |
-| Scalar functions, arithmetic, searched `CASE WHEN` | Supported | `LAQL_SQL_UNSUPPORTED` | Unknown functions and simple `CASE <expr>` are rejected. |
+| Scalar functions, arithmetic, searched `CASE WHEN` | Supported | `LAKEQL_SQL_UNSUPPORTED` | Unknown functions and simple `CASE <expr>` are rejected. |
 | `SELECT DISTINCT` | Supported |  | Distinct applies to projected rows. |
 | `GROUP BY`, `HAVING`, aggregate expressions | Supported |  | Includes global aggregates and multiple group keys. |
-| `COUNT(DISTINCT x)` and engine aggregate ops | Supported | `LAQL_SQL_UNSUPPORTED` | `COUNT(DISTINCT *)` is rejected. |
-| Two-table `INNER JOIN` / `LEFT JOIN` | Supported | `LAQL_SQL_UNSUPPORTED` | Bounded broadcast joins over named CLI tables only. |
-| Multi-key `JOIN ... ON` / `JOIN ... USING` | Supported | `LAQL_SQL_UNSUPPORTED` | Equality keys only. |
-| Right/full/cross/N-way/non-equality joins | Rejected | `LAQL_SQL_UNSUPPORTED` | Broad join planning is intentionally out of scope. |
-| `IN` / `NOT IN` subqueries | Supported | `LAQL_SQL_UNSUPPORTED` | Scoped named-table subqueries execute as bounded semi/anti joins. |
-| Scalar subqueries | Supported subset | `LAQL_SQL_UNSUPPORTED` | Only uncorrelated aggregate or `LIMIT 1` scalar subqueries. |
-| Non-recursive single-table CTEs | Supported subset | `LAQL_SQL_UNSUPPORTED` | One outer CTE; nested joins/subqueries/CTEs in the CTE body are rejected. |
-| Recursive CTEs and correlated subqueries | Rejected | `LAQL_PARSE_ERROR` / `LAQL_SQL_UNSUPPORTED` | No partial execution. |
-| Window functions and explicit frames | Rejected | `LAQL_SQL_UNSUPPORTED` | Reserved for a future streaming-friendly subset. |
-| DDL, DML, multi-statement SQL | Rejected | `LAQL_SQL_UNSUPPORTED` | SQL is a CLI query dialect, not a database runtime. |
+| `COUNT(DISTINCT x)` and engine aggregate ops | Supported | `LAKEQL_SQL_UNSUPPORTED` | `COUNT(DISTINCT *)` is rejected. |
+| Two-table `INNER JOIN` / `LEFT JOIN` | Supported | `LAKEQL_SQL_UNSUPPORTED` | Bounded broadcast joins over named CLI tables only. |
+| Multi-key `JOIN ... ON` / `JOIN ... USING` | Supported | `LAKEQL_SQL_UNSUPPORTED` | Equality keys only. |
+| Right/full/cross/N-way/non-equality joins | Rejected | `LAKEQL_SQL_UNSUPPORTED` | Broad join planning is intentionally out of scope. |
+| `IN` / `NOT IN` subqueries | Supported | `LAKEQL_SQL_UNSUPPORTED` | Scoped named-table subqueries execute as bounded semi/anti joins. |
+| Scalar subqueries | Supported subset | `LAKEQL_SQL_UNSUPPORTED` | Only uncorrelated aggregate or `LIMIT 1` scalar subqueries. |
+| Non-recursive single-table CTEs | Supported subset | `LAKEQL_SQL_UNSUPPORTED` | One outer CTE; nested joins/subqueries/CTEs in the CTE body are rejected. |
+| Recursive CTEs and correlated subqueries | Rejected | `LAKEQL_PARSE_ERROR` / `LAKEQL_SQL_UNSUPPORTED` | No partial execution. |
+| Window functions and explicit frames | Rejected | `LAKEQL_SQL_UNSUPPORTED` | Reserved for a future streaming-friendly subset. |
+| DDL, DML, multi-statement SQL | Rejected | `LAKEQL_SQL_UNSUPPORTED` | SQL is a CLI query dialect, not a database runtime. |

@@ -80,7 +80,7 @@ function render(rows) {
     "",
     "This file is generated from `docs/compatibility.json`. Run `pnpm docs:compatibility` after editing the source of truth.",
     "",
-    "Legend: supported+tested = covered by tests; supported = implemented with narrower coverage; detected+rejected = fails with a typed `LaQLError`; planned = not yet a compatibility promise.",
+    "Legend: supported+tested = covered by tests; supported = implemented with narrower coverage; detected+rejected = fails with a typed `LakeqlError`; planned = not yet a compatibility promise.",
     "",
     "| Area | Feature | Status | Notes |",
     "| --- | --- | --- | --- |",

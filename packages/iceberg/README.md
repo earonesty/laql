@@ -1,6 +1,6 @@
 # lakeql-iceberg
 
-Iceberg table utilities for LaQL: metadata loading, JSON/Avro manifest hydration, snapshot/file planning, delete application, and append commit helpers.
+Iceberg table utilities for Lakeql: metadata loading, JSON/Avro manifest hydration, snapshot/file planning, delete application, and append commit helpers.
 
 ## Ownership
 

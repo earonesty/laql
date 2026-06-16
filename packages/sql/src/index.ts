@@ -2,7 +2,7 @@ import {
   type AggregateOp,
   type AggregateSpec,
   type Expr,
-  LaQLError,
+  LakeqlError,
   type OrderByTerm,
   type PathQueryInit,
 } from "lakeql-core";
@@ -426,7 +426,7 @@ function scalarSubqueryToExpr(subquery: PgNode, context: SqlParseContext): Expr 
   const id = `scalar_${context.nextScalarSubqueryId}`;
   context.nextScalarSubqueryId += 1;
   context.scalarSubqueries[id] = { query, column: outputColumns[0] as string };
-  return { kind: "call", fn: "__laql_scalar_subquery", args: [{ kind: "literal", value: id }] };
+  return { kind: "call", fn: "__lakeql_scalar_subquery", args: [{ kind: "literal", value: id }] };
 }
 
 function scalarSubqueryOutputColumns(query: SqlQueryAst): string[] {
@@ -793,7 +793,7 @@ function formatExpr(expr: Expr, ast?: SqlQueryAst): string {
     case "like":
       return `${formatExpr(expr.target)} ${expr.caseInsensitive ? "ilike" : "like"} ${formatLiteral(expr.pattern)}`;
     case "call":
-      if (expr.fn === "__laql_scalar_subquery") return formatScalarSubqueryExpr(expr, ast);
+      if (expr.fn === "__lakeql_scalar_subquery") return formatScalarSubqueryExpr(expr, ast);
       return `${formatIdentifier(expr.fn)}(${expr.args.map((arg) => formatExpr(arg, ast)).join(", ")})`;
     case "arithmetic":
       return `${formatExpr(expr.left, ast)} ${formatArithmeticOp(expr.op)} ${formatExpr(expr.right, ast)}`;
@@ -947,9 +947,9 @@ function asNode(value: unknown, label: string): PgNode {
 }
 
 function throwParse(message: string): never {
-  throw new LaQLError("LAQL_PARSE_ERROR", message);
+  throw new LakeqlError("LAKEQL_PARSE_ERROR", message);
 }
 
 function throwUnsupported(message: string): never {
-  throw new LaQLError("LAQL_SQL_UNSUPPORTED", message);
+  throw new LakeqlError("LAKEQL_SQL_UNSUPPORTED", message);
 }

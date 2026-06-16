@@ -1,6 +1,6 @@
 # lakeql-http
 
-HTTP range-read object-store adapter for LaQL.
+HTTP range-read object-store adapter for Lakeql.
 
 ## Ownership
 

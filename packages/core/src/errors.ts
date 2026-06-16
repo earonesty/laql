@@ -1,42 +1,42 @@
 export const ERROR_CODES = [
-  "LAQL_PARSE_ERROR",
-  "LAQL_SQL_UNSUPPORTED",
-  "LAQL_TYPE_ERROR",
-  "LAQL_UNKNOWN_TABLE",
-  "LAQL_UNKNOWN_COLUMN",
-  "LAQL_UNSUPPORTED_PUSHDOWN",
-  "LAQL_BUDGET_EXCEEDED",
-  "LAQL_GROUP_LIMIT_EXCEEDED",
-  "LAQL_OBJECT_NOT_FOUND",
-  "LAQL_CATALOG_ERROR",
-  "LAQL_UNSUPPORTED_ICEBERG_FEATURE",
-  "LAQL_UNSUPPORTED_PARQUET_FEATURE",
-  "LAQL_ICEBERG_COMMIT_CONFLICT",
-  "LAQL_UNSUPPORTED_DELETE_FILES",
-  "LAQL_PARQUET_READ_ERROR",
-  "LAQL_PARQUET_WRITE_ERROR",
-  "LAQL_VALIDATION_ERROR",
-  "LAQL_BOOKMARK_STALE",
-  "LAQL_BOOKMARK_INVALID",
-  "LAQL_ABORTED",
+  "LAKEQL_PARSE_ERROR",
+  "LAKEQL_SQL_UNSUPPORTED",
+  "LAKEQL_TYPE_ERROR",
+  "LAKEQL_UNKNOWN_TABLE",
+  "LAKEQL_UNKNOWN_COLUMN",
+  "LAKEQL_UNSUPPORTED_PUSHDOWN",
+  "LAKEQL_BUDGET_EXCEEDED",
+  "LAKEQL_GROUP_LIMIT_EXCEEDED",
+  "LAKEQL_OBJECT_NOT_FOUND",
+  "LAKEQL_CATALOG_ERROR",
+  "LAKEQL_UNSUPPORTED_ICEBERG_FEATURE",
+  "LAKEQL_UNSUPPORTED_PARQUET_FEATURE",
+  "LAKEQL_ICEBERG_COMMIT_CONFLICT",
+  "LAKEQL_UNSUPPORTED_DELETE_FILES",
+  "LAKEQL_PARQUET_READ_ERROR",
+  "LAKEQL_PARQUET_WRITE_ERROR",
+  "LAKEQL_VALIDATION_ERROR",
+  "LAKEQL_BOOKMARK_STALE",
+  "LAKEQL_BOOKMARK_INVALID",
+  "LAKEQL_ABORTED",
 ] as const;
 
-export type LaQLErrorCode = (typeof ERROR_CODES)[number];
+export type LakeqlErrorCode = (typeof ERROR_CODES)[number];
 
 export type ErrorDetails = Record<string, unknown>;
 
-export class LaQLError extends Error {
-  readonly code: LaQLErrorCode;
+export class LakeqlError extends Error {
+  readonly code: LakeqlErrorCode;
   readonly details: ErrorDetails;
 
-  constructor(code: LaQLErrorCode, message: string, details: ErrorDetails = {}) {
+  constructor(code: LakeqlErrorCode, message: string, details: ErrorDetails = {}) {
     super(message);
-    this.name = "LaQLError";
+    this.name = "LakeqlError";
     this.code = code;
     this.details = details;
   }
 }
 
-export function isLaQLError(value: unknown): value is LaQLError {
-  return value instanceof LaQLError;
+export function isLakeqlError(value: unknown): value is LakeqlError {
+  return value instanceof LakeqlError;
 }

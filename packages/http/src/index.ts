@@ -1,5 +1,5 @@
 import {
-  LaQLError,
+  LakeqlError,
   type ListOptions,
   type ObjectHead,
   type ObjectInfo,
@@ -45,7 +45,7 @@ export class HttpObjectStore implements ObjectStore {
 
   async getRange(path: string, range: { offset: number; length: number }): Promise<Uint8Array> {
     if (range.offset < 0 || range.length < 0) {
-      throw new LaQLError("LAQL_OBJECT_NOT_FOUND", `Invalid range for ${path}`, { path, range });
+      throw new LakeqlError("LAKEQL_OBJECT_NOT_FOUND", `Invalid range for ${path}`, { path, range });
     }
     const response = await this.fetchPath(path, {
       method: "GET",
@@ -80,7 +80,7 @@ export class HttpObjectStore implements ObjectStore {
 
   async *list(prefix: string, options?: ListOptions): AsyncIterable<ObjectInfo> {
     if (!this.objects) {
-      throw new LaQLError("LAQL_UNSUPPORTED_PUSHDOWN", "HTTP store list requires an object index", {
+      throw new LakeqlError("LAKEQL_UNSUPPORTED_PUSHDOWN", "HTTP store list requires an object index", {
         prefix,
       });
     }
@@ -112,7 +112,7 @@ export class HttpObjectStore implements ObjectStore {
     const contentLength = response.headers.get("content-length");
     const size = total ?? (contentLength ? Number(contentLength) : Number.NaN);
     if (!Number.isFinite(size)) {
-      throw new LaQLError("LAQL_OBJECT_NOT_FOUND", `Missing size for ${path}`, { path });
+      throw new LakeqlError("LAKEQL_OBJECT_NOT_FOUND", `Missing size for ${path}`, { path });
     }
     const head: ObjectHead = { size };
     const etag = response.headers.get("etag");
@@ -136,7 +136,7 @@ export class HttpObjectStore implements ObjectStore {
     const base = new URL(this.baseUrl);
     const url = new URL(encodeObjectPath(path), base);
     if (url.origin !== base.origin || !url.pathname.startsWith(base.pathname)) {
-      throw new LaQLError("LAQL_VALIDATION_ERROR", `Object path escapes HTTP base URL: ${path}`, {
+      throw new LakeqlError("LAKEQL_VALIDATION_ERROR", `Object path escapes HTTP base URL: ${path}`, {
         path,
         baseUrl: this.baseUrl,
       });
@@ -147,7 +147,7 @@ export class HttpObjectStore implements ObjectStore {
 
 function encodeObjectPath(path: string): string {
   if (/^(?:[a-z][a-z0-9+.-]*:)?\/\//iu.test(path) || path.startsWith("/")) {
-    throw new LaQLError("LAQL_VALIDATION_ERROR", `Object path must be relative: ${path}`, {
+    throw new LakeqlError("LAKEQL_VALIDATION_ERROR", `Object path must be relative: ${path}`, {
       path,
     });
   }
@@ -159,12 +159,12 @@ function encodeObjectPath(path: string): string {
       try {
         decoded = decodeURIComponent(segment);
       } catch {
-        throw new LaQLError("LAQL_VALIDATION_ERROR", `Object path has invalid encoding: ${path}`, {
+        throw new LakeqlError("LAKEQL_VALIDATION_ERROR", `Object path has invalid encoding: ${path}`, {
           path,
         });
       }
       if (decoded === "." || decoded === "..") {
-        throw new LaQLError("LAQL_VALIDATION_ERROR", `Object path contains traversal: ${path}`, {
+        throw new LakeqlError("LAKEQL_VALIDATION_ERROR", `Object path contains traversal: ${path}`, {
           path,
         });
       }
@@ -185,9 +185,9 @@ function parseContentRangeTotal(header: string | null): number | undefined {
 function assertOk(response: Response, path: string): void {
   if (response.ok || response.status === 206) return;
   if (response.status === 404) {
-    throw new LaQLError("LAQL_OBJECT_NOT_FOUND", `No object at ${path}`, { path });
+    throw new LakeqlError("LAKEQL_OBJECT_NOT_FOUND", `No object at ${path}`, { path });
   }
-  throw new LaQLError("LAQL_OBJECT_NOT_FOUND", `HTTP object request failed for ${path}`, {
+  throw new LakeqlError("LAKEQL_OBJECT_NOT_FOUND", `HTTP object request failed for ${path}`, {
     path,
     status: response.status,
   });

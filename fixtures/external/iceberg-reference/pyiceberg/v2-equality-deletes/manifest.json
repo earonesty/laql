@@ -29,15 +29,15 @@
       "sha256": "d5ea26a48f261db6d506e68d82507a31f4295256afd33c1bdc994551fe9a733a"
     },
     {
-      "path": "warehouse/db.db/places/metadata/laql-data-manifest.json",
+      "path": "warehouse/db.db/places/metadata/lakeql-data-manifest.json",
       "sha256": "5a661cc479a41ff9f0975d9e76db37d4bf942cceb6b3d2fb9033b57a31d3287a"
     },
     {
-      "path": "warehouse/db.db/places/metadata/laql-delete-manifest.json",
+      "path": "warehouse/db.db/places/metadata/lakeql-delete-manifest.json",
       "sha256": "87fc7e49e6d7aeecdbdadfbc17f40c1cfcbcb4f68002f1274c1f2eadca9ad76c"
     },
     {
-      "path": "warehouse/db.db/places/metadata/laql-equality.metadata.json",
+      "path": "warehouse/db.db/places/metadata/lakeql-equality.metadata.json",
       "sha256": "95376c7ad528e1eae50ff36f0212245d4d1cc8153ec422277734edf1ea2d3ec7"
     },
     {
@@ -45,7 +45,7 @@
       "sha256": "f779f3196b6907f065efc9d0daec3bef3d394accc5646434554e18aa73f5f17c"
     }
   ],
-  "metadataPath": "warehouse/db.db/places/metadata/laql-equality.metadata.json",
+  "metadataPath": "warehouse/db.db/places/metadata/lakeql-equality.metadata.json",
   "snapshots": [
     {
       "asOfTimestampMs": 1767225600000,

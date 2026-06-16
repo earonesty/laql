@@ -78,7 +78,7 @@ class FakeR2Bucket {
   }
 }
 
-describe("laql/cloudflare", () => {
+describe("lakeql/cloudflare", () => {
   it("imports the Cloudflare entrypoint in the Workers runtime", async () => {
     const cloudflare = await import("./cloudflare.js");
 
@@ -142,8 +142,8 @@ describe("laql/cloudflare", () => {
       rowsReturned: 2,
     });
     expect(result.stats.rangeRequests).toBeGreaterThan(0);
-    expect(counts).toEqual(["laql.query.created"]);
-    expect(timings).toEqual(["laql.query.elapsed"]);
+    expect(counts).toEqual(["lakeql.query.created"]);
+    expect(timings).toEqual(["lakeql.query.elapsed"]);
 
     const slice = await lake
       .path("events.parquet")

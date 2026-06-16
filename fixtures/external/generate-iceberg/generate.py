@@ -179,7 +179,7 @@ def generate_spark_case(
     spark = None
     try:
         spark = (
-            SparkSession.builder.appName(f"laql-{case_name}")
+            SparkSession.builder.appName(f"lakeql-{case_name}")
             .master("local[2]")
             .config(f"spark.sql.catalog.{catalog_name}", "org.apache.iceberg.spark.SparkCatalog")
             .config(f"spark.sql.catalog.{catalog_name}.type", "hadoop")
@@ -227,7 +227,7 @@ def generate_spark_case(
 
 def iceberg_spark_runtime_jar() -> str:
     return os.environ.get(
-        "LAQL_ICEBERG_SPARK_RUNTIME_JAR",
+        "LAKEQL_ICEBERG_SPARK_RUNTIME_JAR",
         "/opt/iceberg/jars/iceberg-spark-runtime.jar",
     )
 
@@ -315,7 +315,7 @@ def generate_pyiceberg_case(case_dir: Path) -> dict[str, Any]:
 
     warehouse = case_dir / "warehouse"
     catalog = load_catalog(
-        "laql",
+        "lakeql",
         type="sql",
         uri=f"sqlite:///{case_dir / 'catalog.db'}",
         warehouse=str(warehouse),
@@ -353,7 +353,7 @@ def generate_pyiceberg_case(case_dir: Path) -> dict[str, Any]:
         delete_path,
     )
     data_manifest = {
-            "path": "warehouse/db.db/places/metadata/laql-data-manifest.json",
+            "path": "warehouse/db.db/places/metadata/lakeql-data-manifest.json",
         "files": [
             {
                 "path": data_file_path,
@@ -365,7 +365,7 @@ def generate_pyiceberg_case(case_dir: Path) -> dict[str, Any]:
         ],
     }
     delete_manifest = {
-        "path": "warehouse/db.db/places/metadata/laql-delete-manifest.json",
+        "path": "warehouse/db.db/places/metadata/lakeql-delete-manifest.json",
         "files": [],
         "deleteFiles": [
             {
@@ -376,9 +376,9 @@ def generate_pyiceberg_case(case_dir: Path) -> dict[str, Any]:
         ],
     }
     metadata_dir = table_dir / "metadata"
-    write_json(metadata_dir / "laql-data-manifest.json", data_manifest)
-    write_json(metadata_dir / "laql-delete-manifest.json", delete_manifest)
-    metadata_path = metadata_dir / "laql-equality.metadata.json"
+    write_json(metadata_dir / "lakeql-data-manifest.json", data_manifest)
+    write_json(metadata_dir / "lakeql-delete-manifest.json", delete_manifest)
+    metadata_path = metadata_dir / "lakeql-equality.metadata.json"
     write_json(
         metadata_path,
         {

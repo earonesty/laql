@@ -3,19 +3,19 @@ import { s3Store, signS3Request } from "./index.js";
 
 const enc = new TextEncoder();
 
-const endpoint = process.env.LAQL_MINIO_ENDPOINT;
-const accessKeyId = process.env.LAQL_MINIO_ACCESS_KEY ?? "minioadmin";
-const secretAccessKey = process.env.LAQL_MINIO_SECRET_KEY ?? "minioadmin";
-const region = process.env.LAQL_MINIO_REGION ?? "us-east-1";
-const bucket = process.env.LAQL_MINIO_BUCKET ?? "laql-provider";
-const requireProviders = process.env.LAQL_REQUIRE_PROVIDERS === "1";
+const endpoint = process.env.LAKEQL_MINIO_ENDPOINT;
+const accessKeyId = process.env.LAKEQL_MINIO_ACCESS_KEY ?? "minioadmin";
+const secretAccessKey = process.env.LAKEQL_MINIO_SECRET_KEY ?? "minioadmin";
+const region = process.env.LAKEQL_MINIO_REGION ?? "us-east-1";
+const bucket = process.env.LAKEQL_MINIO_BUCKET ?? "lakeql-provider";
+const requireProviders = process.env.LAKEQL_REQUIRE_PROVIDERS === "1";
 
 const describeMinio = endpoint === undefined ? describe.skip : describe;
 const describeMissingMinio = endpoint === undefined && requireProviders ? describe : describe.skip;
 
 describeMissingMinio("MinIO S3-compatible provider conformance", () => {
   it("requires MinIO provider environment", () => {
-    throw new Error("LAQL_MINIO_ENDPOINT is required when LAQL_REQUIRE_PROVIDERS=1");
+    throw new Error("LAKEQL_MINIO_ENDPOINT is required when LAKEQL_REQUIRE_PROVIDERS=1");
   });
 });
 

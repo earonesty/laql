@@ -46,7 +46,7 @@
     "area": "Parquet",
     "feature": "Struct assembly",
     "status": "detected+rejected",
-    "notes": "Rejected with LAQL_UNSUPPORTED_PARQUET_FEATURE to avoid silent flattening.",
+    "notes": "Rejected with LAKEQL_UNSUPPORTED_PARQUET_FEATURE to avoid silent flattening.",
     "evidence": [
       {
         "file": "packages/parquet/src/index.test.ts",
@@ -94,7 +94,7 @@
     "area": "Parquet",
     "feature": "Wide decimal backing variants",
     "status": "detected+rejected",
-    "notes": "Decimals above precision 15 are rejected with LAQL_UNSUPPORTED_PARQUET_FEATURE to avoid lossy JS number decoding.",
+    "notes": "Decimals above precision 15 are rejected with LAKEQL_UNSUPPORTED_PARQUET_FEATURE to avoid lossy JS number decoding.",
     "evidence": [
       {
         "file": "packages/parquet/src/index.test.ts",
@@ -106,7 +106,7 @@
     "area": "Parquet",
     "feature": "Timestamp micros/nanos",
     "status": "detected+rejected",
-    "notes": "Sub-millisecond timestamp units are rejected with LAQL_UNSUPPORTED_PARQUET_FEATURE to avoid truncating precision.",
+    "notes": "Sub-millisecond timestamp units are rejected with LAKEQL_UNSUPPORTED_PARQUET_FEATURE to avoid truncating precision.",
     "evidence": [
       {
         "file": "packages/parquet/src/index.test.ts",
@@ -154,7 +154,7 @@
     "area": "Iceberg",
     "feature": "Format v3+ reads",
     "status": "detected+rejected",
-    "notes": "Rejected with LAQL_CATALOG_ERROR.",
+    "notes": "Rejected with LAKEQL_CATALOG_ERROR.",
     "evidence": [{ "file": "packages/iceberg/src/index.test.ts", "pattern": "bad.json" }]
   },
   {
@@ -213,7 +213,7 @@
     "area": "Iceberg",
     "feature": "Deletion vectors",
     "status": "detected+rejected",
-    "notes": "Rejected with LAQL_UNSUPPORTED_DELETE_FILES.",
+    "notes": "Rejected with LAKEQL_UNSUPPORTED_DELETE_FILES.",
     "evidence": [
       {
         "file": "packages/iceberg/src/index.test.ts",
@@ -225,7 +225,7 @@
     "area": "Iceberg",
     "feature": "Non-identity partition transforms",
     "status": "detected+rejected",
-    "notes": "Rejected with LAQL_UNSUPPORTED_ICEBERG_FEATURE.",
+    "notes": "Rejected with LAKEQL_UNSUPPORTED_ICEBERG_FEATURE.",
     "evidence": [
       {
         "file": "packages/iceberg/src/index.test.ts",
@@ -237,7 +237,7 @@
     "area": "Iceberg",
     "feature": "Non-empty sort orders",
     "status": "detected+rejected",
-    "notes": "Rejected with LAQL_UNSUPPORTED_ICEBERG_FEATURE.",
+    "notes": "Rejected with LAKEQL_UNSUPPORTED_ICEBERG_FEATURE.",
     "evidence": [
       { "file": "packages/iceberg/src/index.test.ts", "pattern": "unsupported-sort-order.json" }
     ]
@@ -246,7 +246,7 @@
     "area": "Iceberg",
     "feature": "Unknown manifest-list content values",
     "status": "detected+rejected",
-    "notes": "Rejected with LAQL_UNSUPPORTED_ICEBERG_FEATURE.",
+    "notes": "Rejected with LAKEQL_UNSUPPORTED_ICEBERG_FEATURE.",
     "evidence": [
       {
         "file": "packages/iceberg/src/index.test.ts",
@@ -299,7 +299,7 @@
     "area": "Catalogs",
     "feature": "Glue and Nessie catalog stubs",
     "status": "supported+tested",
-    "notes": "Stubs satisfy IcebergCatalog and fail load/list/commit operations with LAQL_CATALOG_ERROR.",
+    "notes": "Stubs satisfy IcebergCatalog and fail load/list/commit operations with LAKEQL_CATALOG_ERROR.",
     "evidence": [
       {
         "file": "packages/iceberg/src/index.test.ts",

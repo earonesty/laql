@@ -1,7 +1,7 @@
 import {
   type ConditionalObjectStore,
   type ConditionalPutOptions,
-  LaQLError,
+  LakeqlError,
   type ListOptions,
   type ObjectHead,
   type ObjectInfo,
@@ -121,7 +121,7 @@ export class S3ObjectStore implements ConditionalObjectStore {
     assertOk(response, path);
     const contentLength = response.headers.get("content-length");
     if (contentLength === null) {
-      throw new LaQLError("LAQL_OBJECT_NOT_FOUND", `Missing S3 content-length for ${path}`, {
+      throw new LakeqlError("LAKEQL_OBJECT_NOT_FOUND", `Missing S3 content-length for ${path}`, {
         path,
       });
     }
@@ -276,7 +276,7 @@ function ensureSlash(value: string): string {
 
 function encodeObjectPath(path: string): string {
   if (/^(?:[a-z][a-z0-9+.-]*:)?\/\//iu.test(path) || path.startsWith("/")) {
-    throw new LaQLError("LAQL_VALIDATION_ERROR", `Object path must be relative: ${path}`, {
+    throw new LakeqlError("LAKEQL_VALIDATION_ERROR", `Object path must be relative: ${path}`, {
       path,
     });
   }
@@ -288,12 +288,12 @@ function encodeObjectPath(path: string): string {
       try {
         decoded = decodeURIComponent(segment);
       } catch {
-        throw new LaQLError("LAQL_VALIDATION_ERROR", `Object path has invalid encoding: ${path}`, {
+        throw new LakeqlError("LAKEQL_VALIDATION_ERROR", `Object path has invalid encoding: ${path}`, {
           path,
         });
       }
       if (decoded === "." || decoded === "..") {
-        throw new LaQLError("LAQL_VALIDATION_ERROR", `Object path contains traversal: ${path}`, {
+        throw new LakeqlError("LAKEQL_VALIDATION_ERROR", `Object path contains traversal: ${path}`, {
           path,
         });
       }
@@ -305,9 +305,9 @@ function encodeObjectPath(path: string): string {
 function assertOk(response: Response, path: string): void {
   if (response.ok || response.status === 206) return;
   if (response.status === 404) {
-    throw new LaQLError("LAQL_OBJECT_NOT_FOUND", `No object at ${path}`, { path });
+    throw new LakeqlError("LAKEQL_OBJECT_NOT_FOUND", `No object at ${path}`, { path });
   }
-  throw new LaQLError("LAQL_OBJECT_NOT_FOUND", `S3 request failed for ${path}`, {
+  throw new LakeqlError("LAKEQL_OBJECT_NOT_FOUND", `S3 request failed for ${path}`, {
     path,
     status: response.status,
   });

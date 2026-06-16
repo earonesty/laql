@@ -1,4 +1,4 @@
-import { LaQLError } from "./errors.js";
+import { LakeqlError } from "./errors.js";
 import type {
   ConditionalPutOptions,
   ListOptions,
@@ -47,10 +47,10 @@ export class MemoryObjectStore implements ObjectStore {
   async getRange(path: string, range: { offset: number; length: number }): Promise<Uint8Array> {
     const obj = this.objects.get(path);
     if (!obj) {
-      throw new LaQLError("LAQL_OBJECT_NOT_FOUND", `No object at ${path}`, { path });
+      throw new LakeqlError("LAKEQL_OBJECT_NOT_FOUND", `No object at ${path}`, { path });
     }
     if (range.offset < 0 || range.length < 0 || range.offset + range.length > obj.bytes.length) {
-      throw new LaQLError("LAQL_OBJECT_NOT_FOUND", `Range out of bounds for ${path}`, {
+      throw new LakeqlError("LAKEQL_OBJECT_NOT_FOUND", `Range out of bounds for ${path}`, {
         path,
         range,
         size: obj.bytes.length,
