@@ -28,7 +28,10 @@ export class HttpObjectStore implements ObjectStore {
 
   constructor(options: HttpStoreOptions) {
     this.baseUrl = options.baseUrl.endsWith("/") ? options.baseUrl : `${options.baseUrl}/`;
-    this.fetchImpl = options.fetch ?? fetch;
+    // Bind the global fetch to globalThis: browsers throw "Illegal invocation"
+    // if `fetch` is called as a method (`this.fetchImpl(...)`) with a non-global
+    // `this`. A caller-supplied fetch is used as-is.
+    this.fetchImpl = options.fetch ?? fetch.bind(globalThis);
     this.headers = options.headers;
     this.objects = options.objects;
   }

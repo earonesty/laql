@@ -6,6 +6,11 @@
   "engines": {
     "node": ">=22"
   },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  },
   "scripts": {
     "build": "tsc -b && tsc -p fixtures",
     "test": "vitest run",
