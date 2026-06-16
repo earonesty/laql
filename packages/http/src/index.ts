@@ -95,13 +95,24 @@ export class HttpObjectStore implements ObjectStore {
   }
 
   async head(path: string): Promise<ObjectHead | null> {
-    const response = await this.fetchPath(path, { method: "HEAD" });
+    // Probe with a 1-byte ranged GET rather than HEAD. Under transparent
+    // compression (e.g. gzip on static hosts like GitHub Pages) a HEAD reports
+    // the COMPRESSED content-length, but range reads operate on the
+    // uncompressed object — the `content-range` total is the authoritative
+    // uncompressed size and is what subsequent range reads must agree with.
+    const response = await this.fetchPath(path, {
+      method: "GET",
+      headers: { Range: "bytes=0-0" },
+    });
     if (response.status === 404) return null;
     assertOk(response, path);
-    const sizeHeader = response.headers.get("content-length");
-    const size = sizeHeader ? Number(sizeHeader) : Number.NaN;
+    // Release the body; we only need the headers.
+    await response.arrayBuffer().catch(() => undefined);
+    const total = parseContentRangeTotal(response.headers.get("content-range"));
+    const contentLength = response.headers.get("content-length");
+    const size = total ?? (contentLength ? Number(contentLength) : Number.NaN);
     if (!Number.isFinite(size)) {
-      throw new LaQLError("LAQL_OBJECT_NOT_FOUND", `Missing content-length for ${path}`, { path });
+      throw new LaQLError("LAQL_OBJECT_NOT_FOUND", `Missing size for ${path}`, { path });
     }
     const head: ObjectHead = { size };
     const etag = response.headers.get("etag");
@@ -160,6 +171,15 @@ function encodeObjectPath(path: string): string {
       return encodeURIComponent(segment);
     })
     .join("/");
+}
+
+// Parses the total length from a `content-range` header (e.g. "bytes 0-0/2820").
+function parseContentRangeTotal(header: string | null): number | undefined {
+  if (!header) return undefined;
+  const match = /\/(\d+)\s*$/.exec(header);
+  if (!match) return undefined;
+  const total = Number(match[1]);
+  return Number.isFinite(total) ? total : undefined;
 }
 
 function assertOk(response: Response, path: string): void {

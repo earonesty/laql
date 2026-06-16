@@ -23,19 +23,20 @@ describe("httpStore", () => {
         const headers = new Headers(init?.headers);
         seen.push({ url, method, range: headers.get("range") });
         if (url.endsWith("missing.parquet")) return new Response(null, { status: 404 });
-        if (method === "HEAD") {
-          return new Response(null, {
-            headers: {
-              "content-length": "5",
-              etag: "v1",
-              "last-modified": "Sat, 13 Jun 2026 00:00:00 GMT",
-              "content-type": "application/octet-stream",
-            },
+        const meta = {
+          etag: "v1",
+          "last-modified": "Sat, 13 Jun 2026 00:00:00 GMT",
+          "content-type": "application/octet-stream",
+        };
+        const range = headers.get("range");
+        if (range) {
+          // Real servers answer a ranged GET with 206 + content-range total.
+          return new Response(enc.encode(range), {
+            status: 206,
+            headers: { ...meta, "content-range": "bytes 0-0/5", "content-length": "5" },
           });
         }
-        return new Response(enc.encode(headers.get("range") ?? "whole"), {
-          status: headers.has("range") ? 206 : 200,
-        });
+        return new Response(enc.encode("whole"), { status: 200, headers: meta });
       },
     });
 
@@ -67,8 +68,10 @@ describe("httpStore", () => {
     );
     await store.delete("new.parquet");
     expect(seen.map((entry) => entry.method)).toEqual(
-      expect.arrayContaining(["HEAD", "GET", "PUT", "DELETE"]),
+      expect.arrayContaining(["GET", "PUT", "DELETE"]),
     );
+    // head() probes with a ranged GET (bytes=0-0), not HEAD.
+    expect(seen.some((entry) => entry.range === "bytes=0-0")).toBe(true);
   });
 
   it("returns null for 404 reads and throws when list has no object index", async () => {

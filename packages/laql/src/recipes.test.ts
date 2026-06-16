@@ -131,7 +131,13 @@ describe("docs recipes", () => {
         if (!match) return new Response(null, { status: 416 });
         const start = Number(match[1]);
         const end = Number(match[2]);
-        return new Response(bytes.slice(start, end + 1), { status: 206 });
+        return new Response(bytes.slice(start, end + 1), {
+          status: 206,
+          headers: {
+            "content-range": `bytes ${start}-${end}/${bytes.byteLength}`,
+            "content-type": "application/vnd.apache.parquet",
+          },
+        });
       },
     });
 
