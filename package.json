@@ -27,7 +27,7 @@
     "changeset": "changeset",
     "version": "changeset version",
     "release": "pnpm check && changeset publish",
-    "check": "pnpm lint && pnpm typecheck && pnpm build && pnpm check:compatibility && pnpm test && pnpm test:workerd && pnpm test:conformance && pnpm test:reference && pnpm coverage && node scripts/check-fixtures.mjs"
+    "check": "pnpm lint && pnpm build && pnpm typecheck && pnpm check:compatibility && pnpm test && pnpm test:workerd && pnpm test:conformance && pnpm test:reference && pnpm coverage && node scripts/check-fixtures.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.0",
