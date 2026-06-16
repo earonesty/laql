@@ -187,7 +187,7 @@ function selectStatementToAst(statement: PgNode): SqlQueryAst {
     if (alias === undefined) {
       throwUnsupported("Computed projections require an explicit alias");
     }
-    projections[alias] = exprToLaql(expr, scope, context);
+    projections[alias] = exprToLakeql(expr, scope, context);
   }
 
   if (select.length > 0) ast.select = select;
@@ -205,7 +205,7 @@ function selectStatementToAst(statement: PgNode): SqlQueryAst {
     );
   }
   if (statement.having !== undefined) {
-    ast.having = exprToLaql(asNode(statement.having, "HAVING"), scope, context);
+    ast.having = exprToLakeql(asNode(statement.having, "HAVING"), scope, context);
   }
   if (statement.orderBy !== undefined) {
     ast.orderBy = optionalArray(statement.orderBy).map((term) => orderByToTerm(term, scope));
@@ -228,7 +228,7 @@ function newSqlParseContext(): SqlParseContext {
   return { scalarSubqueries: {}, nextScalarSubqueryId: 0 };
 }
 
-function exprToLaql(
+function exprToLakeql(
   expr: PgNode,
   scope = SqlScope.empty(),
   context: SqlParseContext = newSqlParseContext(),
@@ -261,7 +261,7 @@ function exprToLaql(
         kind: "call",
         fn: functionName(expr.function),
         args: optionalArray(expr.args).map((arg) =>
-          exprToLaql(asNode(arg, "function argument"), scope, context),
+          exprToLakeql(asNode(arg, "function argument"), scope, context),
         ),
       };
     default:
@@ -275,14 +275,14 @@ function binaryToExpr(
   context: SqlParseContext = newSqlParseContext(),
 ): Expr {
   const op = String(expr.op).toUpperCase();
-  const left = exprToLaql(asNode(expr.left, "left expression"), scope, context);
+  const left = exprToLakeql(asNode(expr.left, "left expression"), scope, context);
   const right = asNode(expr.right, "right expression");
 
   if (op === "AND" || op === "OR") {
     const operands = flattenLogical(
       op.toLowerCase() as "and" | "or",
       left,
-      exprToLaql(right, scope, context),
+      exprToLakeql(right, scope, context),
     );
     return { kind: "logical", op: op.toLowerCase() as "and" | "or", operands };
   }
@@ -293,12 +293,12 @@ function binaryToExpr(
       negated: op === "NOT IN",
       target: left,
       values: optionalArray(right.expressions).map((value) =>
-        exprToLaql(asNode(value, "IN value"), scope, context),
+        exprToLakeql(asNode(value, "IN value"), scope, context),
       ),
     };
   }
   if (op === "LIKE" || op === "NOT LIKE" || op === "ILIKE" || op === "NOT ILIKE") {
-    const pattern = exprToLaql(right, scope, context);
+    const pattern = exprToLakeql(right, scope, context);
     if (pattern.kind !== "literal" || typeof pattern.value !== "string") {
       throwUnsupported("LIKE pattern must be a string literal");
     }
@@ -315,11 +315,11 @@ function binaryToExpr(
       kind: "arithmetic",
       op: arithmeticOp(op),
       left,
-      right: exprToLaql(right, scope, context),
+      right: exprToLakeql(right, scope, context),
     };
   }
 
-  return { kind: "compare", op: compareOp(op), left, right: exprToLaql(right, scope, context) };
+  return { kind: "compare", op: compareOp(op), left, right: exprToLakeql(right, scope, context) };
 }
 
 function whereToAst(
@@ -340,12 +340,12 @@ function whereToAst(
     subqueryJoin = extracted;
   }
   const out: { where?: Expr; subqueryJoin?: SqlSubqueryJoinAst } = {};
-  if (residual.length === 1) out.where = exprToLaql(residual[0] as PgNode, scope, context);
+  if (residual.length === 1) out.where = exprToLakeql(residual[0] as PgNode, scope, context);
   else if (residual.length > 1) {
     out.where = {
       kind: "logical",
       op: "and",
-      operands: residual.map((predicate) => exprToLaql(predicate, scope, context)),
+      operands: residual.map((predicate) => exprToLakeql(predicate, scope, context)),
     };
   }
   if (subqueryJoin !== undefined) out.subqueryJoin = subqueryJoin;
@@ -390,7 +390,7 @@ function subqueryJoinToAst(
     rightKey,
   };
   if (subquery.where !== undefined) {
-    out.where = exprToLaql(asNode(subquery.where, "IN subquery WHERE"), subqueryScope);
+    out.where = exprToLakeql(asNode(subquery.where, "IN subquery WHERE"), subqueryScope);
   }
   return out;
 }
@@ -443,7 +443,7 @@ function unaryToExpr(
   context: SqlParseContext = newSqlParseContext(),
 ): Expr {
   const op = String(expr.op).toUpperCase();
-  const operand = exprToLaql(asNode(expr.operand, "unary operand"), scope, context);
+  const operand = exprToLakeql(asNode(expr.operand, "unary operand"), scope, context);
   if (op === "NOT") return { kind: "not", operand };
   if (op === "IS NULL") return { kind: "null-check", negated: false, target: operand };
   if (op === "IS NOT NULL") return { kind: "null-check", negated: true, target: operand };
@@ -464,13 +464,13 @@ function caseToExpr(
   const whens = optionalArray(expr.whens).map((branch) => {
     const node = asNode(branch, "CASE branch");
     return {
-      when: exprToLaql(asNode(node.when, "CASE WHEN expression"), scope, context),
-      value: exprToLaql(asNode(node.value, "CASE THEN expression"), scope, context),
+      when: exprToLakeql(asNode(node.when, "CASE WHEN expression"), scope, context),
+      value: exprToLakeql(asNode(node.value, "CASE THEN expression"), scope, context),
     };
   });
   const out: Expr = { kind: "case", whens };
   if (expr.else !== undefined) {
-    out.else = exprToLaql(asNode(expr.else, "CASE ELSE expression"), scope, context);
+    out.else = exprToLakeql(asNode(expr.else, "CASE ELSE expression"), scope, context);
   }
   return out;
 }
@@ -486,9 +486,9 @@ function ternaryToExpr(
   }
   const between: Expr = {
     kind: "between",
-    target: exprToLaql(asNode(expr.value, "BETWEEN target"), scope, context),
-    low: exprToLaql(asNode(expr.lo, "BETWEEN low value"), scope, context),
-    high: exprToLaql(asNode(expr.hi, "BETWEEN high value"), scope, context),
+    target: exprToLakeql(asNode(expr.value, "BETWEEN target"), scope, context),
+    low: exprToLakeql(asNode(expr.lo, "BETWEEN low value"), scope, context),
+    high: exprToLakeql(asNode(expr.hi, "BETWEEN high value"), scope, context),
   };
   return op === "NOT BETWEEN" ? { kind: "not", operand: between } : between;
 }
@@ -517,7 +517,7 @@ function aggregateCallToSpec(expr: PgNode, scope = SqlScope.empty()): AggregateS
   if (args.length !== 1) throwUnsupported(`${op} requires exactly one argument`);
   const arg = asNode(args[0], "aggregate argument");
   if (arg.type === "ref") return { op, column: scope.refName(arg) };
-  return { op, expr: exprToLaql(arg, scope) };
+  return { op, expr: exprToLakeql(arg, scope) };
 }
 
 function isAggregateCall(expr: PgNode): boolean {
