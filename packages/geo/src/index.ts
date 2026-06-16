@@ -1,6 +1,6 @@
+import { col, type Expr, fn, lit } from "@laql/core";
 import { booleanContains } from "@turf/boolean-contains";
 import { booleanIntersects } from "@turf/boolean-intersects";
-import { col, type Expr, fn, lit } from "@laql/core";
 
 export type Position = [number, number];
 
