@@ -58,7 +58,7 @@ async function readParquetColumnBatch(
   rowStart: number,
   rowEnd: number,
 ): Promise<Batch> {
-  const columnValues: Record<string, unknown[]> = Object.fromEntries(
+  const columnValues: Record<string, ArrayLike<unknown>> = Object.fromEntries(
     columns.map((column) => [column, []]),
   );
   const readOptions: Parameters<typeof parquetRead>[0] = {
@@ -76,17 +76,22 @@ async function readParquetColumnBatch(
 }
 
 function appendColumnChunk(
-  columnValues: Record<string, unknown[]>,
+  columnValues: Record<string, ArrayLike<unknown>>,
   chunk: ColumnData,
   rowStart: number,
   rowEnd: number,
 ): void {
   const values = columnValues[chunk.columnName];
   if (values === undefined) return;
+  if (chunk.rowStart === rowStart && chunk.rowEnd === rowEnd) {
+    columnValues[chunk.columnName] = chunk.columnData as ArrayLike<unknown>;
+    return;
+  }
   const start = Math.max(rowStart, chunk.rowStart);
   const end = Math.min(rowEnd, chunk.rowEnd);
+  const out = values as unknown[];
   for (let row = start; row < end; row += 1) {
-    values[row - rowStart] = chunk.columnData[row - chunk.rowStart];
+    out[row - rowStart] = chunk.columnData[row - chunk.rowStart];
   }
 }
 
