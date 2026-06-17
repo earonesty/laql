@@ -37,8 +37,12 @@
     "notes": "Parquet task manifests split into portable JSON row-group work units, fan aggregate partials back in, and can reuse runtime metadata caches without changing the work-unit payload.",
     "evidence": [
       {
-        "file": "packages/parquet/src/index.test.ts",
-        "pattern": "executes serialized task work units independently and fans results back in"
+        "file": "packages/parquet/src/work-unit.test.ts",
+        "pattern": "runs aggregate work units through deployment runners before generic fan-in"
+      },
+      {
+        "file": "packages/parquet/src/work-unit.test.ts",
+        "pattern": "executes the same Parquet work-unit contract across browser, Worker, and Edge transports"
       },
       {
         "file": "packages/parquet/src/index.test.ts",

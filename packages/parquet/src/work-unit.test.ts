@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import {
+  createVectorAggregateStates,
   fanInWorkUnits,
   gte,
   jsonWorkUnitBoundary,
@@ -23,7 +24,10 @@ import { countingObjectStore } from "./test-helpers.js";
 import {
   asTestDeployment,
   deploymentWorkUnitInputs,
+  finalizePortableAggregate,
+  mergePortableAggregatePartial,
   type PortableScanPartial,
+  portableAggregateTransports,
   portableScanTransports,
   sortedTestDeployments,
   type TestDeployment,
@@ -114,6 +118,73 @@ describe("Parquet work-unit execution", () => {
       "cloudflare-worker",
       "supabase-edge",
     ]);
+  });
+
+  it("runs aggregate work units through deployment runners before generic fan-in", async () => {
+    const store = memoryStore();
+    await writeParquet(store, "data/aggregate-runners.parquet", {
+      rowGroupSize: [2],
+      columnData: [{ name: "metric", data: [1, 2, 3, 4, 5, 6], type: "DOUBLE" }],
+    });
+    const lake = createParquetLake({ store, queryId: () => "aggregate-runner-work-units" });
+    const query = lake.path("data/aggregate-runners.parquet").select(["metric"]);
+    const [task] = await query.planTasks();
+    expect(task).toBeDefined();
+    const workUnits = await planParquetTaskWorkUnits(store, task, { maxRowGroupsPerTask: 1 });
+    const spec = {
+      rows: { op: "count" },
+      totalMetric: { op: "sum", column: "metric" },
+      maxMetric: { op: "max", column: "metric" },
+    } as const;
+    const transports = portableAggregateTransports(store, spec, { batchSize: 2 });
+    const inputs = jsonWorkUnitBoundary(deploymentWorkUnitInputs(workUnits)).map(
+      (input, index) => ({
+        ...input,
+        delayMs: index === 0 ? 250 : 0,
+      }),
+    );
+    const completed: number[] = [];
+    const reduced: TestDeployment[] = [];
+
+    const merged = await fanInWorkUnits({
+      inputs,
+      initial: createVectorAggregateStates(spec),
+      maxConcurrentTasks: 3,
+      async run(input, index) {
+        const partial = await transports[input.deployment](input, index);
+        completed.push(partial.index);
+        return partial;
+      },
+      boundary(partial) {
+        return jsonWorkUnitBoundary(partial);
+      },
+      reduce(accumulator, partial, input, index) {
+        expect(partial.index).toBe(index);
+        expect(partial.deployment).toBe(input.deployment);
+        expect(partial.rowGroupRanges).toEqual(input.task.rowGroupRanges);
+        reduced.push(partial.deployment);
+        mergePortableAggregatePartial(accumulator, partial);
+      },
+    });
+
+    expect(workUnits).toHaveLength(3);
+    expect(inputs.map((input) => input.task.rowGroupRanges)).toEqual([
+      [{ start: 0, end: 1 }],
+      [{ start: 1, end: 2 }],
+      [{ start: 2, end: 3 }],
+    ]);
+    expect(completed[0]).not.toBe(0);
+    expect([...completed].sort()).toEqual([0, 1, 2]);
+    expect(sortedTestDeployments(reduced)).toEqual([
+      "browser",
+      "cloudflare-worker",
+      "supabase-edge",
+    ]);
+    expect(finalizePortableAggregate(merged)).toEqual({
+      rows: 6,
+      totalMetric: 21,
+      maxMetric: 6,
+    });
   });
 
   it("can preserve same-file row-group work units across aggregate fan-in boundaries", async () => {

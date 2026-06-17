@@ -1,11 +1,18 @@
 import {
+  type AggregateSpec,
   type CacheAdapter,
+  finalizeVectorAggregateStates,
   jsonWorkUnitBoundary,
   materializeBatchRows,
+  mergeVectorAggregateStates,
   type ObjectStore,
   type Row,
+  restoreVectorAggregateStates,
   type TaskInput,
+  type VectorAggregateStateSnapshots,
+  type VectorAggregateStates,
 } from "lakeql-core";
+import { aggregateParquetTask } from "./aggregate-task.js";
 import { scanParquetTaskColumnBatches } from "./task-scan.js";
 import type { ParquetMetadata } from "./types.js";
 
@@ -26,10 +33,22 @@ export interface PortableScanPartial {
   rows: Row[];
 }
 
+export interface PortableAggregatePartial {
+  deployment: TestDeployment;
+  index: number;
+  rowGroupRanges: TaskInput["rowGroupRanges"];
+  partial: VectorAggregateStateSnapshots;
+}
+
 export type DeploymentTransport = (
   input: DeploymentWorkUnit,
   index: number,
 ) => Promise<PortableScanPartial>;
+
+export type DeploymentAggregateTransport = (
+  input: DeploymentWorkUnit,
+  index: number,
+) => Promise<PortableAggregatePartial>;
 
 export function testDeploymentForIndex(index: number): TestDeployment {
   const deployment = TEST_DEPLOYMENTS[index % TEST_DEPLOYMENTS.length];
@@ -81,6 +100,50 @@ export function portableScanTransports(
   };
 }
 
+export function portableAggregateTransports(
+  store: ObjectStore,
+  spec: AggregateSpec,
+  options: { batchSize?: number; metadataCache?: CacheAdapter<ParquetMetadata> } = {},
+): Record<TestDeployment, DeploymentAggregateTransport> {
+  return {
+    async browser(input, index) {
+      const message = jsonWorkUnitBoundary({ input, index });
+      return aggregatePortableWorkUnit(store, message.input, message.index, spec, options);
+    },
+    async "cloudflare-worker"(input, index) {
+      const request = new Request("https://worker.local/lakeql/aggregate-work-unit", {
+        method: "POST",
+        body: JSON.stringify({ input, index }),
+      });
+      const envelope = (await request.json()) as { input: DeploymentWorkUnit; index: number };
+      return aggregatePortableWorkUnit(store, envelope.input, envelope.index, spec, options);
+    },
+    async "supabase-edge"(input, index) {
+      const invocation = jsonWorkUnitBoundary({ data: { input, index } });
+      return aggregatePortableWorkUnit(
+        store,
+        invocation.data.input,
+        invocation.data.index,
+        spec,
+        options,
+      );
+    },
+  };
+}
+
+export function mergePortableAggregatePartial(
+  accumulator: VectorAggregateStates,
+  partial: PortableAggregatePartial,
+): void {
+  mergeVectorAggregateStates(accumulator, restoreVectorAggregateStates(partial.partial));
+}
+
+export function finalizePortableAggregate(
+  accumulator: VectorAggregateStates,
+): Record<string, unknown> {
+  return finalizeVectorAggregateStates(accumulator);
+}
+
 export async function scanPortableWorkUnit(
   store: ObjectStore,
   input: DeploymentWorkUnit,
@@ -101,6 +164,27 @@ export async function scanPortableWorkUnit(
     index,
     rowGroupRanges: portableInput.task.rowGroupRanges,
     rows,
+  };
+}
+
+export async function aggregatePortableWorkUnit(
+  store: ObjectStore,
+  input: DeploymentWorkUnit,
+  index: number,
+  spec: AggregateSpec,
+  options: { batchSize?: number; metadataCache?: CacheAdapter<ParquetMetadata> } = {},
+): Promise<PortableAggregatePartial> {
+  const portableInput = jsonWorkUnitBoundary(input);
+  if (portableInput.delayMs !== undefined) await sleep(portableInput.delayMs);
+  const aggregateOptions: { batchSize?: number; metadataCache?: CacheAdapter<ParquetMetadata> } =
+    {};
+  if (options.batchSize !== undefined) aggregateOptions.batchSize = options.batchSize;
+  if (options.metadataCache !== undefined) aggregateOptions.metadataCache = options.metadataCache;
+  return {
+    deployment: portableInput.deployment,
+    index,
+    rowGroupRanges: portableInput.task.rowGroupRanges,
+    partial: await aggregateParquetTask(store, portableInput.task, spec, aggregateOptions),
   };
 }
 
