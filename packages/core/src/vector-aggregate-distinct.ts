@@ -178,6 +178,8 @@ function enforceDistinctBudget(state: VectorDistinctAggregateState, budget?: Que
 }
 
 function mergeSortedRuns(runs: readonly (readonly string[])[]): string[] {
+  if (runs.length === 0) return [];
+  if (runs.length === 1) return [...(runs[0] ?? [])];
   const values: string[] = [];
   visitSortedUniqueRuns(runs, (value) => {
     values.push(value);
@@ -186,6 +188,8 @@ function mergeSortedRuns(runs: readonly (readonly string[])[]): string[] {
 }
 
 function countSortedUniqueRuns(runs: readonly (readonly string[])[]): number {
+  if (runs.length === 0) return 0;
+  if (runs.length === 1) return runs[0]?.length ?? 0;
   let count = 0;
   visitSortedUniqueRuns(runs, () => {
     count += 1;
