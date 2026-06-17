@@ -41,7 +41,7 @@ export {
 } from "./aggregate-task.js";
 export type { ParquetRowGroupPlan, PlannedParquetRowGroup } from "./row-group-plan.js";
 export { planRowGroupsFromMetadata } from "./row-group-plan.js";
-export { rowGroupMayMatch } from "./row-group-pruning.js";
+export { rowGroupMayMatch, rowGroupMustMatch } from "./row-group-pruning.js";
 export { ParquetScanAdapter } from "./scan-adapter.js";
 export { rejectUnsupportedParquetSchema } from "./schema.js";
 export { asyncBufferFromStore } from "./store-buffer.js";

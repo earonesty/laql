@@ -66,6 +66,7 @@ import {
   readParquetObjects,
   rejectUnsupportedParquetSchema,
   rowGroupMayMatch,
+  rowGroupMustMatch,
   scanParquetTaskBatches,
   scanParquetTaskColumnBatches,
   writeParquet,
@@ -141,7 +142,7 @@ function rowGroupFromStatsEntries(
         total_uncompressed_size: 0n,
         total_compressed_size: 0n,
         data_page_offset: 0n,
-        statistics,
+        statistics: { ...statistics, null_count: 0n },
       },
     });
   }
@@ -2093,6 +2094,33 @@ describe("rowGroupMayMatch", () => {
   it("falls back to legacy min/max row-group statistics", () => {
     expect(rowGroupMayMatch(rowGroupWithLegacyStats("metric", 1, 9), eq("metric", 5))).toBe(true);
     expect(rowGroupMayMatch(rowGroupWithLegacyStats("metric", 1, 9), eq("metric", 50))).toBe(false);
+  });
+
+  it("normalizes literal-on-left comparisons before pruning", () => {
+    const group = rowGroupWithStats("metric", 1, 9);
+
+    expect(rowGroupMayMatch(group, lt(lit(0), col("metric")))).toBe(true);
+    expect(rowGroupMayMatch(group, lt(lit(200), col("metric")))).toBe(false);
+    expect(rowGroupMayMatch(group, gte(lit(10), col("metric")))).toBe(true);
+    expect(rowGroupMayMatch(group, gte(lit(0), col("metric")))).toBe(false);
+  });
+
+  it("proves fully matching row groups only when stats and null counts are conclusive", () => {
+    const group = rowGroupWithStats("metric", 100, 199);
+    const nullableGroup = rowGroupWithStats("metric", 100, 199);
+    const stats = nullableGroup.columns[0]?.meta_data?.statistics;
+    if (stats !== undefined) stats.null_count = 1n;
+
+    expect(rowGroupMustMatch(group, undefined)).toBe(true);
+    expect(rowGroupMustMatch(group, gte("metric", 100))).toBe(true);
+    expect(rowGroupMustMatch(group, gt("metric", 99))).toBe(true);
+    expect(rowGroupMustMatch(group, lte("metric", 199))).toBe(true);
+    expect(rowGroupMustMatch(group, lt("metric", 200))).toBe(true);
+    expect(rowGroupMustMatch(group, between("metric", 100, 199))).toBe(true);
+    expect(rowGroupMustMatch(group, lt(lit(99), col("metric")))).toBe(true);
+    expect(rowGroupMustMatch(group, gte("metric", 150))).toBe(false);
+    expect(rowGroupMustMatch(group, eq("metric", 150))).toBe(false);
+    expect(rowGroupMustMatch(nullableGroup, gte("metric", 100))).toBe(false);
   });
 
   it("prunes bbox and h3 function predicates with row-group stats", () => {

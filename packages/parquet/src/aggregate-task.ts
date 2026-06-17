@@ -79,6 +79,14 @@ export async function aggregateParquetTask(
       );
       if (scanOptions !== undefined) readOptions.stats = scanOptions.stats;
       for await (const batch of readParquetColumnBatchesFromFile(file, metadata, readOptions)) {
+        if (batch.residualPredicateSatisfied === true) {
+          if (scanOptions !== undefined) {
+            recordRowsMatched(scanOptions.stats, batch.batch.rowCount);
+            enforceAggregateTaskBudget(scanOptions);
+          }
+          updateVectorAggregateStates(states, spec, batch.batch, undefined, aggregateOptions);
+          continue;
+        }
         const selection = tryPredicateSelection(batch.batch, task.residualPredicate);
         if (selection === undefined) {
           throw new LakeqlError(
@@ -173,6 +181,14 @@ export async function aggregateParquetGroupTask(
       if (scanOptions !== undefined) readOptions.stats = scanOptions.stats;
       for await (const batch of readParquetColumnBatchesFromFile(file, metadata, readOptions)) {
         const vectorBatch = batchWithPartitionValues(batch.batch, task.partitionValues);
+        if (batch.residualPredicateSatisfied === true) {
+          if (scanOptions !== undefined) {
+            recordRowsMatched(scanOptions.stats, vectorBatch.rowCount);
+            enforceAggregateTaskBudget(scanOptions);
+          }
+          updateVectorGroupByState(state, vectorBatch, undefined, groupOptions);
+          continue;
+        }
         const selection = tryPredicateSelection(vectorBatch, task.residualPredicate);
         if (selection === undefined) {
           throw new LakeqlError(

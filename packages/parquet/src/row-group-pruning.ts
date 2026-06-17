@@ -1,5 +1,5 @@
 import type { RowGroup } from "hyparquet";
-import type { Expr } from "lakeql-core";
+import type { CompareOp, Expr } from "lakeql-core";
 
 type StatsValue = string | number | bigint | boolean;
 
@@ -31,15 +31,41 @@ export function rowGroupMayMatch(rowGroup: RowGroup, expr: Expr | undefined): bo
   }
 }
 
+/** @internal Exposed for scan/aggregate tests; not part of the stable public API. */
+export function rowGroupMustMatch(rowGroup: RowGroup, expr: Expr | undefined): boolean {
+  if (!expr) return true;
+  switch (expr.kind) {
+    case "literal":
+      return expr.value === true;
+    case "column":
+    case "null-check":
+    case "like":
+    case "arithmetic":
+    case "case":
+    case "call":
+    case "not":
+    case "in":
+      return false;
+    case "logical":
+      if (expr.op === "and")
+        return expr.operands.every((operand) => rowGroupMustMatch(rowGroup, operand));
+      return expr.operands.some((operand) => rowGroupMustMatch(rowGroup, operand));
+    case "compare":
+      return compareMustMatch(rowGroup, expr);
+    case "between":
+      return betweenMustMatch(rowGroup, expr);
+  }
+}
+
 function compareMayMatch(rowGroup: RowGroup, expr: Extract<Expr, { kind: "compare" }>): boolean {
-  const pair = columnLiteralPair(expr.left, expr.right);
+  const pair = columnLiteralCompare(expr.left, expr.op, expr.right);
   if (!pair) return true;
   const stats = columnStats(rowGroup, pair.column);
   if (!stats) return true;
   const { min, max } = stats;
   const value = pair.value;
   if (!sameComparableType(min, value) || !sameComparableType(max, value)) return true;
-  switch (expr.op) {
+  switch (pair.op) {
     case "eq":
       return compareValues(value, min) >= 0 && compareValues(value, max) <= 0;
     case "ne":
@@ -52,6 +78,30 @@ function compareMayMatch(rowGroup: RowGroup, expr: Extract<Expr, { kind: "compar
       return compareValues(max, value) > 0;
     case "gte":
       return compareValues(max, value) >= 0;
+  }
+}
+
+function compareMustMatch(rowGroup: RowGroup, expr: Extract<Expr, { kind: "compare" }>): boolean {
+  const pair = columnLiteralCompare(expr.left, expr.op, expr.right);
+  if (!pair) return false;
+  const stats = columnStats(rowGroup, pair.column);
+  if (!stats?.hasNoNulls) return false;
+  const { min, max } = stats;
+  const value = pair.value;
+  if (!sameComparableType(min, value) || !sameComparableType(max, value)) return false;
+  switch (pair.op) {
+    case "eq":
+      return compareValues(min, value) === 0 && compareValues(max, value) === 0;
+    case "ne":
+      return compareValues(value, min) < 0 || compareValues(value, max) > 0;
+    case "lt":
+      return compareValues(max, value) < 0;
+    case "lte":
+      return compareValues(max, value) <= 0;
+    case "gt":
+      return compareValues(min, value) > 0;
+    case "gte":
+      return compareValues(min, value) >= 0;
   }
 }
 
@@ -93,6 +143,28 @@ function betweenMayMatch(rowGroup: RowGroup, expr: Extract<Expr, { kind: "betwee
   }
   return (
     compareValues(stats.max, expr.low.value) >= 0 && compareValues(stats.min, expr.high.value) <= 0
+  );
+}
+
+function betweenMustMatch(rowGroup: RowGroup, expr: Extract<Expr, { kind: "between" }>): boolean {
+  if (
+    expr.target.kind !== "column" ||
+    expr.low.kind !== "literal" ||
+    expr.high.kind !== "literal"
+  ) {
+    return false;
+  }
+  if (!isStatsValue(expr.low.value) || !isStatsValue(expr.high.value)) return false;
+  const stats = columnStats(rowGroup, expr.target.name);
+  if (!stats?.hasNoNulls) return false;
+  if (
+    !sameComparableType(stats.min, expr.low.value) ||
+    !sameComparableType(stats.max, expr.high.value)
+  ) {
+    return false;
+  }
+  return (
+    compareValues(stats.min, expr.low.value) >= 0 && compareValues(stats.max, expr.high.value) <= 0
   );
 }
 
@@ -235,29 +307,54 @@ function numericColumnStats(
   return { min: Number(stats.min), max: Number(stats.max) };
 }
 
-function columnLiteralPair(
+function columnLiteralCompare(
   left: Expr,
+  op: CompareOp,
   right: Expr,
-): { column: string; value: StatsValue } | undefined {
+): { column: string; op: CompareOp; value: StatsValue } | undefined {
   if (left.kind === "column" && right.kind === "literal" && isStatsValue(right.value)) {
-    return { column: left.name, value: right.value };
+    return { column: left.name, op, value: right.value };
   }
   if (right.kind === "column" && left.kind === "literal" && isStatsValue(left.value)) {
-    return { column: right.name, value: left.value };
+    return { column: right.name, op: invertCompareOp(op), value: left.value };
   }
   return undefined;
+}
+
+function invertCompareOp(op: CompareOp): CompareOp {
+  switch (op) {
+    case "eq":
+      return "eq";
+    case "ne":
+      return "ne";
+    case "lt":
+      return "gt";
+    case "lte":
+      return "gte";
+    case "gt":
+      return "lt";
+    case "gte":
+      return "lte";
+  }
 }
 
 function columnStats(
   rowGroup: RowGroup,
   column: string,
-): { min: StatsValue; max: StatsValue } | undefined {
+): { min: StatsValue; max: StatsValue; hasNoNulls: boolean } | undefined {
   for (const chunk of rowGroup.columns) {
     const metadata = chunk.meta_data;
     if (!metadata || metadata.path_in_schema.join(".") !== column) continue;
     const min = metadata.statistics?.min_value ?? metadata.statistics?.min;
     const max = metadata.statistics?.max_value ?? metadata.statistics?.max;
-    if (isStatsValue(min) && isStatsValue(max)) return { min, max };
+    const nullCount = metadata.statistics?.null_count;
+    if (isStatsValue(min) && isStatsValue(max)) {
+      return {
+        min,
+        max,
+        hasNoNulls: nullCount === 0n,
+      };
+    }
   }
   return undefined;
 }

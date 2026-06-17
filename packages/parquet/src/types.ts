@@ -22,6 +22,7 @@ export interface ParquetRowBatch {
 export interface ParquetColumnBatch {
   rowOffset: number;
   batch: Batch;
+  residualPredicateSatisfied?: boolean;
 }
 
 export type ParquetMetadata = Awaited<ReturnType<typeof parquetMetadataAsync>>;

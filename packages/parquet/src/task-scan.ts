@@ -74,6 +74,24 @@ export async function* scanParquetTaskColumnBatches(
       metadata,
       taskReadOptions(rowStart, rowEnd, physicalColumns, task.residualPredicate, options),
     )) {
+      if (batch.residualPredicateSatisfied === true) {
+        if (
+          Object.keys(task.partitionValues).length === 0 &&
+          task.projectedColumns?.every((column) => column in batch.batch.columns) !== false
+        ) {
+          recordRowsMatched(options.stats, batch.batch.rowCount);
+          yield batch;
+          continue;
+        }
+        const rows = materializeBatchRows(batch.batch)
+          .map((row: Row) => ({ ...task.partitionValues, ...row }))
+          .map((row: Row) => projectTaskRow(row, task.projectedColumns));
+        if (rows.length > 0) {
+          recordRowsMatched(options.stats, rows.length);
+          yield { rowOffset: batch.rowOffset, batch: batchFromRows(rows, task.projectedColumns) };
+        }
+        continue;
+      }
       if (
         Object.keys(task.partitionValues).length === 0 &&
         task.residualPredicate === undefined &&

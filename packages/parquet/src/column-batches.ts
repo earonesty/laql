@@ -7,7 +7,7 @@ import {
   recordRowGroupSkipped,
   recordRowsDecoded,
 } from "./read-metrics.js";
-import { rowGroupMayMatch } from "./row-group-pruning.js";
+import { rowGroupMayMatch, rowGroupMustMatch } from "./row-group-pruning.js";
 import type {
   ParquetColumnBatch,
   ParquetMetadata,
@@ -38,16 +38,14 @@ export async function* readParquetColumnBatchesFromFile(
       continue;
     }
     recordRowGroupRead(options.stats);
+    const residualPredicateSatisfied = rowGroupMustMatch(rowGroup, options.where);
     const start = Math.max(rowGroupStart, requestedStart);
     const end = Math.min(rowGroupEnd, requestedEnd);
     for (let rowStart = start; rowStart < end; rowStart += batchSize) {
       const rowEnd = Math.min(rowStart + batchSize, end);
       const batch = await readParquetColumnBatch(file, metadata, readColumns, rowStart, rowEnd);
       recordRowsDecoded(options.stats, batch.rowCount);
-      yield {
-        rowOffset: rowStart,
-        batch,
-      };
+      yield { rowOffset: rowStart, batch, residualPredicateSatisfied };
     }
     rowGroupStart = rowGroupEnd;
   }
