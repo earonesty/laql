@@ -9,7 +9,7 @@ static dependency graph.
 
 | Entry | Bundle KiB | Inputs | Required Symbols | Forbidden Symbols |
 | --- | --- | --- | --- | --- |
-| parquet-only | 208.7 | 113 | - | apache-arrow, tableFromArrays, createCsvLake, readCsvObjects, createJsonLake, readJsonObjects, @turf/boolean-contains, @turf/boolean-intersects, h3-js |
-| arrow-output | 397.5 | 190 | tableToIPC | - |
-| csv-ingest | 9.2 | 54 | readCsvObjects | apache-arrow, tableFromArrays |
-| json-ingest | 5.3 | 54 | readJsonObjects | apache-arrow, tableFromArrays |
+| parquet-only | 218.4 | 116 | - | apache-arrow, tableFromArrays, createCsvLake, readCsvObjects, createJsonLake, readJsonObjects, @turf/boolean-contains, @turf/boolean-intersects, h3-js |
+| arrow-output | 397.5 | 192 | tableToIPC | - |
+| csv-ingest | 9.2 | 56 | readCsvObjects | apache-arrow, tableFromArrays |
+| json-ingest | 5.3 | 56 | readJsonObjects | apache-arrow, tableFromArrays |

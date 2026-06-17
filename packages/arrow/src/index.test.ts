@@ -1,9 +1,11 @@
-import { tableFromIPC } from "apache-arrow";
+import { tableFromArrays, tableFromIPC } from "apache-arrow";
 import { batchFromColumns, createInMemoryLake, gt } from "lakeql-core";
 import { describe, expect, it } from "vitest";
 import {
+  arrowTableToRows,
   batchToArrowIPC,
   batchToArrowTable,
+  createArrowLake,
   queryToArrowIPC,
   queryToArrowTable,
   rowsToArrowIPC,
@@ -71,6 +73,61 @@ describe("Arrow output", () => {
     expect(restored.get(1)?.toJSON()).toEqual({ id: 3, amount: 50 });
   });
 
+  it("registers Arrow tables as queryable in-memory lake tables", async () => {
+    const lake = createArrowLake(
+      {
+        sales: tableFromArrays({
+          id: [1, 2, 3],
+          amount: [10, 30, 50],
+          region: ["west", "east", "west"],
+        }),
+      },
+      { queryId: () => "arrow-ingest" },
+    );
+
+    const result = lake.path("sales").select(["id", "region"]).where(gt("amount", 20)).run();
+
+    await expect(result.toArray()).resolves.toEqual([
+      { id: 2, region: "east" },
+      { id: 3, region: "west" },
+    ]);
+    expect(result.stats).toMatchObject({
+      queryId: "arrow-ingest",
+      filesPlanned: 1,
+      rowsDecoded: 3,
+      rowsMatched: 2,
+      rowsReturned: 2,
+    });
+  });
+
+  it("ingests Arrow IPC tables through the same scalar row boundary", () => {
+    const ipc = rowsToArrowIPC([
+      { id: 1, label: "a" },
+      { id: 2, label: null },
+    ]);
+
+    expect(arrowTableToRows(tableFromIPC(ipc))).toEqual([
+      { id: 1, label: "a" },
+      { id: 2, label: null },
+    ]);
+  });
+
+  it("applies in-memory ingest budgets to Arrow table registration", () => {
+    expect(() =>
+      createArrowLake(
+        {
+          rows: tableFromArrays({ id: [1, 2] }),
+        },
+        { maxRows: 1 },
+      ),
+    ).toThrowError(
+      expect.objectContaining({
+        code: "LAKEQL_BUDGET_EXCEEDED",
+        details: { metric: "ingest rows", limit: 1, actual: 2 },
+      }),
+    );
+  });
+
   it("round-trips rows and batches through Arrow IPC", () => {
     const rowTable = tableFromIPC(rowsToArrowIPC([{ id: 1, label: "a" }]));
     const batchTable = tableFromIPC(batchToArrowIPC(batchFromColumns({ id: [1, 2] })));
@@ -81,6 +138,15 @@ describe("Arrow output", () => {
 
   it("rejects unsupported nested row values instead of guessing Arrow types", () => {
     expect(() => rowsToArrowTable([{ id: 1, nested: { ok: true } }])).toThrowError(
+      expect.objectContaining({
+        code: "LAKEQL_VALIDATION_ERROR",
+        details: { rowIndex: 0, column: "nested", valueType: "object" },
+      }),
+    );
+  });
+
+  it("rejects unsupported nested Arrow table values instead of silently stringifying them", () => {
+    expect(() => arrowTableToRows(tableFromArrays({ nested: [[1, 2]] }))).toThrowError(
       expect.objectContaining({
         code: "LAKEQL_VALIDATION_ERROR",
         details: { rowIndex: 0, column: "nested", valueType: "object" },

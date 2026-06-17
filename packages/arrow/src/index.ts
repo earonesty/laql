@@ -1,6 +1,9 @@
 import { type Table, tableFromArrays, tableToIPC } from "apache-arrow";
 import {
   type Batch,
+  createInMemoryLake,
+  type InMemoryLakeOptions,
+  type Lake,
   LakeqlError,
   type QueryBuilder,
   type QueryResult,
@@ -16,6 +19,32 @@ export interface ArrowTableOptions {
 
 export interface ArrowQueryLike {
   toArray(): Promise<Row[]>;
+}
+
+export function arrowTableToRows(table: Table): Row[] {
+  const columns = table.schema.fields.map((field) => field.name);
+  const rows: Row[] = [];
+  for (let rowIndex = 0; rowIndex < table.numRows; rowIndex += 1) {
+    const json = table.get(rowIndex)?.toJSON() as Record<string, unknown> | null | undefined;
+    const row: Row = {};
+    for (const column of columns) {
+      row[column] = normalizeArrowCell(json?.[column], rowIndex, column);
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+
+export function createArrowLake(
+  tables: Record<string, Table>,
+  options: InMemoryLakeOptions = {},
+): Lake {
+  return createInMemoryLake(
+    Object.fromEntries(
+      Object.entries(tables).map(([name, table]) => [name, arrowTableToRows(table)]),
+    ),
+    options,
+  );
 }
 
 export function rowsToArrowTable(rows: readonly Row[], options: ArrowTableOptions = {}): Table {

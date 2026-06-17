@@ -101,8 +101,8 @@ Each is **independent of the lake engine** and is the highest-ROI work in the re
    `registerFileBuffer` / `insertJSONFromArray` loop). This is the core browser
    "bring your own data" interaction. *Status: ✅ row-array ingest implemented
    via `createInMemoryLake` / `inMemoryRowsScanner`; `File` / `Blob` /
-   `ArrayBuffer` are covered through the CSV/JSON opt-in packages. Arrow table
-   ingest remains future work.*
+   `ArrayBuffer` are covered through the CSV/JSON opt-in packages; Arrow table
+   ingest is available through the opt-in `lakeql-arrow` package.*
 
 4. **Apache Arrow output** — return results as an Arrow table / IPC stream
    (`.toArrow()`, `streamArrow()`). Arrow is the interop format: zero-copy into
