@@ -160,9 +160,15 @@ Each is **independent of the lake engine** and is the highest-ROI work in the re
   "edge lake engine" into "drop-in duckdb-wasm alternative for the browser," and
   establishes the smart-load principle on a real case (`lakeql-arrow`) before more
   modules arrive.
-- **Tier 2 (#5–7)** is where DuckDB users hit a wall porting queries. Window
-  functions first — an analytics engine without them looks unfinished.
-- **Tier 3 (#8–10)** is retention polish.
+- **After Tier 1, do not drift into SQL bikeshedding by default.** The highest-ROI
+  follow-up work is broader runtime proof and measured performance: portable
+  work-unit fan-out/fan-in across browser/Worker/edge deployments, persistent
+  caches, benchmark lanes, profiling, and planning memoization.
+- **Tier 2 (#5–7)** matters when it blocks real analytical workloads, but it should
+  be pulled by observed query gaps rather than generic DuckDB syntax parity.
+- **Tier 3 (#8–10)** is retention polish. Add ergonomic SQL statements only when
+  they unlock a broader workflow such as unknown-file preview, safe dashboard
+  parameters, or persistent local sessions.
 
 ## Confirmed packaging decisions
 
