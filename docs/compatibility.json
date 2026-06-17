@@ -445,5 +445,21 @@
         "pattern": "round-trips rows and batches through Arrow IPC"
       }
     ]
+  },
+  {
+    "area": "Browser parity",
+    "feature": "OPFS persistent cache",
+    "status": "supported+tested",
+    "notes": "lakeql-opfs is an opt-in package exposing OPFS-backed byte and JSON CacheAdapter implementations for browser persistence without adding OPFS APIs to core.",
+    "evidence": [
+      {
+        "file": "packages/opfs/src/index.test.ts",
+        "pattern": "stores, expires, and deletes byte cache entries under a namespace"
+      },
+      {
+        "file": "packages/opfs/src/index.test.ts",
+        "pattern": "stores JSON-compatible values for planning cache style entries"
+      }
+    ]
   }
 ]

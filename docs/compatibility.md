@@ -40,3 +40,4 @@ Legend: supported+tested = covered by tests; supported = implemented with narrow
 | Browser parity | CSV ingest | supported+tested | lakeql-csv is an opt-in package for headered/headerless CSV, delimiter options, quoted fields, type sniffing, null handling, and ingest budgets. |
 | Browser parity | JSON and NDJSON ingest | supported+tested | lakeql-json is an opt-in package for JSON arrays, single objects, NDJSON records, browser binary inputs, and ingest budgets. |
 | Browser parity | Apache Arrow output | supported+tested | lakeql-arrow is an opt-in package that converts rows, query results, and vector Batches to Arrow tables or IPC without adding apache-arrow to core. |
+| Browser parity | OPFS persistent cache | supported+tested | lakeql-opfs is an opt-in package exposing OPFS-backed byte and JSON CacheAdapter implementations for browser persistence without adding OPFS APIs to core. |

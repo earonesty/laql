@@ -10,6 +10,7 @@
     { "path": "packages/http" },
     { "path": "packages/r2" },
     { "path": "packages/s3" },
+    { "path": "packages/opfs" },
     { "path": "packages/geo" },
     { "path": "packages/sql" },
     { "path": "packages/cli" }

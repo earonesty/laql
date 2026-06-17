@@ -145,7 +145,10 @@ Each is **independent of the lake engine** and is the highest-ROI work in the re
 10. **OPFS / persistent local cache** — duckdb-wasm persists tables in OPFS so
     reloads are instant. lakeql's edge cache story is strong but lacks a
     browser-persistence tier for repeated local querying. Ship as an optional
-    cache adapter (smart-loaded), not core. *Status: ❌.*
+    cache adapter (smart-loaded), not core. *Status: ✅ initial opt-in
+    `lakeql-opfs` package implemented: OPFS-backed byte and JSON
+    `CacheAdapter` implementations for browser persistence without adding OPFS
+    APIs to core.*
 
 ---
 
