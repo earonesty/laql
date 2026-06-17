@@ -32,6 +32,7 @@ Grouped aggregates support aggregate expressions and `COUNT(DISTINCT x)`:
 ```sql
 select region,
   sum(amount * 2) as doubled_total,
+  quantile_cont(amount, 0.75) as amount_p75,
   count(distinct store_id) as stores
 from input
 group by region
@@ -142,6 +143,19 @@ node packages/cli/dist/bin.js query \
   --sql "select store_id, amount where region = 'west' order by amount asc limit 2"
 ```
 
+The parser API accepts PostgreSQL-style positional parameters for application
+code that needs safe filter binding without string-building SQL:
+
+```ts
+parseSql("select store_id from sales where region = $1 and amount > $2 limit $3", {
+  parameters: ["west", 100, 10],
+});
+```
+
+Parameters are bound to scalar literals before execution. Missing parameters,
+non-scalar values, and non-integer `LIMIT` / `OFFSET` bindings are rejected with
+typed errors.
+
 Invalid SQL is rejected with `LAKEQL_PARSE_ERROR`. Valid SQL outside the supported
 execution subset, including broad join forms, unsupported subqueries, nested or
 recursive CTEs, simple `CASE <expr>` forms, and broad SQL execution, is rejected with
@@ -152,10 +166,11 @@ recursive CTEs, simple `CASE <expr>` forms, and broad SQL execution, is rejected
 | Feature | Status | Rejection code | Notes |
 | --- | --- | --- | --- |
 | Standard `SELECT ... FROM ...` | Supported |  | CLI also supports omitted `from input` for `--path` queries. |
+| Positional `$1` SQL parameters | Supported subset | `LAKEQL_SQL_UNSUPPORTED` / `LAKEQL_TYPE_ERROR` | Parser API only; bound values must be scalars. Named parameters and reusable prepared statement objects remain future work. |
 | `WHERE`, `ORDER BY`, `LIMIT`, `OFFSET` | Supported |  | Expressions use SQL three-valued null semantics. |
-| Scalar functions, arithmetic, searched `CASE WHEN` | Supported | `LAKEQL_SQL_UNSUPPORTED` | Unknown functions and simple `CASE <expr>` are rejected. |
+| Scalar functions, arithmetic, searched `CASE WHEN` | Supported | `LAKEQL_SQL_UNSUPPORTED` | Includes regex matches/replace. Unknown functions and simple `CASE <expr>` are rejected. |
 | `SELECT DISTINCT` | Supported |  | Distinct applies to projected rows. |
-| `GROUP BY`, `HAVING`, aggregate expressions | Supported |  | Includes global aggregates and multiple group keys. |
+| `GROUP BY`, `HAVING`, aggregate expressions | Supported |  | Includes global aggregates, multiple group keys, variance/stddev sample/pop aggregates, budgeted exact `median`, budgeted exact continuous `quantile_cont`, and budgeted exact `mode`. |
 | `COUNT(DISTINCT x)` and engine aggregate ops | Supported | `LAKEQL_SQL_UNSUPPORTED` | `COUNT(DISTINCT *)` is rejected. |
 | Two-table `INNER JOIN` / `LEFT JOIN` | Supported | `LAKEQL_SQL_UNSUPPORTED` | Bounded broadcast joins over named CLI tables only. |
 | Multi-key `JOIN ... ON` / `JOIN ... USING` | Supported | `LAKEQL_SQL_UNSUPPORTED` | Equality keys only. |

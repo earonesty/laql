@@ -84,23 +84,34 @@ Each is **independent of the lake engine** and is the highest-ROI work in the re
 
 1. **Read CSV** — `read_csv`-style with type sniffing, header detection,
    delimiter/quote options. The #1 browser job. Ship as **`lakeql-csv`**
-   (own package). *Status: ❌ not supported.*
+   (own package). *Status: ✅ initial opt-in package implemented: headered /
+   headerless CSV, delimiter override/detection, quoted fields, null handling,
+   type sniffing, browser-friendly inputs, query integration, ingest budgets, and
+   typed rejection for malformed/ragged CSV.*
 
 2. **Read JSON / NDJSON** — auto-structure detection, arrays + line-delimited.
    Second-most-common ingest. Ship as **`lakeql-json`** (own package).
-   *Status: ❌.*
+   *Status: ✅ initial opt-in package implemented: JSON arrays, single objects,
+   NDJSON, browser-friendly inputs, query integration, ingest budgets, nested
+   JSON cell preservation, and typed rejection for malformed or unsupported row
+   shapes.*
 
 3. **Ingest in-memory JS data** — register a JS array / `File` / `Blob` /
    `ArrayBuffer` / Arrow table as a queryable table (the duckdb-wasm
    `registerFileBuffer` / `insertJSONFromArray` loop). This is the core browser
-   "bring your own data" interaction. *Status: ⚠️ an in-memory store exists for
-   tests, but there is no ergonomic ingest API.*
+   "bring your own data" interaction. *Status: ✅ row-array ingest implemented
+   via `createInMemoryLake` / `inMemoryRowsScanner`; `File` / `Blob` /
+   `ArrayBuffer` are covered through the CSV/JSON opt-in packages. Arrow table
+   ingest remains future work.*
 
 4. **Apache Arrow output** — return results as an Arrow table / IPC stream
    (`.toArrow()`, `streamArrow()`). Arrow is the interop format: zero-copy into
    Plot/Perspective/Arquero, Transferable across workers, 10–100× faster than JS
    objects. **Must be lazy** — `apache-arrow` lives in a separate **`lakeql-arrow`**
-   package, never in core. *Status: ❌ rows/NDJSON/CSV/Parquet only.*
+   package, never in core. *Status: ✅ initial opt-in package implemented:
+   row/query/batch conversion to Arrow tables and IPC. `apache-arrow` is scoped
+   to `lakeql-arrow`; core does not import it. Streaming Arrow IPC remains future
+   work.*
 
 ### Tier 2 — SQL depth (blocks porting real analytical queries)
 
@@ -115,14 +126,18 @@ Each is **independent of the lake engine** and is the highest-ROI work in the re
 7. **Richer function library** — regex (`regexp_matches`/`regexp_replace`),
    statistical aggregates (`stddev`, `var`, `median`, `quantile`, `mode`), more
    date/string functions, list/struct accessors. A missing function silently
-   breaks a ported query. *Status: ⚠️ ~30 scalar fns + basic aggs.*
+   breaks a ported query. *Status: ⚠️ regex matches/replace, ~30 other scalar
+   fns, basic aggs, variance/stddev sample/pop aggs, budgeted exact `median`,
+   budgeted exact continuous `quantile_cont`, and budgeted exact `mode`;
+   discrete quantile aliases and list/struct accessors remain future work.*
 
 ### Tier 3 — ergonomics & retention
 
 8. **Parameterized / prepared statements** — `$1` / named params bound per
    filter change without string-building SQL. Standard duckdb-wasm dashboard
-   pattern; also the safe one. *Status: ⚠️ JSON query API, no param-binding
-   story.*
+   pattern; also the safe one. *Status: ⚠️ positional `$1` SQL parameters can be
+   bound through the parser API and compile to scalar literals before execution;
+   named parameters and reusable prepared statement objects remain future work.*
 
 9. **`DESCRIBE` / `SUMMARIZE` / `SAMPLE` as SQL** — the "preview an unknown file"
    workflow (Parquet-inspector extensions, first look at any dataset). *Status:

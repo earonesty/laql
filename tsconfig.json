@@ -2,6 +2,9 @@
   "files": [],
   "references": [
     { "path": "packages/core" },
+    { "path": "packages/arrow" },
+    { "path": "packages/csv" },
+    { "path": "packages/json" },
     { "path": "packages/parquet" },
     { "path": "packages/iceberg" },
     { "path": "packages/http" },

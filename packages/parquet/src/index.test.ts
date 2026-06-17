@@ -7,7 +7,10 @@ import {
   col,
   createOutputManifest,
   createOutputManifestFromCheckpoints,
+  createTaskManifest,
+  createVectorAggregateStates,
   eq,
+  finalizeVectorAggregateStates,
   fn,
   gt,
   gte,
@@ -18,13 +21,17 @@ import {
   lit,
   lt,
   lte,
+  materializeBatchRows,
   memoryCache,
   memoryCheckpointAdapter,
   memoryStore,
+  mergeVectorAggregateStates,
+  mul,
   ne,
   not,
   notIn,
   or,
+  restoreVectorAggregateStates,
   stableStringify,
 } from "lakeql-core";
 import {
@@ -43,21 +50,36 @@ import {
 } from "lakeql-fixtures";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
+  aggregateParquetGroupTasks,
+  aggregateParquetTask,
+  aggregateParquetTasks,
   createParquetLake,
   createParquetTableAs,
   type ParquetMetadata,
   partitionedParquetOutputEntries,
+  planParquetTaskWorkUnits,
   planRowGroups,
   planRowGroupsFromMetadata,
   readIcebergParquetDeletes,
+  readParquetColumnBatches,
   readParquetMetadata,
   readParquetObjects,
   rejectUnsupportedParquetSchema,
   rowGroupMayMatch,
+  scanParquetTaskBatches,
+  scanParquetTaskColumnBatches,
   writeParquet,
   writePartitionedParquet,
   writePartitionedParquetTask,
 } from "./index.js";
+import {
+  columnChunkRanges,
+  countingObjectStore,
+  delayedHeadObjectStore,
+  delayedPathHeadObjectStore,
+  rangeGuardObjectStore,
+  testQueryStats,
+} from "./test-helpers.js";
 
 const store = memoryStore();
 
@@ -210,6 +232,91 @@ describe("readParquetObjects", () => {
     await expect(readParquetObjects(store, "data/garbage.parquet")).rejects.toMatchObject({
       code: "LAKEQL_PARQUET_READ_ERROR",
     });
+  });
+
+  it("respects rowStart and rowEnd inside row groups", async () => {
+    const outStore = memoryStore();
+    await writeParquet(outStore, "data/range-window.parquet", {
+      rowGroupSize: [3, 3],
+      columnData: [{ name: "id", data: [0, 1, 2, 3, 4, 5], type: "INT32" }],
+    });
+
+    await expect(
+      readParquetObjects(outStore, "data/range-window.parquet", {
+        rowStart: 2,
+        rowEnd: 5,
+        batchSize: 2,
+      }),
+    ).resolves.toEqual([{ id: 2 }, { id: 3 }, { id: 4 }]);
+  });
+});
+
+describe("readParquetColumnBatches", () => {
+  it("reads typed column batches without materializing rows first", async () => {
+    const expected = await readParquetObjects(store, `data/${SALES.file}`, {
+      columns: ["store_id", "amount"],
+      rowStart: 0,
+      rowEnd: 2,
+    });
+    const batches = [];
+    for await (const batch of readParquetColumnBatches(store, `data/${SALES.file}`, {
+      columns: ["store_id", "amount"],
+      batchSize: 7,
+      rowStart: 0,
+      rowEnd: 15,
+    })) {
+      batches.push(batch);
+    }
+
+    expect(batches.map((batch) => batch.batch.rowCount)).toEqual([7, 7, 1]);
+    expect(batches[0]?.batch.columns.store_id?.type).toBe("utf8");
+    expect(batches[0]?.batch.columns.amount?.type).toBe("f64");
+    expect(
+      materializeBatchRows(batches[0]?.batch ?? { rowCount: 0, columns: {} }).slice(0, 2),
+    ).toEqual(expected);
+  });
+
+  it("preserves null validity masks in column vectors", async () => {
+    const expected = await readParquetObjects(store, `data/${TYPES.file}`, {
+      columns: ["name", "flag", "big"],
+      rowStart: 0,
+      rowEnd: 3,
+    });
+    const batches = [];
+    for await (const batch of readParquetColumnBatches(store, `data/${TYPES.file}`, {
+      columns: ["name", "flag", "big"],
+      rowStart: 0,
+      rowEnd: 3,
+    })) {
+      batches.push(batch.batch);
+    }
+
+    const batch = batches[0];
+    expect(batch?.columns.name?.type).toBe("utf8");
+    expect(batch?.columns.name?.valid).toBeInstanceOf(Uint8Array);
+    expect(materializeBatchRows(batch ?? { rowCount: 0, columns: {} })).toEqual(expected);
+  });
+
+  it("records batch-level row-group, column, and decoded-row metrics", async () => {
+    const stats = testQueryStats();
+    const batches = [];
+    for await (const batch of readParquetColumnBatches(store, `data/${STATS.file}`, {
+      columns: ["metric"],
+      where: gte("metric", 100),
+      batchSize: STATS.rowGroupSize,
+      stats,
+    })) {
+      batches.push(batch);
+    }
+
+    expect(batches.map((batch) => batch.batch.rowCount)).toEqual([
+      STATS.rowGroupSize,
+      STATS.rowGroupSize,
+    ]);
+    expect(stats.columnsRead).toEqual(["metric"]);
+    expect(stats.rowGroupsRead).toBe(2);
+    expect(stats.rowGroupsSkipped).toBe(1);
+    expect(stats.rowsDecoded).toBe(STATS.rowGroupSize * 2);
   });
 });
 
@@ -1161,6 +1268,7 @@ describe("createParquetLake", () => {
     expect(tasks[0]).toMatchObject({
       path: `data/${STATS.file}`,
       projectedColumns: ["id", "metric"],
+      rowGroupCount: 3,
       rowGroupRanges: [{ start: 1, end: 3 }],
     });
 
@@ -1177,6 +1285,575 @@ describe("createParquetLake", () => {
         .taskManifest("job_stats")
         .then(stableStringify),
     ).resolves.toBe(golden);
+  });
+
+  it("reuses cached Parquet footer metadata across task planning", async () => {
+    const metadataCache = memoryCache<ParquetMetadata>();
+    const taskStore = countingObjectStore(memoryStore());
+    let headCalls = 0;
+    const originalHead = taskStore.head.bind(taskStore);
+    taskStore.head = async (path) => {
+      headCalls += 1;
+      return originalHead(path);
+    };
+    await taskStore.put(`data/${STATS.file}`, readFileSync(fixturePath(STATS.file)));
+    const lake = createParquetLake({
+      store: taskStore,
+      metadataCache,
+      queryId: () => "cached-task-range-query",
+    });
+    const query = lake.path(`data/${STATS.file}`).select(["id"]).where(gte("metric", 100));
+
+    taskStore.resetCounters();
+    headCalls = 0;
+    const first = await query.planTasks();
+    expect(first[0]).toMatchObject({
+      rowGroupCount: 3,
+      rowGroupRanges: [{ start: 1, end: 3 }],
+    });
+    expect(headCalls).toBe(1);
+    expect(taskStore.counters.getRange).toBeGreaterThan(0);
+
+    taskStore.resetCounters();
+    headCalls = 0;
+    const second = await query.planTasks();
+    expect(second).toEqual(first);
+    expect(headCalls).toBe(1);
+    expect(taskStore.counters).toEqual({ get: 0, getRange: 0, bytesFetched: 0 });
+  });
+
+  it("splits task inputs into bounded, portable work units without changing query semantics", async () => {
+    const metadataCache = memoryCache<ParquetMetadata>();
+    const taskStore = countingObjectStore(memoryStore());
+    await taskStore.put(`data/${STATS.file}`, readFileSync(fixturePath(STATS.file)));
+    const lake = createParquetLake({
+      store: taskStore,
+      metadataCache,
+      queryId: () => "portable-split-query",
+    });
+    const [task] = await lake
+      .path(`data/${STATS.file}`)
+      .select(["id"])
+      .where(gte("metric", 100))
+      .planTasks();
+    expect(task).toBeDefined();
+    const taskInput = {
+      ...task,
+      size: 1234,
+      etag: "etag-stats",
+      partitionValues: { dt: "2026-06-16" },
+    };
+
+    taskStore.resetCounters();
+    const rowGroupUnits = await planParquetTaskWorkUnits(taskStore, taskInput, {
+      maxRowGroupsPerTask: 1,
+    });
+    expect(taskStore.counters).toEqual({ get: 0, getRange: 0, bytesFetched: 0 });
+    taskStore.resetCounters();
+    const metadataBackedUnits = await planParquetTaskWorkUnits(
+      taskStore,
+      { ...taskInput, rowGroupCount: undefined },
+      { maxRowGroupsPerTask: 1 },
+    );
+    expect(taskStore.counters.getRange).toBeGreaterThan(0);
+    expect(metadataBackedUnits).toEqual(rowGroupUnits);
+    taskStore.resetCounters();
+    const cachedMetadataBackedUnits = await planParquetTaskWorkUnits(
+      taskStore,
+      { ...taskInput, rowGroupCount: undefined },
+      { maxRowGroupsPerTask: 1, metadataCache },
+    );
+    expect(cachedMetadataBackedUnits).toEqual(rowGroupUnits);
+    expect(taskStore.counters).toEqual({ get: 0, getRange: 0, bytesFetched: 0 });
+    taskStore.resetCounters();
+    const rowBudgetUnits = await planParquetTaskWorkUnits(taskStore, taskInput, {
+      maxRowsPerTask: STATS.rowGroupSize,
+    });
+    expect(taskStore.counters.getRange).toBeGreaterThan(0);
+    const portableUnits = JSON.parse(JSON.stringify(rowGroupUnits)) as typeof rowGroupUnits;
+
+    expect(rowGroupUnits).toEqual(rowBudgetUnits);
+    expect(portableUnits).toEqual([
+      {
+        ...taskInput,
+        rowGroupRanges: [{ start: 1, end: 2 }],
+      },
+      {
+        ...taskInput,
+        rowGroupRanges: [{ start: 2, end: 3 }],
+      },
+    ]);
+    expect(rowGroupUnits[0]).not.toBe(taskInput);
+    expect(rowGroupUnits[0]?.rowGroupRanges).not.toBe(taskInput.rowGroupRanges);
+    expect(taskInput.rowGroupRanges).toEqual([{ start: 1, end: 3 }]);
+  });
+
+  it("rejects unbounded or invalid Parquet work-unit sizing options", async () => {
+    const taskStore = memoryStore();
+    await taskStore.put(`data/${STATS.file}`, readFileSync(fixturePath(STATS.file)));
+    const lake = createParquetLake({ store: taskStore, queryId: () => "invalid-split-query" });
+    const [task] = await lake.path(`data/${STATS.file}`).planTasks();
+    expect(task).toBeDefined();
+
+    await expect(planParquetTaskWorkUnits(taskStore, task, {})).rejects.toMatchObject({
+      code: "LAKEQL_TYPE_ERROR",
+    });
+    await expect(
+      planParquetTaskWorkUnits(taskStore, task, { maxRowGroupsPerTask: 0 }),
+    ).rejects.toMatchObject({
+      code: "LAKEQL_TYPE_ERROR",
+    });
+    await expect(
+      planParquetTaskWorkUnits(taskStore, task, { maxRowsPerTask: 0 }),
+    ).rejects.toMatchObject({
+      code: "LAKEQL_TYPE_ERROR",
+    });
+    await expect(
+      planParquetTaskWorkUnits(taskStore, task, { maxRowsPerTask: STATS.rowGroupSize - 1 }),
+    ).rejects.toMatchObject({
+      code: "LAKEQL_TYPE_ERROR",
+      details: {
+        rowGroupRows: STATS.rowGroupSize,
+        maxRowsPerTask: STATS.rowGroupSize - 1,
+      },
+    });
+  });
+
+  it("executes serialized task work units independently and fans results back in", async () => {
+    const taskStore = countingObjectStore(memoryStore());
+    await taskStore.put(`data/${STATS.file}`, readFileSync(fixturePath(STATS.file)));
+    const lake = createParquetLake({ store: taskStore, queryId: () => "portable-task-query" });
+    const query = lake
+      .path(`data/${STATS.file}`)
+      .select(["id", "metric"])
+      .where(gte("metric", 100));
+    const expected = await query.toArray();
+    const manifest = await query.taskManifest("job_portable");
+    const workUnits = [];
+    for (const task of manifest.tasks) {
+      workUnits.push(
+        ...(await planParquetTaskWorkUnits(taskStore, task.input, { maxRowGroupsPerTask: 1 })),
+      );
+    }
+    const workUnitManifest = createTaskManifest({ jobId: "job_portable_units", tasks: workUnits });
+    const portableTasks = JSON.parse(
+      JSON.stringify(workUnitManifest.tasks),
+    ) as typeof workUnitManifest.tasks;
+
+    const fanOutRows: unknown[] = [];
+    for (const task of portableTasks) {
+      for await (const batch of scanParquetTaskBatches(taskStore, task.input, { batchSize: 3 })) {
+        fanOutRows.push(...batch);
+      }
+    }
+
+    const fanOutColumnRows: unknown[] = [];
+    const aggregateSpec = {
+      rows: { op: "count" },
+      totalMetric: { op: "sum", column: "metric" },
+      doubledMetric: { op: "sum", expr: mul(col("metric"), 2) },
+      coalescedMetric: { op: "sum", expr: fn("coalesce", col("metric"), 0) },
+      metricExcept150: { op: "count", expr: fn("nullif", col("metric"), 150) },
+      highMetricAverage: {
+        op: "avg",
+        expr: {
+          kind: "case",
+          whens: [{ when: gt("metric", 150), value: col("metric") }],
+          else: lit(0),
+        },
+      },
+      maxMetric: { op: "max", column: "metric" },
+    } as const;
+    for (const task of portableTasks) {
+      for await (const batch of scanParquetTaskColumnBatches(taskStore, task.input, {
+        batchSize: 4,
+      })) {
+        fanOutColumnRows.push(...materializeBatchRows(batch.batch));
+      }
+    }
+    taskStore.resetCounters();
+    const aggregateRow = await aggregateParquetTasks(
+      taskStore,
+      portableTasks.map((task) => task.input),
+      aggregateSpec,
+      { batchSize: 4, maxConcurrentTasks: 2 },
+    );
+
+    expect(portableTasks).toHaveLength(2);
+    expect(portableTasks.map((task) => task.input.rowGroupRanges)).toEqual([
+      [{ start: 1, end: 2 }],
+      [{ start: 2, end: 3 }],
+    ]);
+    expect(portableTasks.map((task) => task.id)).toEqual([
+      expect.stringMatching(/^job_portable_units-task-000000-/u),
+      expect.stringMatching(/^job_portable_units-task-000001-/u),
+    ]);
+    expect(fanOutRows).toEqual(expected);
+    expect(fanOutColumnRows).toEqual(expected);
+    expect(aggregateRow).toEqual({
+      rows: expected.length,
+      totalMetric: expected.reduce(
+        (sum, row) => sum + Number((row as { metric: number }).metric),
+        0,
+      ),
+      doubledMetric:
+        expected.reduce((sum, row) => sum + Number((row as { metric: number }).metric), 0) * 2,
+      coalescedMetric: expected.reduce(
+        (sum, row) => sum + Number((row as { metric: number }).metric),
+        0,
+      ),
+      metricExcept150: expected.filter((row) => (row as { metric: number }).metric !== 150).length,
+      highMetricAverage:
+        expected.reduce((sum, row) => {
+          const metric = Number((row as { metric: number }).metric);
+          return sum + (metric > 150 ? metric : 0);
+        }, 0) / expected.length,
+      maxMetric: Math.max(...expected.map((row) => (row as { metric: number }).metric)),
+    });
+    expect(taskStore.counters.get).toBe(0);
+    expect(taskStore.counters.getRange).toBeGreaterThan(0);
+    expect(taskStore.counters.bytesFetched).toBeGreaterThan(0);
+
+    const restoredFanIn = createVectorAggregateStates(aggregateSpec);
+    for (const task of portableTasks) {
+      const partial = await aggregateParquetTask(taskStore, task.input, aggregateSpec, {
+        batchSize: 4,
+      });
+      const serializedPartial = JSON.parse(JSON.stringify(partial)) as typeof partial;
+      mergeVectorAggregateStates(restoredFanIn, restoreVectorAggregateStates(serializedPartial));
+    }
+    expect(finalizeVectorAggregateStates(restoredFanIn)).toEqual(aggregateRow);
+  });
+
+  it("does not read unused projected column chunks during aggregate fan-in", async () => {
+    const taskStore = memoryStore();
+    const path = `data/${STATS.file}`;
+    await taskStore.put(path, readFileSync(fixturePath(STATS.file)));
+    const lake = createParquetLake({ store: taskStore, queryId: () => "aggregate-columns-query" });
+    const query = lake.path(path).select(["id", "metric"]).where(gte("metric", 100));
+    const expected = await query.toArray();
+    const manifest = await query.taskManifest("job_aggregate_columns");
+    const workUnits = [];
+    for (const task of manifest.tasks) {
+      workUnits.push(
+        ...(await planParquetTaskWorkUnits(taskStore, task.input, { maxRowGroupsPerTask: 1 })),
+      );
+    }
+    const metadata = await readParquetMetadata(taskStore, path);
+    const objectHead = await taskStore.head(path);
+    expect(objectHead).not.toBeNull();
+    const guardedStore = rangeGuardObjectStore(taskStore, columnChunkRanges(metadata, "id"), {
+      objectSize: objectHead?.size ?? 0,
+      allowedFullRangeReads: 1,
+    });
+
+    await expect(
+      aggregateParquetTasks(
+        guardedStore,
+        workUnits,
+        {
+          rows: { op: "count" },
+          totalMetric: { op: "sum", column: "metric" },
+          doubledMetric: { op: "sum", expr: mul(col("metric"), 2) },
+          coalescedMetric: { op: "sum", expr: fn("coalesce", col("metric"), 0) },
+          metricExcept150: { op: "count", expr: fn("nullif", col("metric"), 150) },
+          highMetricAverage: {
+            op: "avg",
+            expr: {
+              kind: "case",
+              whens: [{ when: gt("metric", 150), value: col("metric") }],
+              else: lit(0),
+            },
+          },
+        },
+        { batchSize: 4 },
+      ),
+    ).resolves.toEqual({
+      rows: expected.length,
+      totalMetric: expected.reduce(
+        (sum, row) => sum + Number((row as { metric: number }).metric),
+        0,
+      ),
+      doubledMetric:
+        expected.reduce((sum, row) => sum + Number((row as { metric: number }).metric), 0) * 2,
+      coalescedMetric: expected.reduce(
+        (sum, row) => sum + Number((row as { metric: number }).metric),
+        0,
+      ),
+      metricExcept150: expected.filter((row) => (row as { metric: number }).metric !== 150).length,
+      highMetricAverage:
+        expected.reduce((sum, row) => {
+          const metric = Number((row as { metric: number }).metric);
+          return sum + (metric > 150 ? metric : 0);
+        }, 0) / expected.length,
+    });
+  });
+
+  it("reuses cached Parquet footer metadata during aggregate fan-out", async () => {
+    const metadataCache = memoryCache<ParquetMetadata>();
+    const taskStore = countingObjectStore(memoryStore());
+    const path = `data/${STATS.file}`;
+    await taskStore.put(path, readFileSync(fixturePath(STATS.file)));
+    const lake = createParquetLake({
+      store: taskStore,
+      metadataCache,
+      queryId: () => "aggregate-metadata-cache-query",
+    });
+    const query = lake.path(path).select(["metric"]).where(gte("metric", 100));
+    const [task] = await query.planTasks();
+    expect(task).toBeDefined();
+    const workUnits = await planParquetTaskWorkUnits(taskStore, task, { maxRowGroupsPerTask: 1 });
+    const spec = {
+      rows: { op: "count" },
+      totalMetric: { op: "sum", column: "metric" },
+    } as const;
+
+    taskStore.resetCounters();
+    const uncachedStats = testQueryStats();
+    const uncached = await aggregateParquetTasks(taskStore, workUnits, spec, {
+      batchSize: 4,
+      maxConcurrentTasks: 1,
+      stats: uncachedStats,
+    });
+    const uncachedRanges = taskStore.counters.getRange;
+    expect(uncachedRanges).toBeGreaterThan(0);
+    expect(uncachedStats.cacheHits).toBe(0);
+    expect(uncachedStats.cacheMisses).toBeGreaterThan(0);
+
+    taskStore.resetCounters();
+    const cachedStats = testQueryStats();
+    const cached = await aggregateParquetTasks(taskStore, workUnits, spec, {
+      batchSize: 4,
+      maxConcurrentTasks: 1,
+      metadataCache,
+      stats: cachedStats,
+    });
+
+    expect(cached).toEqual(uncached);
+    expect(cachedStats.cacheHits).toBeGreaterThan(0);
+    expect(cachedStats.cacheMisses).toBe(0);
+    expect(taskStore.counters.getRange).toBeGreaterThan(0);
+    expect(taskStore.counters.getRange).toBeLessThan(uncachedRanges);
+  });
+
+  it("reports cached Parquet footer metadata during grouped aggregate fan-out", async () => {
+    const metadataCache = memoryCache<ParquetMetadata>();
+    const taskStore = countingObjectStore(memoryStore());
+    const path = `data/${STATS.file}`;
+    await taskStore.put(path, readFileSync(fixturePath(STATS.file)));
+    const lake = createParquetLake({
+      store: taskStore,
+      metadataCache,
+      queryId: () => "group-aggregate-metadata-cache-query",
+    });
+    const query = lake.path(path).select(["metric"]).where(gte("metric", 100));
+    const [task] = await query.planTasks();
+    expect(task).toBeDefined();
+    const workUnits = await planParquetTaskWorkUnits(taskStore, task, { maxRowGroupsPerTask: 1 });
+    const spec = {
+      rows: { op: "count" },
+      totalMetric: { op: "sum", column: "metric" },
+    } as const;
+
+    taskStore.resetCounters();
+    const uncachedStats = testQueryStats();
+    const uncached = await aggregateParquetGroupTasks(taskStore, workUnits, ["metric"], spec, {
+      batchSize: 4,
+      maxConcurrentTasks: 1,
+      stats: uncachedStats,
+    });
+    const uncachedRanges = taskStore.counters.getRange;
+    expect(uncachedRanges).toBeGreaterThan(0);
+    expect(uncachedStats.cacheHits).toBe(0);
+    expect(uncachedStats.cacheMisses).toBeGreaterThan(0);
+
+    taskStore.resetCounters();
+    const cachedStats = testQueryStats();
+    const cached = await aggregateParquetGroupTasks(taskStore, workUnits, ["metric"], spec, {
+      batchSize: 4,
+      maxConcurrentTasks: 1,
+      metadataCache,
+      stats: cachedStats,
+    });
+
+    expect(cached).toEqual(uncached);
+    expect(cachedStats.cacheHits).toBeGreaterThan(0);
+    expect(cachedStats.cacheMisses).toBe(0);
+    expect(taskStore.counters.getRange).toBeGreaterThan(0);
+    expect(taskStore.counters.getRange).toBeLessThan(uncachedRanges);
+  });
+
+  it("enforces aggregate state budgets while fanning in independent work units", async () => {
+    const taskStore = memoryStore();
+    await taskStore.put(`data/${STATS.file}`, readFileSync(fixturePath(STATS.file)));
+    const lake = createParquetLake({ store: taskStore, queryId: () => "aggregate-budget-query" });
+    const [task] = await lake
+      .path(`data/${STATS.file}`)
+      .select(["metric"])
+      .where(gte("metric", 100))
+      .planTasks();
+    expect(task).toBeDefined();
+    const workUnits = await planParquetTaskWorkUnits(taskStore, task, { maxRowGroupsPerTask: 1 });
+
+    await expect(
+      aggregateParquetTasks(
+        taskStore,
+        JSON.parse(JSON.stringify(workUnits)) as typeof workUnits,
+        {
+          distinctMetrics: { op: "count_distinct", column: "metric" },
+        },
+        { batchSize: 4, maxConcurrentTasks: 2, budget: { maxBufferedRows: 1 } },
+      ),
+    ).rejects.toMatchObject({
+      code: "LAKEQL_BUDGET_EXCEEDED",
+      details: { metric: "buffered rows", limit: 1 },
+    });
+  });
+
+  it("enforces read budgets while aggregating task work units", async () => {
+    const taskStore = memoryStore();
+    await taskStore.put(`data/${STATS.file}`, readFileSync(fixturePath(STATS.file)));
+    const lake = createParquetLake({ store: taskStore, queryId: () => "aggregate-read-budget" });
+    const [task] = await lake.path(`data/${STATS.file}`).select(["metric"]).planTasks();
+    expect(task).toBeDefined();
+
+    await expect(
+      aggregateParquetTasks(
+        taskStore,
+        [task],
+        { rows: { op: "count" } },
+        { budget: { maxRangeRequests: 0 } },
+      ),
+    ).rejects.toMatchObject({
+      code: "LAKEQL_BUDGET_EXCEEDED",
+      details: { metric: "range requests", limit: 0 },
+    });
+  });
+
+  it("records decoded and matched rows while aggregating vector task batches", async () => {
+    const taskStore = memoryStore();
+    await writeParquet(taskStore, "data/vector-stats.parquet", {
+      columnData: [{ name: "metric", data: [1, 2, 3, 4], type: "DOUBLE" }],
+    });
+    const stats = testQueryStats();
+
+    const partial = await aggregateParquetTask(
+      taskStore,
+      {
+        path: "data/vector-stats.parquet",
+        rowGroupRanges: [{ start: 0, end: 1 }],
+        projectedColumns: ["metric"],
+        partitionValues: {},
+        residualPredicate: gt("metric", 2),
+      },
+      {
+        rows: { op: "count" },
+        totalMetric: { op: "sum", column: "metric" },
+      },
+      { stats },
+    );
+    const restored = restoreVectorAggregateStates(partial);
+
+    expect(finalizeVectorAggregateStates(restored)).toEqual({ rows: 2, totalMetric: 7 });
+    expect(stats.rowsDecoded).toBe(4);
+    expect(stats.rowsMatched).toBe(2);
+    expect(stats.rowGroupsRead).toBe(1);
+    expect(stats.rowGroupsSkipped).toBe(0);
+  });
+
+  it("rejects invalid aggregate fan-in concurrency", async () => {
+    await expect(aggregateParquetTasks(store, [], { rows: { op: "count" } }, {})).resolves.toEqual({
+      rows: 0,
+    });
+    await expect(
+      aggregateParquetTasks(store, [], { rows: { op: "count" } }, { maxConcurrentTasks: 0 }),
+    ).rejects.toMatchObject({
+      code: "LAKEQL_TYPE_ERROR",
+    });
+  });
+
+  it("bounds aggregate fan-in concurrency across work units", async () => {
+    const taskStore = delayedHeadObjectStore(memoryStore(), 5);
+    const bytes = readFileSync(fixturePath(STATS.file));
+    const paths = ["data/stats-a.parquet", "data/stats-b.parquet", "data/stats-c.parquet"];
+    for (const path of paths) await taskStore.put(path, bytes);
+    const lake = createParquetLake({ store: taskStore, queryId: () => "portable-concurrency" });
+    const expectedRows = await lake
+      .path(paths[0] ?? "")
+      .select(["metric"])
+      .where(gte("metric", 0))
+      .toArray();
+    const workUnits = [];
+    for (const [index, path] of paths.entries()) {
+      const manifest = await lake
+        .path(path)
+        .select(["metric"])
+        .where(gte("metric", 0))
+        .taskManifest(`job_concurrency_${index}`);
+      for (const task of manifest.tasks) workUnits.push(task.input);
+    }
+
+    taskStore.resetPeakHeads();
+    const aggregateRow = await aggregateParquetTasks(
+      taskStore,
+      workUnits,
+      {
+        rows: { op: "count" },
+        totalMetric: { op: "sum", column: "metric" },
+      },
+      { batchSize: 4, maxConcurrentTasks: 2 },
+    );
+
+    expect(workUnits).toHaveLength(paths.length);
+    expect(aggregateRow).toEqual({
+      rows: expectedRows.length * paths.length,
+      totalMetric:
+        expectedRows.reduce((sum, row) => sum + Number((row as { metric: number }).metric), 0) *
+        paths.length,
+    });
+    expect(taskStore.peakActiveHeads).toBeGreaterThan(1);
+    expect(taskStore.peakActiveHeads).toBeLessThanOrEqual(2);
+  });
+
+  it("reduces aggregate fan-in in task order even when work units finish out of order", async () => {
+    const taskStore = delayedPathHeadObjectStore(memoryStore(), {
+      "data/slow.parquet": 20,
+      "data/fast.parquet": 0,
+    });
+    await writeParquet(taskStore, "data/slow.parquet", {
+      columnData: [{ name: "metric", data: [1, 2], type: "DOUBLE" }],
+    });
+    await writeParquet(taskStore, "data/fast.parquet", {
+      columnData: [{ name: "metric", data: [10, 20], type: "DOUBLE" }],
+    });
+
+    await expect(
+      aggregateParquetTasks(
+        taskStore,
+        [
+          {
+            path: "data/slow.parquet",
+            rowGroupRanges: [{ start: 0, end: 1 }],
+            projectedColumns: ["metric"],
+            partitionValues: {},
+          },
+          {
+            path: "data/fast.parquet",
+            rowGroupRanges: [{ start: 0, end: 1 }],
+            projectedColumns: ["metric"],
+            partitionValues: {},
+          },
+        ],
+        {
+          firstMetric: { op: "first", column: "metric" },
+          lastMetric: { op: "last", column: "metric" },
+        },
+        { maxConcurrentTasks: 2 },
+      ),
+    ).resolves.toEqual({
+      firstMetric: 1,
+      lastMetric: 20,
+    });
   });
 
   it("exposes first-class row-group planning with byte ranges", async () => {

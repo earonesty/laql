@@ -1,3 +1,4 @@
+import { continuousQuantile, requiredQuantile } from "./aggregate-quantile.js";
 import { LakeqlError } from "./errors.js";
 import {
   encodeJsonLine,
@@ -16,7 +17,13 @@ import {
   type TaskManifest,
 } from "./manifest.js";
 import { classifyPredicate, type PredicatePlan } from "./predicate-plan.js";
-import type { MetricsHook, RuntimeSubstrate, SpillAdapter, SpillRef } from "./runtime.js";
+import type {
+  CacheAdapter,
+  MetricsHook,
+  RuntimeSubstrate,
+  SpillAdapter,
+  SpillRef,
+} from "./runtime.js";
 import { pruneFilesWithIndex, type SidecarFileIndex } from "./sidecar-index.js";
 import type { ObjectInfo, ObjectStore } from "./store.js";
 import type { Bookmark, BookmarkQuery, QueryStats, Row, SliceResult } from "./types.js";
@@ -56,6 +63,7 @@ export interface LakeConfig {
   store: ObjectStore;
   scanner: ScanAdapter;
   sidecarIndex?: SidecarFileIndex[];
+  planningCache?: CacheAdapter<ObjectInfo[]>;
   budget?: QueryBudget;
   policy?: QueryPolicy;
   substrate?: RuntimeSubstrate;
@@ -82,10 +90,12 @@ export interface ScanTaskPlanOptions {
   columns?: string[];
   where?: Expr;
   partitionValues: Record<string, string>;
+  object: ObjectInfo;
 }
 
 export interface ScanTaskPlan {
   rowGroupRanges: { start: number; end: number }[];
+  rowGroupCount?: number;
 }
 
 export interface PathQueryInit {
@@ -132,10 +142,17 @@ export type AggregateOp =
   | "count"
   | "sum"
   | "avg"
+  | "var_samp"
+  | "var_pop"
+  | "stddev_samp"
+  | "stddev_pop"
+  | "median"
+  | "quantile"
   | "min"
   | "max"
   | "count_distinct"
   | "approx_count_distinct"
+  | "mode"
   | "first"
   | "last"
   | "any";
@@ -144,6 +161,7 @@ export interface AggregateExpr {
   op: AggregateOp;
   column?: string;
   expr?: Expr;
+  quantile?: number;
 }
 
 export type AggregateSpec = Record<string, AggregateExpr>;
@@ -228,14 +246,27 @@ export type AggregateStateSnapshot =
   | { op: "count"; count: number }
   | { op: "sum"; sum: number }
   | { op: "avg"; sum: number; count: number }
+  | {
+      op: "var_samp" | "var_pop" | "stddev_samp" | "stddev_pop";
+      count: number;
+      mean: number;
+      m2: number;
+    }
+  | { op: "median"; values: (number | string)[] }
+  | { op: "quantile"; quantile: number; values: number[] }
   | { op: "min" | "max"; value: AggregateSnapshotValue }
   | { op: "count_distinct" | "approx_count_distinct"; values: string[] }
+  | {
+      op: "mode";
+      values: { key: string; value: AggregateSnapshotValue; count: number }[];
+    }
   | { op: "first" | "last" | "any"; seen: boolean; value: AggregateSnapshotValue };
 
 export interface TaskInput {
   path: string;
   etag?: string;
   size?: number;
+  rowGroupCount?: number;
   rowGroupRanges: { start: number; end: number }[];
   projectedColumns?: string[];
   residualPredicate?: Expr;
@@ -300,6 +331,7 @@ export class Lake {
   private readonly queryId: () => string;
   private readonly substrate: RuntimeSubstrate | undefined;
   private readonly sidecarIndex: SidecarFileIndex[] | undefined;
+  private readonly planningCache: CacheAdapter<ObjectInfo[]> | undefined;
 
   constructor(config: LakeConfig) {
     const substrate = config.substrate;
@@ -313,6 +345,7 @@ export class Lake {
       (() => substrate?.ids?.id("q") ?? `q_${Math.random().toString(36).slice(2)}`);
     this.substrate = substrate;
     this.sidecarIndex = config.sidecarIndex;
+    this.planningCache = config.planningCache;
   }
 
   path(source: string): QueryBuilder {
@@ -343,6 +376,7 @@ export class Lake {
       queryId: this.queryId(),
       ...(metrics !== undefined ? { metrics } : {}),
       ...(this.sidecarIndex !== undefined ? { sidecarIndex: this.sidecarIndex } : {}),
+      ...(this.planningCache !== undefined ? { planningCache: this.planningCache } : {}),
       scanner: this.scanner,
     });
   }
@@ -511,6 +545,7 @@ interface QueryResultConfig extends PathQueryInit {
   queryId: string;
   metrics?: MetricsHook;
   sidecarIndex?: SidecarFileIndex[];
+  planningCache?: CacheAdapter<ObjectInfo[]>;
 }
 
 export class QueryResult {
@@ -843,6 +878,7 @@ export class QueryResult {
         groups.set(key, group);
       }
       group.add(row);
+      enforceBufferedRowsBudget(this.config.budget, estimateAggregateBufferedRows(groups));
       enforceOperatorMemoryBudget(
         this.config.budget,
         estimateAggregateOperatorMemoryBytes(groupColumns, spec, groups),
@@ -1050,6 +1086,7 @@ export class QueryResult {
       const partitionValues = config.hive ? parseHivePartitions(object.path) : {};
       const physicalColumns = projectedColumns?.filter((column) => !(column in partitionValues));
       const scanPlan = await config.scanner.planTask?.(object.path, {
+        object,
         partitionValues,
         ...(physicalColumns !== undefined && physicalColumns.length > 0
           ? { columns: physicalColumns }
@@ -1059,6 +1096,7 @@ export class QueryResult {
       const task: TaskInput = {
         path: object.path,
         size: object.size,
+        ...(scanPlan?.rowGroupCount === undefined ? {} : { rowGroupCount: scanPlan.rowGroupCount }),
         rowGroupRanges: scanPlan?.rowGroupRanges ?? [{ start: 0, end: Number.POSITIVE_INFINITY }],
         partitionValues,
       };
@@ -1076,7 +1114,7 @@ export class QueryResult {
     // if this query's filter/projection expressions actually use a spatial
     // function that needs it. Every read path funnels through planObjects().
     await ensureGeoBackendForExprs([config.where, ...Object.values(config.projections ?? {})]);
-    const objects = await expandPaths(config.lake.store, config.source);
+    const objects = await expandPaths(config.lake.store, config.source, config.planningCache);
     let planned = objects;
     let skipped = 0;
     if (config.hive && config.where) {
@@ -1263,6 +1301,15 @@ function createAggregateState(aggregate: AggregateExpr): AggregateState {
       return new SumState();
     case "avg":
       return new AvgState();
+    case "var_samp":
+    case "var_pop":
+    case "stddev_samp":
+    case "stddev_pop":
+      return new VarianceState(aggregate.op);
+    case "median":
+      return new MedianState();
+    case "quantile":
+      return new QuantileState(requiredQuantile(aggregate));
     case "min":
       return new MinMaxState("min");
     case "max":
@@ -1271,6 +1318,8 @@ function createAggregateState(aggregate: AggregateExpr): AggregateState {
       return new CountDistinctState("count_distinct");
     case "approx_count_distinct":
       return new CountDistinctState("approx_count_distinct");
+    case "mode":
+      return new ModeState();
     case "first":
       return new FirstState();
     case "last":
@@ -1337,6 +1386,93 @@ class AvgState implements AggregateState {
   }
 }
 
+class VarianceState implements AggregateState {
+  constructor(
+    private readonly op: "var_samp" | "var_pop" | "stddev_samp" | "stddev_pop",
+    private count = 0,
+    private mean = 0,
+    private m2 = 0,
+  ) {}
+
+  add(value: unknown): void {
+    if (value === null || value === undefined) return;
+    if (typeof value !== "number") throwAggregateType(this.op);
+    this.count += 1;
+    const delta = value - this.mean;
+    this.mean += delta / this.count;
+    this.m2 += delta * (value - this.mean);
+  }
+
+  finish(): number | null {
+    switch (this.op) {
+      case "var_samp":
+        return this.count < 2 ? null : this.m2 / (this.count - 1);
+      case "stddev_samp":
+        return this.count < 2 ? null : Math.sqrt(this.m2 / (this.count - 1));
+      case "var_pop":
+        return this.count === 0 ? null : this.m2 / this.count;
+      case "stddev_pop":
+        return this.count === 0 ? null : Math.sqrt(this.m2 / this.count);
+    }
+  }
+
+  snapshot(): AggregateStateSnapshot {
+    return { op: this.op, count: this.count, mean: this.mean, m2: this.m2 };
+  }
+}
+
+class MedianState implements AggregateState {
+  constructor(private readonly values: (number | string)[] = []) {}
+
+  add(value: unknown): void {
+    if (value === null || value === undefined) return;
+    if (typeof value !== "number" && typeof value !== "string") throwAggregateType("median");
+    this.values.push(value);
+  }
+
+  finish(): number | string | null {
+    if (this.values.length === 0) return null;
+    const values = [...this.values].sort(compareMedianValues);
+    const middle = Math.floor((values.length - 1) / 2);
+    const left = values[middle];
+    if (left === undefined) return null;
+    if (values.length % 2 === 1) return left;
+    const right = values[middle + 1];
+    if (typeof left === "number" && typeof right === "number") return (left + right) / 2;
+    return left;
+  }
+
+  snapshot(): AggregateStateSnapshot {
+    return { op: "median", values: [...this.values] };
+  }
+}
+
+class QuantileState implements AggregateState {
+  constructor(
+    private readonly quantile: number,
+    private readonly values: number[] = [],
+  ) {}
+
+  add(value: unknown): void {
+    if (value === null || value === undefined) return;
+    if (typeof value !== "number") throwAggregateType("quantile");
+    this.values.push(value);
+  }
+
+  finish(): number | null {
+    return continuousQuantile(this.values, this.quantile);
+  }
+
+  snapshot(): AggregateStateSnapshot {
+    return { op: "quantile", quantile: this.quantile, values: [...this.values] };
+  }
+}
+
+function compareMedianValues(left: number | string, right: number | string): number {
+  if (typeof left !== typeof right) throwAggregateType("median");
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 class MinMaxState implements AggregateState {
   constructor(
     private readonly op: "min" | "max",
@@ -1386,6 +1522,44 @@ class CountDistinctState implements AggregateState {
 
   snapshot(): AggregateStateSnapshot {
     return { op: this.op, values: [...this.values].sort() };
+  }
+}
+
+class ModeState implements AggregateState {
+  private readonly values: Map<string, { value: string | number | boolean | null; count: number }>;
+
+  constructor(values: { key: string; value: AggregateSnapshotValue; count: number }[] = []) {
+    this.values = new Map(values.map((entry) => [entry.key, { ...entry }]));
+  }
+
+  add(value: unknown): void {
+    if (value === null || value === undefined) return;
+    if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") {
+      throwAggregateType("mode");
+    }
+    const key = stableStringify(value);
+    const existing = this.values.get(key);
+    if (existing === undefined) this.values.set(key, { value, count: 1 });
+    else existing.count += 1;
+  }
+
+  finish(): string | number | boolean | null {
+    let best: { value: string | number | boolean | null; count: number } | undefined;
+    for (const entry of this.values.values()) {
+      if (best === undefined || entry.count > best.count) best = entry;
+    }
+    return best?.value ?? null;
+  }
+
+  snapshot(): AggregateStateSnapshot {
+    return {
+      op: "mode",
+      values: [...this.values.entries()].map(([key, entry]) => ({
+        key,
+        value: entry.value,
+        count: entry.count,
+      })),
+    };
   }
 }
 
@@ -1692,12 +1866,23 @@ function aggregateStateFromSnapshot(
       return new SumState(snapshot.sum);
     case "avg":
       return new AvgState(snapshot.sum, snapshot.count);
+    case "var_samp":
+    case "var_pop":
+    case "stddev_samp":
+    case "stddev_pop":
+      return new VarianceState(snapshot.op, snapshot.count, snapshot.mean, snapshot.m2);
+    case "median":
+      return new MedianState(snapshot.values);
+    case "quantile":
+      return new QuantileState(snapshot.quantile, snapshot.values);
     case "min":
     case "max":
       return new MinMaxState(snapshot.op, snapshot.value);
     case "count_distinct":
     case "approx_count_distinct":
       return new CountDistinctState(snapshot.op, snapshot.values);
+    case "mode":
+      return new ModeState(snapshot.values);
     case "first":
       return new FirstState(snapshot.value, snapshot.seen);
     case "last":
@@ -1825,6 +2010,28 @@ function isAggregateStateSnapshot(value: unknown): value is AggregateStateSnapsh
       return typeof value.sum === "number";
     case "avg":
       return typeof value.sum === "number" && typeof value.count === "number";
+    case "var_samp":
+    case "var_pop":
+    case "stddev_samp":
+    case "stddev_pop":
+      return (
+        typeof value.count === "number" &&
+        typeof value.mean === "number" &&
+        typeof value.m2 === "number"
+      );
+    case "median":
+      return (
+        Array.isArray(value.values) &&
+        value.values.every((inner) => typeof inner === "number" || typeof inner === "string")
+      );
+    case "quantile":
+      return (
+        typeof value.quantile === "number" &&
+        value.quantile >= 0 &&
+        value.quantile <= 1 &&
+        Array.isArray(value.values) &&
+        value.values.every((inner) => typeof inner === "number")
+      );
     case "min":
     case "max":
       return isAggregateSnapshotValue(value.value);
@@ -1832,6 +2039,19 @@ function isAggregateStateSnapshot(value: unknown): value is AggregateStateSnapsh
     case "approx_count_distinct":
       return (
         Array.isArray(value.values) && value.values.every((inner) => typeof inner === "string")
+      );
+    case "mode":
+      return (
+        Array.isArray(value.values) &&
+        value.values.every(
+          (inner) =>
+            isRecord(inner) &&
+            typeof inner.key === "string" &&
+            isAggregateSnapshotValue(inner.value) &&
+            typeof inner.count === "number" &&
+            Number.isInteger(inner.count) &&
+            inner.count >= 0,
+        )
       );
     case "first":
     case "last":
@@ -1950,10 +2170,17 @@ function validateAggregateExpr(aggregate: AggregateExpr): void {
     "count",
     "sum",
     "avg",
+    "var_samp",
+    "var_pop",
+    "stddev_samp",
+    "stddev_pop",
+    "median",
+    "quantile",
     "min",
     "max",
     "count_distinct",
     "approx_count_distinct",
+    "mode",
     "first",
     "last",
     "any",
@@ -1970,6 +2197,13 @@ function validateAggregateExpr(aggregate: AggregateExpr): void {
   }
   if (aggregate.op !== "count" && aggregate.column === undefined && aggregate.expr === undefined) {
     throw new LakeqlError("LAKEQL_TYPE_ERROR", `${aggregate.op} requires a column or expression`, {
+      aggregate,
+    });
+  }
+  if (aggregate.op === "quantile") {
+    requiredQuantile(aggregate);
+  } else if (aggregate.quantile !== undefined) {
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "quantile is only valid for quantile aggregates", {
       aggregate,
     });
   }
@@ -2251,7 +2485,21 @@ function validatePolicyColumns(
   }
 }
 
-async function expandPaths(store: ObjectStore, pattern: string): Promise<ObjectInfo[]> {
+async function expandPaths(
+  store: ObjectStore,
+  pattern: string,
+  planningCache?: CacheAdapter<ObjectInfo[]>,
+): Promise<ObjectInfo[]> {
+  const cacheKey = `object-plan:${pattern}`;
+  const cached = await planningCache?.get(cacheKey);
+  if (cached !== undefined) return cloneObjectInfos(cached.value);
+
+  const paths = await expandPathsUncached(store, pattern);
+  await planningCache?.set(cacheKey, { value: cloneObjectInfos(paths) });
+  return paths;
+}
+
+async function expandPathsUncached(store: ObjectStore, pattern: string): Promise<ObjectInfo[]> {
   if (!hasGlob(pattern)) {
     const head = await store.head(pattern);
     if (!head) {
@@ -2272,6 +2520,18 @@ async function expandPaths(store: ObjectStore, pattern: string): Promise<ObjectI
   }
   paths.sort((a, b) => a.path.localeCompare(b.path));
   return paths;
+}
+
+function cloneObjectInfos(objects: ObjectInfo[]): ObjectInfo[] {
+  return objects.map((object) => {
+    const cloned: ObjectInfo = {
+      path: object.path,
+      size: object.size,
+    };
+    if (object.etag !== undefined) cloned.etag = object.etag;
+    if (object.lastModified !== undefined) cloned.lastModified = new Date(object.lastModified);
+    return cloned;
+  });
 }
 
 function partitionColumnsFromTasks(tasks: TaskInput[]): string[] {
@@ -2647,6 +2907,30 @@ function estimateAggregateOperatorMemoryBytes(
   groups: Map<string, AggregateGroup>,
 ): number {
   return estimateOperatorMemoryBytes(aggregateOperatorState(groupColumns, spec, groups));
+}
+
+function estimateAggregateBufferedRows(groups: Map<string, AggregateGroup>): number {
+  let rows = 0;
+  for (const [key, group] of groups) {
+    for (const state of Object.values(group.snapshot(key).states)) {
+      switch (state.op) {
+        case "median":
+          rows += state.values.length;
+          break;
+        case "quantile":
+          rows += state.values.length;
+          break;
+        case "mode":
+          rows += state.values.length;
+          break;
+        case "count_distinct":
+        case "approx_count_distinct":
+          rows += state.values.length;
+          break;
+      }
+    }
+  }
+  return rows;
 }
 
 function estimateOperatorMemoryBytes(value: unknown): number {

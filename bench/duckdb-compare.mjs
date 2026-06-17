@@ -2,65 +2,46 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DuckDBConnection } from "@duckdb/node-api";
-import { evaluate, memoryStore } from "../packages/core/dist/index.js";
-import { createParquetLake } from "../packages/parquet/dist/index.js";
+import {
+  concatBatches,
+  evaluate,
+  gatherBatch,
+  materializeBatchRows,
+  memoryCache,
+  memoryStore,
+  tryPredicateSelection,
+  vectorHashJoin,
+  vectorProjectBatch,
+  vectorTopKIndices,
+} from "../packages/core/dist/index.js";
+import {
+  aggregateParquetGroupTasksBatch,
+  aggregateParquetTasks,
+  createParquetLake,
+  scanParquetTaskColumnBatches,
+} from "../packages/parquet/dist/index.js";
 import { parseSql } from "../packages/sql/dist/index.js";
+import { queryStats, summarizeSamples, timed } from "./bench-utils.mjs";
+import { cases } from "./duckdb-cases.mjs";
+import { cteMetric, materializeBenchmarkCteIfNeeded } from "./duckdb-cte.mjs";
+import { renderConsole, renderReport } from "./duckdb-report.mjs";
+import {
+  orderVectorScanBatch,
+  referencedColumns,
+  referencedJoinSideColumns,
+  referencedSubqueryJoinColumns,
+  selectionIndices,
+} from "./duckdb-vector-helpers.mjs";
+import { planBenchmarkWorkUnits, workUnitSourceMetrics } from "./duckdb-workunits.mjs";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 const fixtureRoot = join(repoRoot, "fixtures/data");
 const reportPath = join(repoRoot, "bench/DUCKDB.md");
 
-const cases = [
-  {
-    name: "filtered ordered scan",
-    fixture: "sales.parquet",
-    lakeql:
-      "select store_id, region, amount from input where region = 'west' order by amount asc limit 5",
-    duckdb: (path) =>
-      `select store_id, region, amount from read_parquet('${sqlString(path)}') where region = 'west' order by amount asc limit 5`,
-  },
-  {
-    name: "computed projection",
-    fixture: "sales.parquet",
-    lakeql:
-      "select store_id, amount * 2 as doubled, case when amount > 10 then 'large' else 'small' end as bucket from input where amount < 20 order by amount asc limit 2",
-    duckdb: (path) =>
-      `select store_id, amount * 2 as doubled, case when amount > 10 then 'large' else 'small' end as bucket from read_parquet('${sqlString(path)}') where amount < 20 order by amount asc limit 2`,
-  },
-  {
-    name: "row-group pruning",
-    fixture: "stats.parquet",
-    lakeql: "select id, metric from input where metric > 199 order by id asc",
-    duckdb: (path) =>
-      `select id, metric from read_parquet('${sqlString(path)}') where metric > 199 order by id asc`,
-  },
-  {
-    name: "global aggregate",
-    fixture: "sales.parquet",
-    lakeql: "select count(*) as rows, max(amount) as max_amount from input",
-    duckdb: (path) =>
-      `select count(*) as rows, max(amount) as max_amount from read_parquet('${sqlString(path)}')`,
-  },
-  {
-    name: "grouped aggregate",
-    fixture: "sales.parquet",
-    lakeql:
-      "select region, count(*) as rows, max(amount) as max_amount from input group by region order by region asc",
-    duckdb: (path) =>
-      `select region, count(*) as rows, max(amount) as max_amount from read_parquet('${sqlString(path)}') group by region order by region asc`,
-  },
-  {
-    name: "grouped expression aggregate",
-    fixture: "sales.parquet",
-    lakeql:
-      "select region, max(amount * 2) as max_doubled, count(distinct store_id) as stores from input group by region order by region asc",
-    duckdb: (path) =>
-      `select region, max(amount * 2) as max_doubled, count(distinct store_id) as stores from read_parquet('${sqlString(path)}') group by region order by region asc`,
-  },
-];
-
 const iterations = Number(process.env.LAKEQL_BENCH_ITERATIONS ?? 5);
 const warmup = Number(process.env.LAKEQL_BENCH_WARMUP ?? 1);
+const rowGroupsPerWorkUnit = Number(process.env.LAKEQL_BENCH_ROW_GROUPS_PER_TASK ?? 1);
+const aggregateConcurrency = Number(process.env.LAKEQL_BENCH_CONCURRENT_TASKS ?? 1);
 
 const duckdb = await DuckDBConnection.create();
 const rows = [];
@@ -68,35 +49,49 @@ for (const testCase of cases) {
   rows.push(await compareCase(testCase));
 }
 
-await writeFile(reportPath, renderReport(rows));
+await writeFile(reportPath, renderReport(rows, { iterations, warmup }));
 console.log(renderConsole(rows));
 console.log(`wrote ${reportPath}`);
 
 async function compareCase(testCase) {
   const fixturePath = join(fixtureRoot, testCase.fixture);
-  const duckdbSql = testCase.duckdb(fixturePath);
+  const extraFiles = testCase.extraFiles === undefined ? {} : await testCase.extraFiles();
+  const duckdbSql = testCase.duckdb(fixturePath, extraFiles);
 
-  const lakeqlRows = await runLakeql(testCase.fixture, testCase.lakeql);
+  const lakeqlRows = await runLakeql(
+    testCase.fixture,
+    testCase.lakeql,
+    extraFiles,
+    testCase.sourceAliases,
+  );
   const duckdbRows = await runDuckDb(duckdbSql);
   assertSameRows(testCase.name, lakeqlRows.rows, duckdbRows);
+  assertLakeqlExpectations(testCase.name, lakeqlRows, testCase.lakeqlExpect);
 
   for (let index = 0; index < warmup; index++) {
-    await runLakeql(testCase.fixture, testCase.lakeql);
+    await runLakeql(testCase.fixture, testCase.lakeql, extraFiles, testCase.sourceAliases);
     await runDuckDb(duckdbSql);
   }
 
   const lakeqlSamples = [];
   const duckdbSamples = [];
+  const lakeqlPeakRssSamples = [];
+  const duckdbPeakRssSamples = [];
   let lastLakeql = lakeqlRows;
   for (let index = 0; index < iterations; index++) {
-    lastLakeql = await timed(() => runLakeql(testCase.fixture, testCase.lakeql));
+    lastLakeql = await timedBenchmarkResult(() =>
+      runLakeql(testCase.fixture, testCase.lakeql, extraFiles, testCase.sourceAliases),
+    );
     lakeqlSamples.push(lastLakeql.ms);
-    const duck = await timed(() => runDuckDb(duckdbSql));
+    lakeqlPeakRssSamples.push(lastLakeql.peakRssBytes);
+    const duck = await timedBenchmarkResult(() => runDuckDb(duckdbSql));
     duckdbSamples.push(duck.ms);
+    duckdbPeakRssSamples.push(duck.peakRssBytes);
   }
+  assertLakeqlExpectations(testCase.name, lastLakeql, testCase.lakeqlExpect);
 
-  const lakeqlStats = summarize(lakeqlSamples);
-  const duckdbStats = summarize(duckdbSamples);
+  const lakeqlStats = summarizeSamples(lakeqlSamples, lakeqlPeakRssSamples);
+  const duckdbStats = summarizeSamples(duckdbSamples, duckdbPeakRssSamples);
   return {
     name: testCase.name,
     rows: lakeqlRows.rows.length,
@@ -107,19 +102,43 @@ async function compareCase(testCase) {
       rangeRequests: lastLakeql.rangeRequests,
       bytesRequested: lastLakeql.bytesRequested,
       rowsScanned: lastLakeql.rowsScanned,
+      filesRead: lastLakeql.filesRead,
+      filesSkipped: lastLakeql.filesSkipped,
       rowGroupsRead: lastLakeql.rowGroupsRead,
       rowGroupsSkipped: lastLakeql.rowGroupsSkipped,
+      rowsMatched: lastLakeql.rowsMatched,
+      workUnits: lastLakeql.workUnits,
+      path: lastLakeql.path,
     },
     duckdb: duckdbStats,
   };
 }
 
-async function runLakeql(fixture, sql) {
+async function runLakeql(fixture, sql, extraFiles = {}, sourceAliases = {}) {
   const { store, counters } = countingStore();
   await store.put(fixture, await readFile(join(fixtureRoot, fixture)));
+  for (const [name, file] of Object.entries(extraFiles)) await store.put(name, file.bytes);
   counters.reset();
-  const lake = createParquetLake({ store });
-  const ast = { ...parseSql(sql), source: fixture };
+  const metadataCache = memoryCache();
+  const lake = createParquetLake({ store, metadataCache });
+  const ast = await materializeBenchmarkCteIfNeeded(
+    store,
+    lake,
+    await resolveBenchmarkScalarSubqueries(
+      store,
+      lake,
+      normalizeBenchmarkSources(parseSql(sql), fixture, sourceAliases),
+      fixture,
+      metadataCache,
+    ),
+    {
+      aggregateConcurrency,
+      benchQueryStats,
+      defaultSource: fixture,
+      metadataCache,
+      rowGroupsPerWorkUnit,
+    },
+  );
   let rows;
   let stats;
 
@@ -127,8 +146,207 @@ async function runLakeql(fixture, sql) {
     ast.aggregates && Object.keys(ast.aggregates).length > 0 ? ast.aggregates : undefined;
   const grouped = (ast.groupBy?.length ?? 0) > 0;
 
+  if (canUseVectorJoin(ast, aggregates, grouped)) {
+    const stats = benchQueryStats();
+    const join = ast.join;
+    const left = await scanJoinedSourceBatch(
+      store,
+      lake,
+      fixture,
+      join.leftAlias,
+      ast,
+      stats,
+      metadataCache,
+    );
+    const right = await scanJoinedSourceBatch(
+      store,
+      lake,
+      join.source,
+      join.alias,
+      ast,
+      stats,
+      metadataCache,
+    );
+    const joined = vectorHashJoin(left.batch, right.batch, {
+      leftKey: join.leftKey,
+      rightKey: join.rightKey,
+      type: join.type,
+      rightPrefix: `${join.alias}.`,
+      maxRightRows: 100_000,
+    });
+    const filtered = filterVectorJoinBatch(joined, ast);
+    const orderedBatch = orderVectorScanBatch(filtered, ast);
+    rows = orderedBatch === undefined ? [] : projectRows(materializeBatchRows(orderedBatch), ast);
+    return {
+      rows,
+      path: "vector hash join work units",
+      workUnits: left.workUnits + right.workUnits,
+      bytesFetched: counters.bytesFetched,
+      objectRequests: counters.totalRequests,
+      rangeRequests: stats.rangeRequests + scalarMetric(ast, "rangeRequests"),
+      bytesRequested: stats.bytesRequested + scalarMetric(ast, "bytesRequested"),
+      rowsScanned: stats.rowsDecoded,
+      rowsMatched: stats.rowsMatched,
+      filesRead: left.filesRead + right.filesRead,
+      filesSkipped: stats.filesSkipped,
+      rowGroupsRead: stats.rowGroupsRead,
+      rowGroupsSkipped: stats.rowGroupsSkipped,
+    };
+  }
+
+  if (canUseVectorSubqueryJoin(ast, aggregates, grouped)) {
+    const stats = benchQueryStats();
+    const join = ast.subqueryJoin;
+    const left = await scanSubqueryJoinSourceBatch(
+      store,
+      lake,
+      fixture,
+      ast,
+      stats,
+      "left",
+      metadataCache,
+    );
+    const right = await scanSubqueryJoinSourceBatch(
+      store,
+      lake,
+      join.source,
+      ast,
+      stats,
+      "right",
+      metadataCache,
+    );
+    const joined = vectorHashJoin(left.batch, right.batch, {
+      leftKey: join.leftKey,
+      rightKey: join.rightKey,
+      type: join.type,
+      maxRightRows: 100_000,
+    });
+    const orderedBatch = orderVectorScanBatch(joined, ast);
+    const resultBatch =
+      orderedBatch === undefined
+        ? undefined
+        : vectorProjectBatch(orderedBatch, ast.select, ast.projections);
+    rows = resultBatch === undefined ? [] : materializeBatchRows(resultBatch);
+    return {
+      rows,
+      path: `vector hash ${join.type} join work units`,
+      workUnits: left.workUnits + right.workUnits,
+      bytesFetched: counters.bytesFetched,
+      objectRequests: counters.totalRequests,
+      rangeRequests: stats.rangeRequests,
+      bytesRequested: stats.bytesRequested,
+      rowsScanned: stats.rowsDecoded,
+      rowsMatched: stats.rowsMatched,
+      filesRead: left.filesRead + right.filesRead,
+      filesSkipped: stats.filesSkipped,
+      rowGroupsRead: stats.rowGroupsRead,
+      rowGroupsSkipped: stats.rowGroupsSkipped,
+    };
+  }
+
+  if (canUseVectorAggregate(ast, aggregates, grouped)) {
+    const stats = benchQueryStats();
+    let base = lake.path(ast.source);
+    if (ast.where) base = base.where(ast.where);
+    const workUnits = await planBenchmarkWorkUnits(store, base, {
+      metadataCache,
+      rowGroupsPerWorkUnit,
+    });
+    rows = grouped
+      ? materializeBatchRows(
+          await aggregateParquetGroupTasksBatch(store, workUnits, ast.groupBy ?? [], aggregates, {
+            stats,
+            metadataCache,
+            maxConcurrentTasks: aggregateConcurrency,
+            ...(ast.orderBy === undefined ? {} : { orderBy: ast.orderBy }),
+            ...(ast.limit === undefined ? {} : { limit: ast.limit }),
+            ...(ast.offset === undefined ? {} : { offset: ast.offset }),
+          }),
+        )
+      : [
+          await aggregateParquetTasks(store, workUnits, aggregates, {
+            stats,
+            metadataCache,
+            maxConcurrentTasks: aggregateConcurrency,
+          }),
+        ];
+    return {
+      rows,
+      path: grouped ? "vector group work units" : "vector work units",
+      workUnits: workUnits.length,
+      bytesFetched: counters.bytesFetched,
+      objectRequests: counters.totalRequests,
+      rangeRequests: stats.rangeRequests,
+      bytesRequested: stats.bytesRequested,
+      rowsScanned: stats.rowsDecoded,
+      rowsMatched: stats.rowsMatched,
+      filesRead: workUnitSourceMetrics(workUnits).filesRead,
+      filesSkipped: stats.filesSkipped,
+      rowGroupsRead: stats.rowGroupsRead,
+      rowGroupsSkipped: stats.rowGroupsSkipped,
+    };
+  }
+
+  if (canUseVectorScan(ast, aggregates, grouped)) {
+    const stats = benchQueryStats();
+    let base = lake.path(ast.source).select(referencedColumns(ast));
+    if (ast.where) base = base.where(ast.where);
+    const workUnits = await planBenchmarkWorkUnits(store, base, {
+      metadataCache,
+      rowGroupsPerWorkUnit,
+    });
+    let candidates;
+    for (const task of workUnits) {
+      for await (const batch of scanParquetTaskColumnBatches(store, task, {
+        metadataCache,
+        stats,
+      })) {
+        const combined =
+          candidates === undefined ? batch.batch : concatBatches([candidates, batch.batch]);
+        candidates =
+          ast.limit === undefined
+            ? combined
+            : gatherBatch(
+                combined,
+                vectorTopKIndices(combined, ast.orderBy, (ast.offset ?? 0) + ast.limit),
+              );
+      }
+    }
+    const orderedBatch = orderVectorScanBatch(candidates, ast);
+    const resultBatch =
+      orderedBatch === undefined
+        ? undefined
+        : vectorProjectBatch(orderedBatch, ast.select, ast.projections);
+    rows = resultBatch === undefined ? [] : materializeBatchRows(resultBatch);
+    return {
+      rows,
+      path: vectorScanPath(ast),
+      workUnits: workUnits.length + scalarMetric(ast, "workUnits") + cteMetric(ast, "workUnits"),
+      bytesFetched: counters.bytesFetched,
+      objectRequests: counters.totalRequests,
+      rangeRequests:
+        stats.rangeRequests + scalarMetric(ast, "rangeRequests") + cteMetric(ast, "rangeRequests"),
+      bytesRequested:
+        stats.bytesRequested +
+        scalarMetric(ast, "bytesRequested") +
+        cteMetric(ast, "bytesRequested"),
+      rowsScanned:
+        stats.rowsDecoded + scalarMetric(ast, "rowsScanned") + cteMetric(ast, "rowsScanned"),
+      rowsMatched:
+        stats.rowsMatched + scalarMetric(ast, "rowsMatched") + cteMetric(ast, "rowsMatched"),
+      filesRead: workUnitSourceMetrics(workUnits).filesRead,
+      filesSkipped: stats.filesSkipped,
+      rowGroupsRead:
+        stats.rowGroupsRead + scalarMetric(ast, "rowGroupsRead") + cteMetric(ast, "rowGroupsRead"),
+      rowGroupsSkipped:
+        stats.rowGroupsSkipped +
+        scalarMetric(ast, "rowGroupsSkipped") +
+        cteMetric(ast, "rowGroupsSkipped"),
+    };
+  }
+
   if (aggregates || grouped) {
-    let base = lake.path(fixture);
+    let base = lake.path(ast.source);
     if (ast.where) base = base.where(ast.where);
     rows = await base.groupBy(ast.groupBy ?? []).aggregate(aggregates ?? {}, {
       ...(ast.having !== undefined ? { having: ast.having } : {}),
@@ -142,7 +360,7 @@ async function runLakeql(fixture, sql) {
       rows = rows.slice(offset, offset + ast.limit);
     else if (ast.distinct === true && offset > 0) rows = rows.slice(offset);
   } else {
-    let query = lake.path(fixture);
+    let query = lake.path(ast.source);
     if (ast.projections !== undefined) query = query.select(referencedColumns(ast));
     else if (ast.select) query = query.select(ast.select);
     if (ast.where) query = query.where(ast.where);
@@ -157,14 +375,299 @@ async function runLakeql(fixture, sql) {
 
   return {
     rows,
+    path: aggregates || grouped ? "row aggregate" : "row scan",
+    workUnits: "",
     bytesFetched: counters.bytesFetched,
     objectRequests: counters.totalRequests,
     rangeRequests: stats?.rangeRequests ?? counters.getRange,
     bytesRequested: stats?.bytesRequested ?? counters.bytesFetched,
     rowsScanned: stats?.rowsDecoded ?? "",
+    rowsMatched: stats?.rowsMatched ?? "",
+    filesRead: stats?.filesRead ?? "",
+    filesSkipped: stats?.filesSkipped ?? "",
     rowGroupsRead: stats?.rowGroupsRead ?? "",
     rowGroupsSkipped: stats?.rowGroupsSkipped ?? "",
   };
+}
+
+function vectorScanPath(ast) {
+  if (ast.orderBy === undefined) return "vector scan work units";
+  return ast.limit === undefined ? "vector ordered work units" : "vector top-k work units";
+}
+
+function canUseVectorAggregate(ast, aggregates, grouped) {
+  return (
+    aggregates !== undefined &&
+    ast.having === undefined &&
+    ast.distinct !== true &&
+    (grouped || (ast.orderBy === undefined && ast.limit === undefined && ast.offset === undefined))
+  );
+}
+
+function canUseVectorJoin(ast, aggregates, grouped) {
+  return (
+    ast.join !== undefined &&
+    aggregates === undefined &&
+    !grouped &&
+    ast.distinct !== true &&
+    ast.having === undefined &&
+    (ast.join.type === "inner" || ast.join.type === "left")
+  );
+}
+
+async function resolveBenchmarkScalarSubqueries(store, lake, ast, defaultSource, metadataCache) {
+  if (ast.scalarSubqueries === undefined) return ast;
+  const values = new Map();
+  const metrics = {
+    rowGroupsRead: 0,
+    rowGroupsSkipped: 0,
+    rangeRequests: 0,
+    bytesRequested: 0,
+    rowsMatched: 0,
+    rowsScanned: 0,
+    workUnits: 0,
+  };
+  for (const [id, subquery] of Object.entries(ast.scalarSubqueries)) {
+    const query = normalizeBenchmarkSources(subquery.query, defaultSource);
+    const result = await scalarSubqueryRows(store, lake, query, metadataCache);
+    const rows = result.rows;
+    if (rows.length > 1) throw new Error("Scalar subquery returned more than one row");
+    values.set(id, rows.length === 0 ? null : (rows[0]?.[subquery.column] ?? null));
+    metrics.rowGroupsRead += result.rowGroupsRead;
+    metrics.rowGroupsSkipped += result.rowGroupsSkipped;
+    metrics.rangeRequests += result.rangeRequests;
+    metrics.bytesRequested += result.bytesRequested;
+    metrics.rowsMatched += result.rowsMatched;
+    metrics.rowsScanned += result.rowsScanned;
+    metrics.workUnits += result.workUnits;
+  }
+  const out = { ...ast, __benchScalarMetrics: metrics };
+  if (ast.where !== undefined) out.where = replaceScalarSubqueryExpr(ast.where, values);
+  if (ast.having !== undefined) out.having = replaceScalarSubqueryExpr(ast.having, values);
+  if (ast.projections !== undefined) {
+    out.projections = Object.fromEntries(
+      Object.entries(ast.projections).map(([alias, expr]) => [
+        alias,
+        replaceScalarSubqueryExpr(expr, values),
+      ]),
+    );
+  }
+  delete out.scalarSubqueries;
+  return out;
+}
+
+async function scalarSubqueryRows(store, lake, ast, metadataCache) {
+  const aggregates =
+    ast.aggregates && Object.keys(ast.aggregates).length > 0 ? ast.aggregates : undefined;
+  const grouped = (ast.groupBy?.length ?? 0) > 0;
+  if (!canUseVectorAggregate(ast, aggregates, grouped)) {
+    throw new Error("Scalar subquery benchmark requires a vectorizable aggregate subquery");
+  }
+  const stats = benchQueryStats();
+  let base = lake.path(ast.source);
+  if (ast.where) base = base.where(ast.where);
+  const workUnits = await planBenchmarkWorkUnits(store, base, {
+    metadataCache,
+    rowGroupsPerWorkUnit,
+  });
+  const row = await aggregateParquetTasks(store, workUnits, aggregates, {
+    stats,
+    metadataCache,
+    maxConcurrentTasks: aggregateConcurrency,
+  });
+  return {
+    rows: [row],
+    rowGroupsRead: stats.rowGroupsRead,
+    rowGroupsSkipped: stats.rowGroupsSkipped,
+    rangeRequests: stats.rangeRequests,
+    bytesRequested: stats.bytesRequested,
+    rowsMatched: stats.rowsMatched,
+    rowsScanned: stats.rowsDecoded,
+    workUnits: workUnits.length,
+  };
+}
+
+function scalarMetric(ast, metric) {
+  return ast.__benchScalarMetrics?.[metric] ?? 0;
+}
+
+function normalizeBenchmarkSources(ast, defaultSource, sourceAliases = {}) {
+  const out = { ...ast, source: benchmarkSource(ast.source, defaultSource, sourceAliases) };
+  if (ast.cte !== undefined) {
+    out.cte = {
+      ...ast.cte,
+      query: normalizeBenchmarkSources(ast.cte.query, defaultSource, sourceAliases),
+    };
+    out.source = ast.source;
+  }
+  if (ast.scalarSubqueries !== undefined) {
+    out.scalarSubqueries = Object.fromEntries(
+      Object.entries(ast.scalarSubqueries).map(([id, subquery]) => [
+        id,
+        {
+          ...subquery,
+          query: normalizeBenchmarkSources(subquery.query, defaultSource, sourceAliases),
+        },
+      ]),
+    );
+  }
+  return out;
+}
+
+function benchmarkSource(source, defaultSource, sourceAliases) {
+  if (source in sourceAliases) return sourceAliases[source];
+  return source === "input" ? defaultSource : source;
+}
+
+function replaceScalarSubqueryExpr(expr, values) {
+  switch (expr.kind) {
+    case "call":
+      if (expr.fn === "__lakeql_scalar_subquery") {
+        const id = expr.args[0];
+        if (id?.kind !== "literal" || typeof id.value !== "string" || !values.has(id.value)) {
+          throw new Error("Invalid scalar subquery placeholder");
+        }
+        return { kind: "literal", value: values.get(id.value) };
+      }
+      return { ...expr, args: expr.args.map((arg) => replaceScalarSubqueryExpr(arg, values)) };
+    case "compare":
+      return {
+        ...expr,
+        left: replaceScalarSubqueryExpr(expr.left, values),
+        right: replaceScalarSubqueryExpr(expr.right, values),
+      };
+    case "between":
+      return {
+        ...expr,
+        target: replaceScalarSubqueryExpr(expr.target, values),
+        low: replaceScalarSubqueryExpr(expr.low, values),
+        high: replaceScalarSubqueryExpr(expr.high, values),
+      };
+    case "in":
+      return {
+        ...expr,
+        target: replaceScalarSubqueryExpr(expr.target, values),
+        values: expr.values.map((value) => replaceScalarSubqueryExpr(value, values)),
+      };
+    case "logical":
+      return {
+        ...expr,
+        operands: expr.operands.map((operand) => replaceScalarSubqueryExpr(operand, values)),
+      };
+    case "not":
+      return { ...expr, operand: replaceScalarSubqueryExpr(expr.operand, values) };
+    case "null-check":
+    case "like":
+      return { ...expr, target: replaceScalarSubqueryExpr(expr.target, values) };
+    case "arithmetic":
+      return {
+        ...expr,
+        left: replaceScalarSubqueryExpr(expr.left, values),
+        right: replaceScalarSubqueryExpr(expr.right, values),
+      };
+    case "case":
+      return {
+        ...expr,
+        whens: expr.whens.map((branch) => ({
+          when: replaceScalarSubqueryExpr(branch.when, values),
+          value: replaceScalarSubqueryExpr(branch.value, values),
+        })),
+        ...(expr.else === undefined ? {} : { else: replaceScalarSubqueryExpr(expr.else, values) }),
+      };
+    case "column":
+    case "literal":
+      return expr;
+  }
+}
+
+function canUseVectorSubqueryJoin(ast, aggregates, grouped) {
+  return (
+    ast.subqueryJoin !== undefined &&
+    aggregates === undefined &&
+    !grouped &&
+    ast.distinct !== true &&
+    ast.having === undefined &&
+    (ast.subqueryJoin.type === "semi" || ast.subqueryJoin.type === "anti")
+  );
+}
+
+function canUseVectorScan(ast, aggregates, grouped) {
+  return aggregates === undefined && !grouped && ast.distinct !== true;
+}
+
+async function scanSubqueryJoinSourceBatch(store, lake, source, ast, stats, side, metadataCache) {
+  const columns = referencedSubqueryJoinColumns(ast, side);
+  const join = ast.subqueryJoin;
+  let base = lake.path(source);
+  if (side === "right" && join.where !== undefined) base = base.where(join.where);
+  if (columns.length > 0) base = base.select(columns);
+  const workUnits = await planBenchmarkWorkUnits(store, base, {
+    metadataCache,
+    rowGroupsPerWorkUnit,
+  });
+  let combined;
+  for (const task of workUnits) {
+    for await (const batch of scanParquetTaskColumnBatches(store, task, {
+      metadataCache,
+      stats,
+    })) {
+      combined = combined === undefined ? batch.batch : concatBatches([combined, batch.batch]);
+    }
+  }
+  if (combined === undefined) {
+    throw new Error(`No batches produced for joined source ${source}`);
+  }
+  return {
+    batch: combined,
+    ...workUnitSourceMetrics(workUnits),
+  };
+}
+
+async function scanJoinedSourceBatch(store, lake, source, alias, ast, stats, metadataCache) {
+  const columns = referencedJoinSideColumns(ast, alias);
+  let base = lake.path(source);
+  if (columns.length > 0) base = base.select(columns);
+  const workUnits = await planBenchmarkWorkUnits(store, base, {
+    metadataCache,
+    rowGroupsPerWorkUnit,
+  });
+  let combined;
+  for (const task of workUnits) {
+    for await (const batch of scanParquetTaskColumnBatches(store, task, {
+      metadataCache,
+      stats,
+    })) {
+      const qualified = qualifyBatchColumns(batch.batch, alias);
+      combined = combined === undefined ? qualified : concatBatches([combined, qualified]);
+    }
+  }
+  if (combined === undefined) {
+    throw new Error(`No batches produced for joined source ${source}`);
+  }
+  return {
+    batch: combined,
+    ...workUnitSourceMetrics(workUnits),
+  };
+}
+
+function filterVectorJoinBatch(batch, ast) {
+  if (ast.where === undefined) return batch;
+  const selection = tryPredicateSelection(batch, ast.where);
+  if (selection === undefined) throw new Error("Join benchmark WHERE is not vectorizable");
+  return gatherBatch(batch, selectionIndices(selection));
+}
+
+function qualifyBatchColumns(batch, alias) {
+  return {
+    rowCount: batch.rowCount,
+    columns: Object.fromEntries(
+      Object.entries(batch.columns).map(([column, vector]) => [`${alias}.${column}`, vector]),
+    ),
+  };
+}
+
+function benchQueryStats() {
+  return queryStats("bench-duckdb");
 }
 
 function projectRows(rows, ast) {
@@ -178,89 +681,23 @@ function projectRows(rows, ast) {
   });
 }
 
-function referencedColumns(ast) {
-  const columns = new Set(ast.select ?? []);
-  if (ast.where !== undefined) collectExprColumns(ast.where, columns);
-  for (const expr of Object.values(ast.projections ?? {})) collectExprColumns(expr, columns);
-  for (const term of ast.orderBy ?? []) columns.add(term.column);
-  return [...columns].filter((column) => column !== "*");
-}
-
-function collectExprColumns(expr, columns) {
-  switch (expr.kind) {
-    case "column":
-      columns.add(expr.name);
-      return;
-    case "compare":
-      collectExprColumns(expr.left, columns);
-      collectExprColumns(expr.right, columns);
-      return;
-    case "between":
-      collectExprColumns(expr.target, columns);
-      collectExprColumns(expr.low, columns);
-      collectExprColumns(expr.high, columns);
-      return;
-    case "in":
-      collectExprColumns(expr.target, columns);
-      for (const value of expr.values) collectExprColumns(value, columns);
-      return;
-    case "logical":
-      for (const operand of expr.operands) collectExprColumns(operand, columns);
-      return;
-    case "not":
-      collectExprColumns(expr.operand, columns);
-      return;
-    case "null-check":
-      collectExprColumns(expr.target, columns);
-      return;
-    case "like":
-      collectExprColumns(expr.target, columns);
-      return;
-    case "call":
-      for (const arg of expr.args) collectExprColumns(arg, columns);
-      return;
-    case "arithmetic":
-      collectExprColumns(expr.left, columns);
-      collectExprColumns(expr.right, columns);
-      return;
-    case "case":
-      for (const branch of expr.whens) {
-        collectExprColumns(branch.when, columns);
-        collectExprColumns(branch.value, columns);
-      }
-      if (expr.else !== undefined) collectExprColumns(expr.else, columns);
-      return;
-    case "literal":
-      return;
-  }
-}
-
 async function runDuckDb(sql) {
   const result = await duckdb.runAndReadAll(sql);
   return result.getRowObjectsJson();
 }
 
-async function timed(fn) {
-  const start = performance.now();
-  const out = await fn();
-  return { ...out, ms: performance.now() - start };
-}
-
-function summarize(samples) {
-  const sorted = [...samples].sort((a, b) => a - b);
-  const sum = samples.reduce((acc, value) => acc + value, 0);
+async function timedBenchmarkResult(fn) {
+  const result = await timed(fn);
   return {
-    minMs: sorted[0] ?? 0,
-    medianMs: percentile(sorted, 0.5),
-    maxMs: sorted.at(-1) ?? 0,
-    meanMs: sum / Math.max(samples.length, 1),
+    ...benchmarkValueObject(result.value),
+    ms: result.ms,
+    peakRssBytes: result.peakMemoryBytes,
+    peakRssDeltaBytes: result.peakMemoryDeltaBytes,
   };
 }
 
-function percentile(sorted, p) {
-  if (sorted.length === 0) return 0;
-  const index = Math.min(sorted.length - 1, Math.floor(p * sorted.length));
-  return sorted[index];
+function benchmarkValueObject(value) {
+  return Array.isArray(value) ? { rows: value } : value;
 }
 
 function countingStore() {
@@ -334,12 +771,52 @@ function distinctRows(rows) {
 }
 
 function assertSameRows(name, lakeqlRows, duckdbRows) {
-  const left = lakeqlRows.map((row) => stableStringify(normalizeRow(row)));
-  const right = duckdbRows.map((row) => stableStringify(normalizeRow(row)));
-  if (JSON.stringify(left) !== JSON.stringify(right)) {
+  const left = lakeqlRows.map(normalizeRow);
+  const right = duckdbRows.map(normalizeRow);
+  if (!sameRows(left, right)) {
     throw new Error(
       `${name} result mismatch\nlakeql: ${JSON.stringify(lakeqlRows)}\nduckdb: ${JSON.stringify(duckdbRows)}`,
     );
+  }
+}
+
+function sameRows(left, right) {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    if (!sameRow(left[index], right[index])) return false;
+  }
+  return true;
+}
+
+function sameRow(left, right) {
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  if (JSON.stringify(leftKeys) !== JSON.stringify(rightKeys)) return false;
+  for (const key of leftKeys) {
+    if (!sameValue(left[key], right[key])) return false;
+  }
+  return true;
+}
+
+function sameValue(left, right) {
+  if (typeof left === "number" && typeof right === "number") {
+    const scale = Math.max(1, Math.abs(left), Math.abs(right));
+    return Math.abs(left - right) <= scale * 1e-12;
+  }
+  return Object.is(left, right);
+}
+
+function assertLakeqlExpectations(name, actual, expected) {
+  if (expected === undefined) return;
+  for (const [metric, value] of Object.entries(expected)) {
+    const actualValue = actual[metric];
+    if (actualValue !== value) {
+      throw new Error(
+        `${name} lakeql metric mismatch for ${metric}: expected ${JSON.stringify(
+          value,
+        )}, got ${JSON.stringify(actualValue)}`,
+      );
+    }
   }
 }
 
@@ -359,74 +836,4 @@ function stableStringify(value) {
     .sort()
     .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
     .join(",")}}`;
-}
-
-function renderConsole(results) {
-  const rows = results.map((row) => ({
-    query: row.name,
-    rows: row.rows,
-    "lakeql median ms": row.lakeql.medianMs.toFixed(2),
-    "duckdb median ms": row.duckdb.medianMs.toFixed(2),
-    "lakeql requests": row.lakeql.requests,
-    "lakeql bytes": row.lakeql.bytes,
-  }));
-  console.table(rows);
-  return "";
-}
-
-function renderReport(results) {
-  const generatedAt = new Date().toISOString().slice(0, 10);
-  const headers = [
-    "Query",
-    "Rows",
-    "lakeql median ms",
-    "DuckDB median ms",
-    "Ratio",
-    "lakeql req",
-    "lakeql bytes",
-    "lakeql ranges",
-    "Rows scanned",
-    "RG read/skipped",
-  ];
-  const rows = results.map((row) => [
-    row.name,
-    String(row.rows),
-    row.lakeql.medianMs.toFixed(2),
-    row.duckdb.medianMs.toFixed(2),
-    ratio(row.lakeql.medianMs, row.duckdb.medianMs),
-    String(row.lakeql.requests),
-    String(row.lakeql.bytes),
-    String(row.lakeql.rangeRequests),
-    String(row.lakeql.rowsScanned),
-    `${row.lakeql.rowGroupsRead}/${row.lakeql.rowGroupsSkipped}`,
-  ]);
-  return `# DuckDB Comparison Benchmarks
-
-Generated by \`pnpm bench:duckdb\` on ${generatedAt}.
-
-Each query is run against the same fixture data through lakeql and DuckDB's \`read_parquet\`.
-The harness checks result parity before timing. Timings are local and machine-dependent; lakeql
-request, byte, and row-group counters are the more stable regression signals.
-
-Iterations: ${iterations}; warmup: ${warmup}.
-
-${markdownTable(headers, rows)}
-`;
-}
-
-function ratio(left, right) {
-  if (right === 0) return "n/a";
-  return `${(left / right).toFixed(2)}x`;
-}
-
-function markdownTable(headers, rows) {
-  return [
-    `| ${headers.join(" | ")} |`,
-    `| ${headers.map(() => "---").join(" | ")} |`,
-    ...rows.map((row) => `| ${row.join(" | ")} |`),
-  ].join("\n");
-}
-
-function sqlString(value) {
-  return value.replaceAll("'", "''");
 }

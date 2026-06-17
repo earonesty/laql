@@ -1,6 +1,8 @@
 node_modules/
 dist/
 coverage/
+bench/WORKUNITS.md
+bench/generated/
 *.tsbuildinfo
 .DS_Store
 fixtures/external/*

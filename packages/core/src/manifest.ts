@@ -89,10 +89,11 @@ export function createTaskManifest(input: {
   tasks: TaskInput[];
   outputRole?: TaskManifestTask["outputRole"];
 }): TaskManifest {
-  const snapshot = input.snapshot ?? snapshotFromTasks(input.tasks);
-  const tasks = input.tasks.map((task, index) => ({
+  const normalizedTasks = input.tasks.map(normalizeTaskInput);
+  const snapshot = input.snapshot ?? snapshotFromTasks(normalizedTasks);
+  const tasks = normalizedTasks.map((task, index) => ({
     id: taskId(input.jobId, index, task),
-    input: normalizeTaskInput(task),
+    input: task,
     outputRole: input.outputRole ?? "rows",
   }));
   const planFingerprint = fingerprint({
@@ -356,6 +357,7 @@ function normalizeTaskInput(task: TaskInput): TaskInput {
   };
   if (task.etag !== undefined) normalized.etag = task.etag;
   if (task.size !== undefined) normalized.size = task.size;
+  if (task.rowGroupCount !== undefined) normalized.rowGroupCount = task.rowGroupCount;
   if (task.projectedColumns !== undefined)
     normalized.projectedColumns = [...task.projectedColumns].sort();
   if (task.residualPredicate !== undefined) normalized.residualPredicate = task.residualPredicate;

@@ -32,6 +32,26 @@
   },
   {
     "area": "Parquet",
+    "feature": "Deployment-neutral work-unit fan-out",
+    "status": "supported+tested",
+    "notes": "Parquet task manifests split into portable JSON row-group work units, fan aggregate partials back in, and can reuse runtime metadata caches without changing the work-unit payload.",
+    "evidence": [
+      {
+        "file": "packages/parquet/src/index.test.ts",
+        "pattern": "executes serialized task work units independently and fans results back in"
+      },
+      {
+        "file": "packages/parquet/src/index.test.ts",
+        "pattern": "reuses cached Parquet footer metadata during aggregate fan-out"
+      },
+      {
+        "file": "docs/performance.md",
+        "pattern": "pnpm bench:workunits:10m"
+      }
+    ]
+  },
+  {
+    "area": "Parquet",
     "feature": "Lists and maps",
     "status": "supported+tested",
     "notes": "Delegated to hyparquet and compared against DuckDB-authored LIST and MAP Parquet values.",
@@ -340,6 +360,86 @@
         "pattern": "matches AWS S3 SigV4 documentation vectors with explicit payload hashes"
       },
       { "file": "packages/s3/src/index.test.ts", "pattern": "continuation-token=page-2" }
+    ]
+  },
+  {
+    "area": "Browser parity",
+    "feature": "In-memory JavaScript row arrays",
+    "status": "supported+tested",
+    "notes": "createInMemoryLake registers JS row arrays behind the normal Lake runtime with query-time budgets and task planning.",
+    "evidence": [
+      {
+        "file": "packages/core/src/in-memory.test.ts",
+        "pattern": "queries JavaScript row arrays through the normal Lake runtime"
+      },
+      {
+        "file": "packages/core/src/in-memory.test.ts",
+        "pattern": "plans globbed in-memory tables as portable task inputs"
+      },
+      {
+        "file": "packages/core/src/in-memory.test.ts",
+        "pattern": "enforces ingest budgets before registering tables"
+      }
+    ]
+  },
+  {
+    "area": "Browser parity",
+    "feature": "CSV ingest",
+    "status": "supported+tested",
+    "notes": "lakeql-csv is an opt-in package for headered/headerless CSV, delimiter options, quoted fields, type sniffing, null handling, and ingest budgets.",
+    "evidence": [
+      {
+        "file": "packages/csv/src/index.test.ts",
+        "pattern": "reads headered CSV with quoted fields, nulls, and type sniffing"
+      },
+      {
+        "file": "packages/csv/src/index.test.ts",
+        "pattern": "supports explicit delimiter and headerless CSV"
+      },
+      {
+        "file": "packages/csv/src/index.test.ts",
+        "pattern": "rejects malformed and ragged CSV instead of guessing"
+      }
+    ]
+  },
+  {
+    "area": "Browser parity",
+    "feature": "JSON and NDJSON ingest",
+    "status": "supported+tested",
+    "notes": "lakeql-json is an opt-in package for JSON arrays, single objects, NDJSON records, browser binary inputs, and ingest budgets.",
+    "evidence": [
+      {
+        "file": "packages/json/src/index.test.ts",
+        "pattern": "reads JSON arrays and preserves nested JSON cell values"
+      },
+      {
+        "file": "packages/json/src/index.test.ts",
+        "pattern": "reads NDJSON records"
+      },
+      {
+        "file": "packages/json/src/index.test.ts",
+        "pattern": "rejects malformed JSON and unsupported row shapes"
+      }
+    ]
+  },
+  {
+    "area": "Browser parity",
+    "feature": "Apache Arrow output",
+    "status": "supported+tested",
+    "notes": "lakeql-arrow is an opt-in package that converts rows, query results, and vector Batches to Arrow tables or IPC without adding apache-arrow to core.",
+    "evidence": [
+      {
+        "file": "packages/arrow/src/index.test.ts",
+        "pattern": "converts scalar rows with nulls into an Arrow table"
+      },
+      {
+        "file": "packages/arrow/src/index.test.ts",
+        "pattern": "converts lakeql column batches without row materialization at the API boundary"
+      },
+      {
+        "file": "packages/arrow/src/index.test.ts",
+        "pattern": "round-trips rows and batches through Arrow IPC"
+      }
     ]
   }
 ]

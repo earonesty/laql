@@ -109,6 +109,62 @@ describe("task and output manifests", () => {
     }
   });
 
+  it("preserves row group counts in deterministic task fingerprints", () => {
+    const task = {
+      path: "lake/sales.parquet",
+      size: 1234,
+      rowGroupCount: 3,
+      rowGroupRanges: [
+        { start: 2, end: 3 },
+        { start: 0, end: 1 },
+      ],
+      projectedColumns: ["amount", "id"],
+      partitionValues: { country: "US", date: "2026-01-01" },
+    };
+    const reordered = {
+      ...task,
+      rowGroupRanges: [
+        { start: 0, end: 1 },
+        { start: 2, end: 3 },
+      ],
+      projectedColumns: ["id", "amount"],
+      partitionValues: { date: "2026-01-01", country: "US" },
+    };
+    const withoutCount = {
+      ...task,
+      rowGroupCount: undefined,
+    };
+    const differentCount = {
+      ...task,
+      rowGroupCount: 4,
+    };
+
+    const manifest = createTaskManifest({ jobId: "job_row_groups", tasks: [task] });
+    const repeated = createTaskManifest({ jobId: "job_row_groups", tasks: [reordered] });
+    const noCountManifest = createTaskManifest({ jobId: "job_row_groups", tasks: [withoutCount] });
+    const changedManifest = createTaskManifest({
+      jobId: "job_row_groups",
+      tasks: [differentCount],
+    });
+
+    expect(manifest).toEqual(repeated);
+    expect(manifest.tasks[0]?.input).toMatchObject({
+      rowGroupCount: 3,
+      rowGroupRanges: [
+        { start: 0, end: 1 },
+        { start: 2, end: 3 },
+      ],
+      projectedColumns: ["amount", "id"],
+      partitionValues: { country: "US", date: "2026-01-01" },
+    });
+    expect(stableStringify(manifest)).toContain('"rowGroupCount":3');
+    expect(noCountManifest.tasks[0]?.input).not.toHaveProperty("rowGroupCount");
+    expect(noCountManifest.planFingerprint).not.toBe(manifest.planFingerprint);
+    expect(noCountManifest.tasks[0]?.id).not.toBe(manifest.tasks[0]?.id);
+    expect(changedManifest.planFingerprint).not.toBe(manifest.planFingerprint);
+    expect(changedManifest.tasks[0]?.id).not.toBe(manifest.tasks[0]?.id);
+  });
+
   it("normalizes task and output manifest JSON for golden comparisons", () => {
     const taskManifest = goldenTaskManifest();
     const outputManifest = createOutputManifest({

@@ -1,5 +1,6 @@
 import { LakeqlError } from "./errors.js";
 import type { Expr, Scalar } from "./expr.js";
+import { regexpMatchesValue, regexpReplaceValue } from "./regex-functions.js";
 import type { Row } from "./types.js";
 
 export type SqlBoolean = boolean | null;
@@ -348,6 +349,10 @@ function callFunction(name: string, args: EvalValue[]): EvalValue {
       return substr(args);
     case "replace":
       return replace(args);
+    case "regexp_matches":
+      return regexpMatches(args);
+    case "regexp_replace":
+      return regexpReplace(args);
     case "coalesce":
       return args.find((value) => value !== null) ?? null;
     case "nullif":
@@ -469,6 +474,50 @@ function replace(args: EvalValue[]): EvalValue {
     throw new LakeqlError("LAKEQL_TYPE_ERROR", "replace() search and replacement must be strings");
   }
   return value.replaceAll(search, replacement);
+}
+
+function regexpMatches(args: EvalValue[]): EvalValue {
+  if (args.length < 2 || args.length > 3) {
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "regexp_matches() expects 2 or 3 arguments", {
+      received: args.length,
+    });
+  }
+  const value = args[0] ?? null;
+  const pattern = args[1] ?? null;
+  const options = args[2] ?? "";
+  if (value === null || pattern === null || options === null) return null;
+  if (typeof value !== "string" || typeof pattern !== "string" || typeof options !== "string") {
+    throw new LakeqlError(
+      "LAKEQL_TYPE_ERROR",
+      "regexp_matches() value, pattern, and options must be strings",
+    );
+  }
+  return regexpMatchesValue(value, pattern, options);
+}
+
+function regexpReplace(args: EvalValue[]): EvalValue {
+  if (args.length < 3 || args.length > 4) {
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "regexp_replace() expects 3 or 4 arguments", {
+      received: args.length,
+    });
+  }
+  const value = args[0] ?? null;
+  const pattern = args[1] ?? null;
+  const replacement = args[2] ?? null;
+  const options = args[3] ?? "";
+  if (value === null || pattern === null || replacement === null || options === null) return null;
+  if (
+    typeof value !== "string" ||
+    typeof pattern !== "string" ||
+    typeof replacement !== "string" ||
+    typeof options !== "string"
+  ) {
+    throw new LakeqlError(
+      "LAKEQL_TYPE_ERROR",
+      "regexp_replace() value, pattern, replacement, and options must be strings",
+    );
+  }
+  return regexpReplaceValue(value, pattern, replacement, options);
 }
 
 function stPoint(args: EvalValue[]): EvalValue {

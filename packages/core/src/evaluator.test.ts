@@ -163,6 +163,13 @@ describe("evaluate", () => {
     expect(evaluate(fn("trim", col("name")), row)).toBe("Alice");
     expect(evaluate(fn("substr", col("city"), 4, 7), row)).toBe("Angeles");
     expect(evaluate(fn("replace", col("city"), "Los", "San"), row)).toBe("San Angeles");
+    expect(evaluate(fn("regexp_matches", col("city"), "Ang"), row)).toBe(true);
+    expect(evaluate(fn("regexp_matches", col("city"), "^ang", "i"), row)).toBe(false);
+    expect(evaluate(fn("regexp_matches", col("city"), "los", "i"), row)).toBe(true);
+    expect(evaluate(fn("regexp_replace", "abc", "(b|c)", "X"), row)).toBe("aXc");
+    expect(evaluate(fn("regexp_replace", "abc", "(b|c)", "X", "g"), row)).toBe("aXX");
+    expect(evaluate(fn("regexp_replace", "abc", "(a)(b)", "\\2\\1"), row)).toBe("bac");
+    expect(evaluate(fn("regexp_replace", "a.c", ".", "X", "l"), row)).toBe("aXc");
     expect(evaluate(fn("coalesce", lit(null), col("city")), row)).toBe("Los Angeles");
     expect(evaluate(fn("nullif", col("city"), "Los Angeles"), row)).toBeNull();
     expect(evaluate(fn("year", col("date")), row)).toBe(2026);
@@ -290,6 +297,10 @@ describe("evaluate", () => {
     expect(evaluate(fn("replace", col("city"), lit(null), "x"), row)).toBeNull();
     expect(evaluate(fn("replace", lit(null), "x", "y"), row)).toBeNull();
     expect(evaluate(fn("replace", col("city"), "x", lit(null)), row)).toBeNull();
+    expect(evaluate(fn("regexp_matches", lit(null), "x"), row)).toBeNull();
+    expect(evaluate(fn("regexp_matches", col("city"), lit(null)), row)).toBeNull();
+    expect(evaluate(fn("regexp_replace", lit(null), "x", "y"), row)).toBeNull();
+    expect(evaluate(fn("regexp_replace", col("city"), "x", lit(null)), row)).toBeNull();
     expect(evaluate(fn("nullif", lit(null), "x"), row)).toBeNull();
     expect(evaluate(fn("cast", lit(null), "number"), row)).toBeNull();
     expect(evaluate(fn("cast", "not-a-number", "number"), row)).toBeNull();
@@ -332,6 +343,14 @@ describe("evaluate", () => {
     expect(() => evaluate(fn("lower", 1), row)).toThrowError(LakeqlError);
     expect(() => evaluate(fn("substr", col("city"), "x", 1), row)).toThrowError(LakeqlError);
     expect(() => evaluate(fn("replace", col("city"), 1, "x"), row)).toThrowError(LakeqlError);
+    expect(() => evaluate(fn("regexp_matches", col("city")), row)).toThrowError(LakeqlError);
+    expect(() => evaluate(fn("regexp_matches", col("city"), "*"), row)).toThrowError(LakeqlError);
+    expect(() => evaluate(fn("regexp_matches", col("city"), "x", "g"), row)).toThrowError(
+      LakeqlError,
+    );
+    expect(() => evaluate(fn("regexp_replace", col("city"), "x", "y", "z"), row)).toThrowError(
+      LakeqlError,
+    );
     expect(() => evaluate(fn("cast", col("city"), "unknown"), row)).toThrowError(LakeqlError);
     expect(() => evaluate(fn("date_trunc", 1, col("date")), row)).toThrowError(LakeqlError);
     expect(() => evaluate(fn("date_trunc", "week", col("date")), row)).toThrowError(LakeqlError);

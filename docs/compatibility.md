@@ -9,6 +9,7 @@ Legend: supported+tested = covered by tests; supported = implemented with narrow
 | Parquet | Primitive scalar columns | supported+tested | Covered by local fixtures and hyparquet decoding. |
 | Parquet | Projection | supported+tested | Column projection is threaded into Parquet reads. |
 | Parquet | Row-group pruning | supported+tested | Predicate pruning uses row-group statistics where available. |
+| Parquet | Deployment-neutral work-unit fan-out | supported+tested | Parquet task manifests split into portable JSON row-group work units, fan aggregate partials back in, and can reuse runtime metadata caches without changing the work-unit payload. |
 | Parquet | Lists and maps | supported+tested | Delegated to hyparquet and compared against DuckDB-authored LIST and MAP Parquet values. |
 | Parquet | Struct assembly | detected+rejected | Rejected with LAKEQL_UNSUPPORTED_PARQUET_FEATURE to avoid silent flattening. |
 | Parquet | Decimal/date/time/timestamp logical values | supported+tested | Reference-engine comparison covers DuckDB-authored DECIMAL(9,2), TIME, DATE, and TIMESTAMP logical decoding. |
@@ -35,3 +36,7 @@ Legend: supported+tested = covered by tests; supported = implemented with narrow
 | Object storage | HTTP range reads | supported+tested | Adapter uses Range for getRange. |
 | Object storage | R2 range reads | supported+tested | Adapter maps to R2 ranged get. |
 | Object storage | S3 SigV4 and ListObjectsV2 | supported+tested | Signing delegates to aws4fetch; XML parsing uses fast-xml-parser. |
+| Browser parity | In-memory JavaScript row arrays | supported+tested | createInMemoryLake registers JS row arrays behind the normal Lake runtime with query-time budgets and task planning. |
+| Browser parity | CSV ingest | supported+tested | lakeql-csv is an opt-in package for headered/headerless CSV, delimiter options, quoted fields, type sniffing, null handling, and ingest budgets. |
+| Browser parity | JSON and NDJSON ingest | supported+tested | lakeql-json is an opt-in package for JSON arrays, single objects, NDJSON records, browser binary inputs, and ingest budgets. |
+| Browser parity | Apache Arrow output | supported+tested | lakeql-arrow is an opt-in package that converts rows, query results, and vector Batches to Arrow tables or IPC without adding apache-arrow to core. |

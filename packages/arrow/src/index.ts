@@ -1,0 +1,103 @@
+import { type Table, tableFromArrays, tableToIPC } from "apache-arrow";
+import {
+  type Batch,
+  LakeqlError,
+  type QueryBuilder,
+  type QueryResult,
+  type Row,
+  vectorValue,
+} from "lakeql-core";
+
+export type ArrowScalar = string | number | bigint | boolean | null;
+
+export interface ArrowTableOptions {
+  columns?: string[];
+}
+
+export interface ArrowQueryLike {
+  toArray(): Promise<Row[]>;
+}
+
+export function rowsToArrowTable(rows: readonly Row[], options: ArrowTableOptions = {}): Table {
+  const columns = options.columns ?? inferColumns(rows);
+  return tableFromArrays(columnsFromRows(rows, columns));
+}
+
+export function batchToArrowTable(batch: Batch, options: ArrowTableOptions = {}): Table {
+  const columns = options.columns ?? Object.keys(batch.columns);
+  const out: Record<string, ArrowScalar[]> = {};
+  for (const column of columns) {
+    const vector = batch.columns[column];
+    if (vector === undefined) {
+      throw new LakeqlError("LAKEQL_UNKNOWN_COLUMN", `Unknown batch column ${column}`, { column });
+    }
+    out[column] = Array.from({ length: batch.rowCount }, (_value, index) =>
+      vectorValue(vector, index),
+    );
+  }
+  return tableFromArrays(out);
+}
+
+export async function queryToArrowTable(
+  query: ArrowQueryLike | QueryBuilder | QueryResult,
+  options: ArrowTableOptions = {},
+): Promise<Table> {
+  return rowsToArrowTable(await query.toArray(), options);
+}
+
+export function rowsToArrowIPC(rows: readonly Row[], options: ArrowTableOptions = {}): Uint8Array {
+  return tableToIPC(rowsToArrowTable(rows, options));
+}
+
+export function batchToArrowIPC(batch: Batch, options: ArrowTableOptions = {}): Uint8Array {
+  return tableToIPC(batchToArrowTable(batch, options));
+}
+
+export async function queryToArrowIPC(
+  query: ArrowQueryLike | QueryBuilder | QueryResult,
+  options: ArrowTableOptions = {},
+): Promise<Uint8Array> {
+  return tableToIPC(await queryToArrowTable(query, options));
+}
+
+function columnsFromRows(rows: readonly Row[], columns: string[]): Record<string, ArrowScalar[]> {
+  const out: Record<string, ArrowScalar[]> = Object.fromEntries(
+    columns.map((column) => [column, []]),
+  );
+  for (const [rowIndex, row] of rows.entries()) {
+    for (const column of columns) {
+      out[column]?.push(normalizeArrowCell(row[column], rowIndex, column));
+    }
+  }
+  return out;
+}
+
+function inferColumns(rows: readonly Row[]): string[] {
+  const columns: string[] = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    for (const column of Object.keys(row)) {
+      if (seen.has(column)) continue;
+      columns.push(column);
+      seen.add(column);
+    }
+  }
+  return columns;
+}
+
+function normalizeArrowCell(value: unknown, rowIndex: number, column: string): ArrowScalar {
+  if (value === null || value === undefined) return null;
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "bigint" ||
+    typeof value === "boolean"
+  ) {
+    return value;
+  }
+  throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "Arrow output requires scalar cell values", {
+    rowIndex,
+    column,
+    valueType: Array.isArray(value) ? "array" : typeof value,
+  });
+}

@@ -87,6 +87,88 @@ describe("parseSql", () => {
     );
   });
 
+  it("binds positional SQL parameters as scalar literals", () => {
+    const ast = parseSql(
+      `
+        select store_id, amount
+        from sales
+        where region = $1
+          and amount between $2 and $3
+          and active = $4
+        order by amount desc
+        limit $5
+        offset $6
+      `,
+      { parameters: ["west", 100, 500, true, 10, 2] },
+    );
+
+    expect(ast).toMatchObject({
+      where: {
+        kind: "logical",
+        operands: [
+          { kind: "compare", right: { kind: "literal", value: "west" } },
+          {
+            kind: "between",
+            low: { kind: "literal", value: 100 },
+            high: { kind: "literal", value: 500 },
+          },
+          { kind: "compare", right: { kind: "literal", value: true } },
+        ],
+      },
+      limit: 10,
+      offset: 2,
+    });
+    expect(formatSql(ast)).toContain("region = 'west'");
+  });
+
+  it("binds parameters inside CTEs and scalar subqueries", () => {
+    expect(
+      parseSql(
+        `
+          with recent as (
+            select store_id, amount
+            from sales
+            where amount > $1
+          )
+          select store_id
+          from recent
+          where amount < (select max(amount) as max_amount from sales where region = $2)
+        `,
+        { parameters: [100, "west"] },
+      ),
+    ).toMatchObject({
+      cte: {
+        query: {
+          where: { kind: "compare", right: { kind: "literal", value: 100 } },
+        },
+      },
+      scalarSubqueries: {
+        scalar_0: {
+          query: {
+            where: { kind: "compare", right: { kind: "literal", value: "west" } },
+          },
+        },
+      },
+    });
+  });
+
+  it("rejects unbound or non-scalar SQL parameters", () => {
+    expect(() => parseSql("select * from sales where amount > $1")).toThrow(LakeqlError);
+    expect(() => parseSql("select * from sales where amount > $1")).toThrow(
+      "SQL parameter $1 has no bound value",
+    );
+    expect(() =>
+      parseSql("select * from sales where amount > $1", {
+        parameters: [{ amount: 100 } as never],
+      }),
+    ).toThrow("SQL parameter $1 must be a scalar value");
+    expect(() =>
+      parseSql("select * from sales limit $1", {
+        parameters: ["ten"],
+      }),
+    ).toThrow("LIMIT must be a non-negative integer");
+  });
+
   it("compiles computed projections and CASE expressions", () => {
     const ast = parseSql(`
       select amount * 2 as doubled,
@@ -163,7 +245,8 @@ describe("parseSql", () => {
     expect(
       parseSql(`
         select event, count(*) as n, count_distinct(user_id) as users,
-          approx_count_distinct(session_id) as sessions
+          approx_count_distinct(session_id) as sessions,
+          quantile_cont(duration, 0.75) as duration_p75
         from events
         where date = '2026-06-10'
         group by event
@@ -177,6 +260,7 @@ describe("parseSql", () => {
         n: { op: "count" },
         users: { op: "count_distinct", column: "user_id" },
         sessions: { op: "approx_count_distinct", column: "session_id" },
+        duration_p75: { op: "quantile", column: "duration", quantile: 0.75 },
       },
       groupBy: ["event"],
       having: { kind: "compare", op: "gt" },
@@ -200,6 +284,15 @@ describe("parseSql", () => {
       groupBy: ["region"],
     });
     expect(parseSql(formatSql(expressionAggregates))).toEqual(expressionAggregates);
+
+    const parameterizedQuantile = parseSql(
+      "select quantile_cont(amount * 2, $1) as amount_p90 from events",
+      { parameters: [0.9] },
+    );
+    expect(parameterizedQuantile.aggregates).toMatchObject({
+      amount_p90: { op: "quantile", expr: { kind: "arithmetic", op: "mul" }, quantile: 0.9 },
+    });
+    expect(parseSql(formatSql(parameterizedQuantile))).toEqual(parameterizedQuantile);
   });
 
   it("compiles bounded equi-join clauses", () => {
@@ -549,6 +642,15 @@ describe("parseSql", () => {
       fn: "noop",
       args: [],
     });
+    expect(parseSql("select id from t where regexp_matches(name, '^a', 'i')").where).toEqual({
+      kind: "call",
+      fn: "regexp_matches",
+      args: [
+        { kind: "column", name: "name" },
+        { kind: "literal", value: "^a" },
+        { kind: "literal", value: "i" },
+      ],
+    });
   });
 
   it("compiles unary, null, between, and function argument variants", () => {
@@ -583,6 +685,14 @@ describe("parseSql", () => {
     expect(formatted).toContain("not (note ilike 'test%')");
     expect(formatted).toContain("amount % 2 = 0");
     expect(parseSql(formatted)).toEqual(ast);
+
+    const regex = parseSql(`
+      select regexp_replace(name, '(a)(b)', '\\2\\1') as swapped
+      from t
+      where regexp_matches(name, '^a', 'i')
+    `);
+    expect(formatSql(regex)).toContain("regexp_replace(name, '(a)(b)', '\\2\\1') as swapped");
+    expect(parseSql(formatSql(regex))).toEqual(regex);
   });
 
   it("compiles alternate comparison and aggregate operators", () => {
@@ -604,6 +714,11 @@ describe("parseSql", () => {
       parseSql(`
         select min(a) as min_a, max(a) as max_a, avg(a) as avg_a, sum(a) as sum_a,
           approx_count_distinct(a) as approx_a,
+          var(a) as var_a, variance(a) as variance_a, var_pop(a) as var_pop_a,
+          stddev(a) as stddev_a, stddev_pop(a) as stddev_pop_a,
+          median(a) as median_a,
+          quantile_cont(a, 0.25) as p25_a,
+          mode(a) as mode_a,
           first(a) as first_a, last(a) as last_a, any(a) as any_a
         from t
       `).aggregates,
@@ -613,6 +728,14 @@ describe("parseSql", () => {
       avg_a: { op: "avg" },
       sum_a: { op: "sum" },
       approx_a: { op: "approx_count_distinct" },
+      var_a: { op: "var_samp" },
+      variance_a: { op: "var_samp" },
+      var_pop_a: { op: "var_pop" },
+      stddev_a: { op: "stddev_samp" },
+      stddev_pop_a: { op: "stddev_pop" },
+      median_a: { op: "median" },
+      p25_a: { op: "quantile", quantile: 0.25 },
+      mode_a: { op: "mode" },
       first_a: { op: "first" },
       last_a: { op: "last" },
       any_a: { op: "any" },
@@ -624,6 +747,9 @@ describe("parseSql", () => {
     expect(parseSql("select id as ident from t").projections).toEqual({
       ident: { kind: "column", name: "id" },
     });
+    expect(() => parseSql("select quantile_cont(a, 1.5) as p from t")).toThrow(
+      "quantile_cont percentile must be a numeric literal between 0 and 1",
+    );
   });
 
   it("formats less common expression nodes and literals", () => {

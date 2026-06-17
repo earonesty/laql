@@ -17,7 +17,8 @@ import {
   serializeSortOperatorState,
   serializeTopKOperatorState,
 } from "./query.js";
-import { memorySpillAdapter, type RuntimeSubstrate } from "./runtime.js";
+import { memoryCache, memorySpillAdapter, type RuntimeSubstrate } from "./runtime.js";
+import type { ObjectInfo } from "./store.js";
 import type { Bookmark, Row } from "./types.js";
 
 class FakeScanner implements ScanAdapter {
@@ -47,6 +48,7 @@ class FakeScanner implements ScanAdapter {
 async function makeLake(config: {
   rowsByPath: Record<string, Row[]>;
   sidecarIndex?: ConstructorParameters<typeof Lake>[0]["sidecarIndex"];
+  planningCache?: ConstructorParameters<typeof Lake>[0]["planningCache"];
   budget?: ConstructorParameters<typeof Lake>[0]["budget"];
   policy?: ConstructorParameters<typeof Lake>[0]["policy"];
   now?: () => number;
@@ -60,6 +62,7 @@ async function makeLake(config: {
     store,
     scanner,
     ...(config.sidecarIndex !== undefined ? { sidecarIndex: config.sidecarIndex } : {}),
+    ...(config.planningCache !== undefined ? { planningCache: config.planningCache } : {}),
     budget: config.budget,
     policy: config.policy,
     now: config.now,
@@ -369,6 +372,37 @@ describe("Lake query runtime", () => {
       },
     });
     expect(explain.text).toContain("files skipped: 1");
+  });
+
+  it("uses an explicit planning cache for repeated object expansion", async () => {
+    const planningCache = memoryCache<ObjectInfo[]>();
+    const { lake, store } = await makeLake({
+      planningCache,
+      rowsByPath: {
+        "data/a.parquet": [{ id: 1 }],
+        "data/b.parquet": [{ id: 2 }],
+      },
+    });
+    let listCalls = 0;
+    const originalList = store.list.bind(store);
+    store.list = async function* (prefix, options) {
+      listCalls += 1;
+      yield* originalList(prefix, options);
+    };
+
+    const query = lake.path("data/*.parquet").select(["id"]);
+    const first = await query.taskManifest("job_plan_cache");
+    const second = await query.taskManifest("job_plan_cache");
+
+    expect(second).toEqual(first);
+    expect(listCalls).toBe(1);
+
+    await store.put("data/c.parquet", new Uint8Array([1, 2, 3]));
+    const cached = await query.taskManifest("job_plan_cache_2");
+    expect(cached.tasks.map((task) => task.input.path)).toEqual([
+      "data/a.parquet",
+      "data/b.parquet",
+    ]);
   });
 
   it("uses sidecar indexes to prune planned objects before scanning", async () => {
@@ -1175,6 +1209,32 @@ describe("Lake query runtime", () => {
     });
   });
 
+  it("enforces buffered-row budgets for retained aggregate state", async () => {
+    const rowsByPath = {
+      table: [
+        { id: 1, region: "west", amount: 10 },
+        { id: 2, region: "east", amount: 20 },
+      ],
+    };
+
+    for (const spec of [
+      { amountMedian: { op: "median", column: "amount" } },
+      { amountP50: { op: "quantile", column: "amount", quantile: 0.5 } },
+      { regionMode: { op: "mode", column: "region" } },
+      { ids: { op: "count_distinct", column: "id" } },
+    ] satisfies AggregateSpec[]) {
+      await expect(
+        (await makeLake({ rowsByPath, budget: { maxBufferedRows: 1 } })).lake
+          .path("table")
+          .groupBy([])
+          .aggregate(spec),
+      ).rejects.toMatchObject({
+        code: "LAKEQL_BUDGET_EXCEEDED",
+        details: { metric: "buffered rows", limit: 1 },
+      });
+    }
+  });
+
   it("rejects stale or invalid slice bookmarks", async () => {
     const { lake } = await makeLake({ rowsByPath: { table: [{ id: 1 }] } });
     const query = lake.path("table");
@@ -1594,6 +1654,12 @@ describe("Lake query runtime", () => {
         .path("table")
         .groupBy(["region"])
         .aggregate({ total: { op: "sum", column: "amount" } }),
+    ).rejects.toMatchObject({ code: "LAKEQL_TYPE_ERROR" });
+    await expect(
+      lake
+        .path("table")
+        .groupBy(["region"])
+        .aggregate({ amountP50: { op: "quantile", column: "amount", quantile: 1.5 } }),
     ).rejects.toMatchObject({ code: "LAKEQL_TYPE_ERROR" });
     await expect(
       lake

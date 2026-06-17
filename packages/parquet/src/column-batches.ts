@@ -1,0 +1,97 @@
+import type { ColumnData } from "hyparquet";
+import { parquetRead, parquetSchema } from "hyparquet";
+import { type Batch, batchFromColumns } from "lakeql-core";
+import {
+  recordReadColumns,
+  recordRowGroupRead,
+  recordRowGroupSkipped,
+  recordRowsDecoded,
+} from "./read-metrics.js";
+import { rowGroupMayMatch } from "./row-group-pruning.js";
+import type {
+  ParquetColumnBatch,
+  ParquetMetadata,
+  ReadParquetBatchOptions,
+  StoreAsyncBuffer,
+} from "./types.js";
+
+export async function* readParquetColumnBatchesFromFile(
+  file: StoreAsyncBuffer,
+  metadata: ParquetMetadata,
+  options: ReadParquetBatchOptions,
+): AsyncIterable<ParquetColumnBatch> {
+  const batchSize = options.batchSize ?? 4096;
+  const requestedStart = options.rowStart ?? 0;
+  const requestedEnd = options.rowEnd ?? Number(metadata.num_rows);
+  const readColumns = options.columns ?? parquetTopLevelColumns(metadata);
+  recordReadColumns(options.stats, readColumns);
+  let rowGroupStart = 0;
+  for (const rowGroup of metadata.row_groups) {
+    const rowGroupEnd = rowGroupStart + Number(rowGroup.num_rows);
+    if (
+      rowGroupEnd <= requestedStart ||
+      rowGroupStart >= requestedEnd ||
+      !rowGroupMayMatch(rowGroup, options.where)
+    ) {
+      recordRowGroupSkipped(options.stats);
+      rowGroupStart = rowGroupEnd;
+      continue;
+    }
+    recordRowGroupRead(options.stats);
+    const start = Math.max(rowGroupStart, requestedStart);
+    const end = Math.min(rowGroupEnd, requestedEnd);
+    for (let rowStart = start; rowStart < end; rowStart += batchSize) {
+      const rowEnd = Math.min(rowStart + batchSize, end);
+      const batch = await readParquetColumnBatch(file, metadata, readColumns, rowStart, rowEnd);
+      recordRowsDecoded(options.stats, batch.rowCount);
+      yield {
+        rowOffset: rowStart,
+        batch,
+      };
+    }
+    rowGroupStart = rowGroupEnd;
+  }
+}
+
+async function readParquetColumnBatch(
+  file: StoreAsyncBuffer,
+  metadata: ParquetMetadata,
+  columns: string[],
+  rowStart: number,
+  rowEnd: number,
+): Promise<Batch> {
+  const columnValues: Record<string, unknown[]> = Object.fromEntries(
+    columns.map((column) => [column, []]),
+  );
+  const readOptions: Parameters<typeof parquetRead>[0] = {
+    file,
+    metadata,
+    columns,
+    rowStart,
+    rowEnd,
+    onChunk(chunk) {
+      appendColumnChunk(columnValues, chunk, rowStart, rowEnd);
+    },
+  };
+  await parquetRead(readOptions);
+  return batchFromColumns(columnValues);
+}
+
+function appendColumnChunk(
+  columnValues: Record<string, unknown[]>,
+  chunk: ColumnData,
+  rowStart: number,
+  rowEnd: number,
+): void {
+  const values = columnValues[chunk.columnName];
+  if (values === undefined) return;
+  const start = Math.max(rowStart, chunk.rowStart);
+  const end = Math.min(rowEnd, chunk.rowEnd);
+  for (let row = start; row < end; row += 1) {
+    values[row - rowStart] = chunk.columnData[row - chunk.rowStart];
+  }
+}
+
+function parquetTopLevelColumns(metadata: ParquetMetadata): string[] {
+  return parquetSchema(metadata).children.map((child) => child.element.name);
+}

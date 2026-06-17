@@ -5,6 +5,7 @@ import {
   LakeqlError,
   type OrderByTerm,
   type PathQueryInit,
+  type Scalar,
 } from "lakeql-core";
 import { parse } from "pgsql-ast-parser";
 
@@ -16,6 +17,12 @@ export interface SqlQueryAst extends PathQueryInit {
   subqueryJoin?: SqlSubqueryJoinAst;
   cte?: SqlCteAst;
   scalarSubqueries?: Record<string, SqlScalarSubqueryAst>;
+}
+
+export type SqlParameterValue = Scalar;
+
+export interface SqlParseOptions {
+  parameters?: readonly SqlParameterValue[];
 }
 
 export interface SqlJoinAst {
@@ -53,9 +60,10 @@ type PgNode = Record<string, unknown>;
 interface SqlParseContext {
   scalarSubqueries: Record<string, SqlScalarSubqueryAst>;
   nextScalarSubqueryId: number;
+  parameters?: readonly SqlParameterValue[];
 }
 
-export function parseSql(sql: string): SqlQueryAst {
+export function parseSql(sql: string, options: SqlParseOptions = {}): SqlQueryAst {
   if (sql.length > MAX_SQL_LENGTH) {
     throwParse(`SQL input length exceeds ${MAX_SQL_LENGTH}`);
   }
@@ -71,10 +79,11 @@ export function parseSql(sql: string): SqlQueryAst {
   if (statements.length !== 1) throwUnsupported("Only one SELECT statement is supported");
   const statement = asNode(statements[0], "statement");
   assertAstDepth(statement);
-  if (statement.type === "with") return withStatementToAst(statement);
+  const context = newSqlParseContext(options);
+  if (statement.type === "with") return withStatementToAst(statement, context);
   if (statement.type !== "select") throwUnsupported("Only SELECT statements are supported");
 
-  return selectStatementToAst(statement);
+  return selectStatementToAst(statement, context);
 }
 
 export function formatSql(ast: SqlQueryAst): string {
@@ -106,18 +115,18 @@ export function formatSql(ast: SqlQueryAst): string {
   return `with ${formatIdentifier(ast.cte.name)} as (${formatSql(ast.cte.query)})\n${sql}`;
 }
 
-function withStatementToAst(statement: PgNode): SqlQueryAst {
+function withStatementToAst(statement: PgNode, context: SqlParseContext): SqlQueryAst {
   const bindings = optionalArray(statement.bind);
   if (bindings.length !== 1) throwUnsupported("Only one CTE is supported");
   const binding = asNode(bindings[0], "CTE binding");
   const name = nameNodeToString(binding.alias);
   const inner = asNode(binding.statement, "CTE statement");
   if (inner.type !== "select") throwUnsupported("Only SELECT CTEs are supported");
-  const cteQuery = selectStatementToAst(inner);
+  const cteQuery = selectStatementToAst(inner, context);
   validateCteQuery(cteQuery);
   const outer = asNode(statement.in, "CTE outer query");
   if (outer.type !== "select") throwUnsupported("Only SELECT after WITH is supported");
-  const ast = selectStatementToAst(outer);
+  const ast = selectStatementToAst(outer, context);
   ast.cte = { name, query: cteQuery };
   return ast;
 }
@@ -133,7 +142,10 @@ function validateCteQuery(ast: SqlQueryAst): void {
   }
 }
 
-function selectStatementToAst(statement: PgNode): SqlQueryAst {
+function selectStatementToAst(
+  statement: PgNode,
+  context: SqlParseContext = newSqlParseContext(),
+): SqlQueryAst {
   rejectPresent(statement, "with", "CTEs are not supported");
   rejectPresent(statement, "windows", "Window functions are not supported");
 
@@ -144,7 +156,6 @@ function selectStatementToAst(statement: PgNode): SqlQueryAst {
   const leftSource = sourceTable(from[0]);
   const ast: SqlQueryAst = { source: leftSource.source };
   const scope = new SqlScope(leftSource);
-  const context = newSqlParseContext();
   if (from.length === 2) {
     const join = joinToAst(from[1], leftSource);
     ast.join = join;
@@ -173,7 +184,7 @@ function selectStatementToAst(statement: PgNode): SqlQueryAst {
     }
     if (expr.type === "call" && isAggregateCall(expr)) {
       const alias = aliasName(item.alias) ?? functionName(expr.function);
-      aggregates[alias] = aggregateCallToSpec(expr, scope);
+      aggregates[alias] = aggregateCallToSpec(expr, scope, context);
       continue;
     }
     if (expr.type === "ref") {
@@ -214,8 +225,8 @@ function selectStatementToAst(statement: PgNode): SqlQueryAst {
   const limit = statement.limit;
   if (limit !== undefined) {
     const node = asNode(limit, "LIMIT");
-    if (node.limit !== undefined) ast.limit = nonNegativeInteger(node.limit, "LIMIT");
-    if (node.offset !== undefined) ast.offset = nonNegativeInteger(node.offset, "OFFSET");
+    if (node.limit !== undefined) ast.limit = nonNegativeInteger(node.limit, "LIMIT", context);
+    if (node.offset !== undefined) ast.offset = nonNegativeInteger(node.offset, "OFFSET", context);
   }
   if (Object.keys(context.scalarSubqueries).length > 0) {
     ast.scalarSubqueries = context.scalarSubqueries;
@@ -224,8 +235,12 @@ function selectStatementToAst(statement: PgNode): SqlQueryAst {
   return ast;
 }
 
-function newSqlParseContext(): SqlParseContext {
-  return { scalarSubqueries: {}, nextScalarSubqueryId: 0 };
+function newSqlParseContext(options: SqlParseOptions = {}): SqlParseContext {
+  return {
+    scalarSubqueries: {},
+    nextScalarSubqueryId: 0,
+    ...(options.parameters === undefined ? {} : { parameters: options.parameters }),
+  };
 }
 
 function exprToLakeql(
@@ -243,6 +258,8 @@ function exprToLakeql(
       return literal(expr.value as string | number | boolean);
     case "null":
       return literal(null);
+    case "parameter":
+      return literal(parameterValue(expr, context));
     case "unary":
       return unaryToExpr(expr, scope, context);
     case "binary":
@@ -415,7 +432,7 @@ function flattenWhereConjuncts(expr: PgNode): PgNode[] {
 }
 
 function scalarSubqueryToExpr(subquery: PgNode, context: SqlParseContext): Expr {
-  const query = selectStatementToAst(subquery);
+  const query = selectStatementToAst(subquery, context);
   const outputColumns = scalarSubqueryOutputColumns(query);
   if (outputColumns.length !== 1) {
     throwUnsupported("Scalar subqueries must return exactly one column");
@@ -493,7 +510,11 @@ function ternaryToExpr(
   return op === "NOT BETWEEN" ? { kind: "not", operand: between } : between;
 }
 
-function aggregateCallToSpec(expr: PgNode, scope = SqlScope.empty()): AggregateSpec[string] {
+function aggregateCallToSpec(
+  expr: PgNode,
+  scope = SqlScope.empty(),
+  context: SqlParseContext = newSqlParseContext(),
+): AggregateSpec[string] {
   if ("over" in expr && expr.over !== undefined) {
     throwUnsupported("Window functions are not supported");
   }
@@ -508,6 +529,7 @@ function aggregateCallToSpec(expr: PgNode, scope = SqlScope.empty()): AggregateS
     }
     op = "count_distinct";
   }
+  if (op === "quantile") return quantileAggregateCallToSpec(args, scope, context);
   if (
     op === "count" &&
     (args.length === 0 || (args.length === 1 && isWildcard(asNode(args[0], "COUNT argument"))))
@@ -517,12 +539,43 @@ function aggregateCallToSpec(expr: PgNode, scope = SqlScope.empty()): AggregateS
   if (args.length !== 1) throwUnsupported(`${op} requires exactly one argument`);
   const arg = asNode(args[0], "aggregate argument");
   if (arg.type === "ref") return { op, column: scope.refName(arg) };
-  return { op, expr: exprToLakeql(arg, scope) };
+  return { op, expr: exprToLakeql(arg, scope, context) };
+}
+
+function quantileAggregateCallToSpec(
+  args: unknown[],
+  scope: SqlScope,
+  context: SqlParseContext,
+): AggregateSpec[string] {
+  if (args.length !== 2) throwUnsupported("quantile_cont requires value and percentile arguments");
+  const value = asNode(args[0], "quantile_cont value argument");
+  const percentile = requiredQuantilePercentile(
+    exprToLakeql(asNode(args[1], "quantile_cont percentile argument"), scope, context),
+  );
+  if (value.type === "ref") {
+    return { op: "quantile", column: scope.refName(value), quantile: percentile };
+  }
+  return { op: "quantile", expr: exprToLakeql(value, scope, context), quantile: percentile };
+}
+
+function requiredQuantilePercentile(expr: Expr): number {
+  if (
+    expr.kind !== "literal" ||
+    typeof expr.value !== "number" ||
+    !Number.isFinite(expr.value) ||
+    expr.value < 0 ||
+    expr.value > 1
+  ) {
+    throwType("quantile_cont percentile must be a numeric literal between 0 and 1", {
+      function: "quantile_cont",
+    });
+  }
+  return expr.value;
 }
 
 function isAggregateCall(expr: PgNode): boolean {
   if (expr.type !== "call") return false;
-  return isAggregateOp(functionName(expr.function));
+  return aggregateOpOrUndefined(functionName(expr.function)) !== undefined;
 }
 
 function isAggregateOp(op: string): op is AggregateOp {
@@ -530,10 +583,16 @@ function isAggregateOp(op: string): op is AggregateOp {
     "count",
     "sum",
     "avg",
+    "var_samp",
+    "var_pop",
+    "stddev_samp",
+    "stddev_pop",
+    "median",
     "min",
     "max",
     "count_distinct",
     "approx_count_distinct",
+    "mode",
     "first",
     "last",
     "any",
@@ -710,9 +769,13 @@ function optionalArray(value: unknown): unknown[] {
   return value;
 }
 
-function nonNegativeInteger(value: unknown, label: string): number {
+function nonNegativeInteger(
+  value: unknown,
+  label: string,
+  context: SqlParseContext = newSqlParseContext(),
+): number {
   const node = asNode(value, label);
-  const parsed = node.value;
+  const parsed = node.type === "parameter" ? parameterValue(node, context) : node.value;
   if (typeof parsed !== "number" || !Number.isInteger(parsed) || parsed < 0) {
     throwUnsupported(`${label} must be a non-negative integer`);
   }
@@ -764,12 +827,48 @@ function arithmeticOp(op: string): "add" | "sub" | "mul" | "div" | "mod" {
 }
 
 function aggregateOp(op: string): AggregateOp {
-  if (isAggregateOp(op)) return op;
+  const aggregate = aggregateOpOrUndefined(op);
+  if (aggregate !== undefined) return aggregate;
   throwUnsupported(`Unsupported aggregate ${op}`);
 }
 
-function literal(value: string | number | boolean | null): Expr {
+function aggregateOpOrUndefined(op: string): AggregateOp | undefined {
+  if (isAggregateOp(op)) return op;
+  if (op === "var" || op === "variance") return "var_samp";
+  if (op === "stddev") return "stddev_samp";
+  if (op === "quantile_cont") return "quantile";
+  return undefined;
+}
+
+function literal(value: Scalar): Expr {
   return { kind: "literal", value };
+}
+
+function parameterValue(expr: PgNode, context: SqlParseContext): SqlParameterValue {
+  const index = parameterIndex(expr.name);
+  const value = context.parameters?.[index - 1];
+  if (value === undefined) {
+    throwUnsupported(`SQL parameter $${index} has no bound value`);
+  }
+  if (isScalar(value)) return value;
+  throwType(`SQL parameter $${index} must be a scalar value`, { parameter: index });
+}
+
+function parameterIndex(name: unknown): number {
+  if (typeof name !== "string" || !/^\$[1-9][0-9]*$/u.test(name)) {
+    throwUnsupported(`Unsupported SQL parameter ${String(name)}`);
+  }
+  return Number(name.slice(1));
+}
+
+function isScalar(value: unknown): value is Scalar {
+  return (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean" ||
+    typeof value === "bigint" ||
+    (typeof value === "number" && Number.isFinite(value))
+  );
 }
 
 function formatExpr(expr: Expr, ast?: SqlQueryAst): string {
@@ -874,6 +973,7 @@ function formatAggregate(aggregate: AggregateSpec[string]): string {
         ? "*"
         : formatIdentifier(aggregate.column);
   if (aggregate.op === "count_distinct") return `count(distinct ${arg})`;
+  if (aggregate.op === "quantile") return `quantile_cont(${arg}, ${aggregate.quantile})`;
   return `${aggregate.op}(${arg})`;
 }
 
@@ -952,4 +1052,8 @@ function throwParse(message: string): never {
 
 function throwUnsupported(message: string): never {
   throw new LakeqlError("LAKEQL_SQL_UNSUPPORTED", message);
+}
+
+function throwType(message: string, details?: Record<string, unknown>): never {
+  throw new LakeqlError("LAKEQL_TYPE_ERROR", message, details);
 }
