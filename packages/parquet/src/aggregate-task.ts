@@ -9,11 +9,10 @@ import {
   gatherBatch,
   LakeqlError,
   materializeBatchRows,
-  mergeVectorAggregateStates,
+  mergeVectorAggregateStateSnapshots,
   mergeVectorGroupByStates,
   type ObjectStore,
   type Row,
-  restoreVectorAggregateStates,
   restoreVectorGroupByState,
   selectedRowCount,
   snapshotVectorAggregateStates,
@@ -134,11 +133,7 @@ export async function aggregateParquetTasks(
     },
     ...(options.partialBoundary === undefined ? {} : { boundary: options.partialBoundary }),
     reduce(accumulator, partial) {
-      mergeVectorAggregateStates(
-        accumulator,
-        restoreVectorAggregateStates(partial, aggregateOptions),
-        aggregateOptions,
-      );
+      mergeVectorAggregateStateSnapshots(accumulator, partial, aggregateOptions);
     },
   });
   return finalizeVectorAggregateStates(merged);

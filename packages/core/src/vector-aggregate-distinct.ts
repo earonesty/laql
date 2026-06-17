@@ -33,6 +33,32 @@ export function addDistinctValue(
   enforceDistinctBudget(state, budget);
 }
 
+export function addDistinctValues(
+  state: VectorDistinctAggregateState,
+  keys: Iterable<string>,
+  budget?: QueryBudget,
+): void {
+  if (budget?.maxMemoryBytes === undefined && budget?.maxBufferedRows === undefined) {
+    for (const key of keys) state.values.add(key);
+    state.memoryBytes = 0;
+    return;
+  }
+  for (const key of keys) addDistinctValue(state, key, budget);
+}
+
+export function addDistinctStringValues(
+  state: VectorDistinctAggregateState,
+  values: Iterable<string>,
+  budget?: QueryBudget,
+): void {
+  if (budget?.maxMemoryBytes === undefined && budget?.maxBufferedRows === undefined) {
+    for (const value of values) state.values.add(`string:${value}`);
+    state.memoryBytes = 0;
+    return;
+  }
+  for (const value of values) addDistinctValue(state, `string:${value}`, budget);
+}
+
 export function enforceDistinctStateBudget(
   state: VectorDistinctAggregateState,
   budget?: QueryBudget,

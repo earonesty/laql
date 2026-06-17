@@ -10,7 +10,9 @@ import {
 import { LakeqlError } from "./errors.js";
 import type { AggregateExpr, AggregateSpec, QueryBudget } from "./query.js";
 import {
+  addDistinctStringValues,
   addDistinctValue,
+  addDistinctValues,
   createDistinctAggregateState,
   distinctKey,
   distinctMemoryBytes,
@@ -128,6 +130,26 @@ export function mergeVectorAggregateStates(
     }
     mergeVectorAggregateState(targetState, sourceState, options.budget);
   }
+}
+
+export function mergeVectorAggregateStateSnapshots(
+  target: VectorAggregateStates,
+  snapshots: VectorAggregateStateSnapshots,
+  options: VectorAggregateOptions = {},
+): void {
+  const restored: VectorAggregateStates = {};
+  for (const [alias, snapshot] of Object.entries(snapshots)) {
+    const targetState = target[alias];
+    if (
+      targetState !== undefined &&
+      (snapshot.op === "count_distinct" || snapshot.op === "approx_count_distinct")
+    ) {
+      mergeDistinctSnapshot(targetState, snapshot, options.budget);
+      continue;
+    }
+    restored[alias] = vectorAggregateStateFromSnapshot(snapshot);
+  }
+  mergeVectorAggregateStates(target, restored, options);
 }
 
 export function finalizeVectorAggregateStates(
@@ -298,7 +320,7 @@ function updateDirectUtf8DistinctFromBatch(
     if (valid !== undefined && valid[index] !== 1) continue;
     batchValues.add(values[index] ?? "");
   }
-  for (const value of batchValues) addDistinctValue(state, `string:${value}`);
+  addDistinctStringValues(state, batchValues);
 }
 
 function updateStateValue(
@@ -477,7 +499,7 @@ function mergeVectorAggregateState(
     case "count_distinct":
     case "approx_count_distinct": {
       const next = sameState(source, target.op);
-      for (const value of next.values) addDistinctValue(target, value, budget);
+      addDistinctValues(target, next.values, budget);
       return;
     }
     case "mode": {
@@ -511,6 +533,23 @@ function mergeVectorAggregateState(
       return;
     }
   }
+}
+
+function mergeDistinctSnapshot(
+  target: VectorAggregateState,
+  snapshot: Extract<
+    VectorAggregateStateSnapshot,
+    { op: "count_distinct" | "approx_count_distinct" }
+  >,
+  budget?: QueryBudget,
+): void {
+  if (target.op !== snapshot.op) {
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", `Cannot merge ${snapshot.op} into ${target.op}`, {
+      target: target.op,
+      source: snapshot.op,
+    });
+  }
+  addDistinctValues(target, snapshot.values, budget);
 }
 
 function sameState<Op extends VectorAggregateState["op"]>(

@@ -4,6 +4,7 @@ import { col, fn, gt, lit, mul } from "./expr.js";
 import {
   createVectorAggregateStates,
   finalizeVectorAggregateStates,
+  mergeVectorAggregateStateSnapshots,
   mergeVectorAggregateStates,
   restoreVectorAggregateStates,
   snapshotVectorAggregateStates,
@@ -395,6 +396,32 @@ describe("vector aggregate kernels", () => {
       maxBig: 30n,
       labels: 2,
       modeLabel: "b",
+    });
+  });
+
+  it("merges portable distinct snapshots without restoring partial sets", () => {
+    const spec = {
+      rows: { op: "count" },
+      labels: { op: "count_distinct", column: "label" },
+    } as const;
+    const left = createVectorAggregateStates(spec);
+    const right = createVectorAggregateStates(spec);
+    updateVectorAggregateStates(left, spec, batchFromColumns({ label: ["a", "b", "b"] }));
+    updateVectorAggregateStates(right, spec, batchFromColumns({ label: ["b", "c"] }));
+
+    const merged = createVectorAggregateStates(spec);
+    mergeVectorAggregateStateSnapshots(
+      merged,
+      JSON.parse(JSON.stringify(snapshotVectorAggregateStates(left))),
+    );
+    mergeVectorAggregateStateSnapshots(
+      merged,
+      JSON.parse(JSON.stringify(snapshotVectorAggregateStates(right))),
+    );
+
+    expect(finalizeVectorAggregateStates(merged)).toEqual({
+      rows: 5,
+      labels: 3,
     });
   });
 });
