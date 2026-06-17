@@ -454,4 +454,15 @@ describe("vector aggregate kernels", () => {
     expect(snapshot.values[snapshot.values.length - 1]).toBe("string:v999");
     expect(finalizeVectorAggregateStates(merged)).toEqual({ labels: 1801 });
   });
+
+  it("keeps large direct UTF-8 distinct batches exact", () => {
+    const spec = {
+      labels: { op: "count_distinct", column: "label" },
+    } as const;
+    const labels = Array.from({ length: 2400 }, (_, index) => `v${index % 1600}`);
+
+    expect(vectorAggregateBatch(spec, batchFromColumns({ label: labels }))).toEqual({
+      labels: 1600,
+    });
+  });
 });

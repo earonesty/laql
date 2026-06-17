@@ -53,6 +53,22 @@ work units. Use the numeric and distinct lanes together to decide whether the
 remaining gap is local range-read overhead, Parquet decode/assembly, or distinct
 hashing before adding another specialized execution path.
 
+High-cardinality exact distinct uses sorted partial runs at the portable
+work-unit boundary once a batch/sample is large and distinct enough. Low-cardinality
+partials still use the cheaper local `Set` path. This keeps partials JSON-only
+while avoiding a second full round of JS `Set.add` during fan-in. The current
+profile shape after that change is:
+
+- high-cardinality local UTF-8 distinct run construction inside each work unit;
+- Parquet string decode/assembly;
+- sorted-run final count/snapshot merge;
+- JSON boundary serialization for portable partials.
+
+The old dominant path, fan-in insertion of every partial key into one JS `Set`,
+should no longer dominate high-cardinality profiles. If it does, inspect whether
+the partials are below the sorted-run threshold or a budgeted query forced the
+checked `Set` path.
+
 The default 10M work-unit dataset uses low-cardinality bucket strings. To avoid
 overfitting optimizations to repeated values, run:
 
@@ -63,6 +79,10 @@ pnpm bench:workunits:10m:high-cardinality
 That variant sets `LAKEQL_WORKUNIT_BUCKET_CARDINALITY=100000`, so the selected
 tail rows exercise high-cardinality distinct state and fan-in behavior. Add the
 `:duckdb` suffix for the same native DuckDB lane comparison.
+
+Do not run work-unit benchmarks with different dataset configurations in
+parallel: they share `bench/generated/workunits`, and a config change regenerates
+that fixture.
 
 Pass a shared `planningCache` when repeated queries can reuse object expansion
 for a source pattern. Object-store glob listing is not an atomic snapshot, so the

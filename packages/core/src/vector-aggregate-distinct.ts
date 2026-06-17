@@ -6,6 +6,8 @@ import type { VectorAggregateValue } from "./vector-aggregate.js";
 
 const textEncoder = new TextEncoder();
 const sortedRunMergeMinValues = 1024;
+const sortedRunSampleValues = 1024;
+const sortedRunMinSampleDistinctRatio = 0.5;
 
 export type VectorDistinctAggregateState = {
   op: "count_distinct" | "approx_count_distinct";
@@ -63,6 +65,27 @@ export function addDistinctStringValues(
     return;
   }
   for (const value of values) addDistinctValue(state, `string:${value}`, budget);
+}
+
+export function addDistinctSortedStringRun(
+  state: VectorDistinctAggregateState,
+  values: string[],
+  budget?: QueryBudget,
+): void {
+  if (budget?.maxMemoryBytes !== undefined || budget?.maxBufferedRows !== undefined) {
+    addDistinctStringValues(state, values, budget);
+    return;
+  }
+  if (values.length < sortedRunMergeMinValues) {
+    addDistinctStringValues(state, new Set(values));
+    return;
+  }
+  if (!hasHighCardinalitySample(values)) {
+    addDistinctStringValues(state, new Set(values));
+    return;
+  }
+  const run = prefixedSortedUniqueStrings(values);
+  mergeDistinctSortedValues(state, run);
 }
 
 export function mergeDistinctSortedValues(
@@ -259,6 +282,28 @@ function compareHeapEntry(left: SortedRunHeapEntry, right: SortedRunHeapEntry): 
 
 function compareDistinctKeys(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function prefixedSortedUniqueStrings(values: string[]): string[] {
+  values.sort(compareDistinctKeys);
+  const distinct: string[] = [];
+  let previous: string | undefined;
+  for (const value of values) {
+    if (value === previous) continue;
+    distinct.push(`string:${value}`);
+    previous = value;
+  }
+  return distinct;
+}
+
+function hasHighCardinalitySample(values: readonly string[]): boolean {
+  const sampleSize = Math.min(values.length, sortedRunSampleValues);
+  const sample = new Set<string>();
+  for (let index = 0; index < sampleSize; index += 1) {
+    const value = values[index];
+    if (value !== undefined) sample.add(value);
+  }
+  return sample.size / sampleSize >= sortedRunMinSampleDistinctRatio;
 }
 
 function throwBudget(metric: string, limit: number, actual: number): never {

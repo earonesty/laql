@@ -10,7 +10,7 @@ import {
 import { LakeqlError } from "./errors.js";
 import type { AggregateExpr, AggregateSpec, QueryBudget } from "./query.js";
 import {
-  addDistinctStringValues,
+  addDistinctSortedStringRun,
   addDistinctValue,
   addDistinctValues,
   cloneDistinctAggregateState,
@@ -317,13 +317,13 @@ function updateDirectUtf8DistinctFromBatch(
   selection?: Selection,
   valid?: Uint8Array,
 ): void {
-  const batchValues = new Set<string>();
+  const batchValues: string[] = [];
   for (let index = 0; index < rowCount; index += 1) {
     if (selection !== undefined && selection[index] !== 1) continue;
     if (valid !== undefined && valid[index] !== 1) continue;
-    batchValues.add(values[index] ?? "");
+    batchValues.push(values[index] ?? "");
   }
-  addDistinctStringValues(state, batchValues);
+  addDistinctSortedStringRun(state, batchValues);
 }
 
 function updateStateValue(
