@@ -25,6 +25,12 @@ with bounded fan-in. This keeps the deployment boundary data-only: the same JSON
 work-unit payload can run in a browser, Cloudflare Worker, Supabase Edge function,
 or Node process, then merge vector aggregate partials in task order.
 
+Vector aggregate optimizations must preserve that boundary. "Single-pass"
+aggregate work means updating several aggregate states while scanning one decoded
+vector batch inside an already-bounded work unit; it does not mean collapsing
+work units, removing queue/yield points, or replacing portable partial-state
+fan-in.
+
 The regression proof for the explicit 10M-row claim is:
 
 ```sh
