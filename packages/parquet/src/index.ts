@@ -1,4 +1,3 @@
-import { parquetMetadataAsync } from "hyparquet";
 import type { BasicType, ColumnSource, ParquetWriteOptions } from "hyparquet-writer";
 import { parquetWriteBuffer } from "hyparquet-writer";
 import {
@@ -18,6 +17,7 @@ import {
   type TaskCheckpoint,
 } from "lakeql-core";
 import { readParquetColumnBatchesFromFile } from "./column-batches.js";
+import { readParquetMetadataFromFile } from "./metadata-cache.js";
 import { readParquetObjectBatchesFromFile } from "./object-batches.js";
 import { type ParquetRowGroupPlan, planRowGroupsFromMetadata } from "./row-group-plan.js";
 import { ParquetScanAdapter } from "./scan-adapter.js";
@@ -190,7 +190,7 @@ export async function* readParquetObjectBatches(
 ): AsyncIterable<ParquetRowBatch> {
   const file = await asyncBufferFromStore(store, path);
   try {
-    const metadata = await parquetMetadataAsync(file);
+    const metadata = await readParquetMetadataFromFile(file);
     rejectUnsupportedParquetSchema(metadata);
     yield* readParquetObjectBatchesFromFile(file, metadata, options);
   } catch (cause) {
@@ -206,7 +206,7 @@ export async function* readParquetColumnBatches(
 ): AsyncIterable<ParquetColumnBatch> {
   const file = await asyncBufferFromStore(store, path);
   try {
-    const metadata = await parquetMetadataAsync(file);
+    const metadata = await readParquetMetadataFromFile(file);
     rejectUnsupportedParquetSchema(metadata);
     yield* readParquetColumnBatchesFromFile(file, metadata, options);
   } catch (cause) {

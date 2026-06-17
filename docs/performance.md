@@ -62,6 +62,11 @@ the same cached metadata instead of rereading footers for each row-group work
 unit. Scan work-unit runners can also attach the same runtime-local cache without
 serializing it into the work-unit envelope.
 
+Cold Parquet metadata planning uses a bounded 64 KiB initial footer range read per
+file instead of the upstream decoder's larger default tail read. The 10M
+work-unit benchmark guards cold planning at 8 MiB across 100 files and guards
+warm planning at zero object reads.
+
 For local wall-time context, `pnpm bench:workunits:10m:duckdb` adds a comparison
 against Node DuckDB's native engine. Treat that as a strong local CPU baseline,
 not the DuckDB-WASM product comparison: browser WASM needs a separate lane for
