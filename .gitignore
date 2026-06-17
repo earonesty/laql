@@ -3,7 +3,16 @@ dist/
 coverage/
 bench/WORKUNITS.md
 bench/generated/
+bench/profiles/
 *.tsbuildinfo
+*.cpuprofile
+*.heapsnapshot
+isolate-*.log
+*.tgz
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 .DS_Store
 fixtures/external/*
 !fixtures/external/CHECKSUMS.txt
