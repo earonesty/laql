@@ -424,4 +424,34 @@ describe("vector aggregate kernels", () => {
       labels: 3,
     });
   });
+
+  it("keeps sorted distinct fan-in exact after a later batch update", () => {
+    const spec = {
+      labels: { op: "count_distinct", column: "label" },
+    } as const;
+    const firstLabels = Array.from({ length: 1200 }, (_, index) => `v${index}`);
+    const secondLabels = Array.from({ length: 1200 }, (_, index) => `v${index + 600}`);
+    const first = createVectorAggregateStates(spec);
+    const second = createVectorAggregateStates(spec);
+    updateVectorAggregateStates(first, spec, batchFromColumns({ label: firstLabels }));
+    updateVectorAggregateStates(second, spec, batchFromColumns({ label: secondLabels }));
+
+    const merged = createVectorAggregateStates(spec);
+    mergeVectorAggregateStateSnapshots(
+      merged,
+      JSON.parse(JSON.stringify(snapshotVectorAggregateStates(first))),
+    );
+    mergeVectorAggregateStateSnapshots(
+      merged,
+      JSON.parse(JSON.stringify(snapshotVectorAggregateStates(second))),
+    );
+    updateVectorAggregateStates(merged, spec, batchFromColumns({ label: ["v1800", "v0"] }));
+
+    const snapshot = snapshotVectorAggregateStates(merged).labels;
+    expect(snapshot.op).toBe("count_distinct");
+    expect(snapshot.values).toHaveLength(1801);
+    expect(snapshot.values[0]).toBe("string:v0");
+    expect(snapshot.values[snapshot.values.length - 1]).toBe("string:v999");
+    expect(finalizeVectorAggregateStates(merged)).toEqual({ labels: 1801 });
+  });
 });

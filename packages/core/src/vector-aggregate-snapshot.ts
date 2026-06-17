@@ -4,7 +4,7 @@ import type {
   VectorAggregateStateSnapshot,
   VectorAggregateValue,
 } from "./vector-aggregate.js";
-import { distinctMemoryBytes } from "./vector-aggregate-distinct.js";
+import { distinctMemoryBytes, distinctSnapshotValues } from "./vector-aggregate-distinct.js";
 
 export function snapshotVectorAggregateState(
   state: VectorAggregateState,
@@ -30,7 +30,7 @@ export function snapshotVectorAggregateState(
       return { op: state.op, value: snapshotValue(state.value) };
     case "count_distinct":
     case "approx_count_distinct":
-      return { op: state.op, values: [...state.values].sort() };
+      return { op: state.op, values: distinctSnapshotValues(state) };
     case "mode":
       return {
         op: "mode",

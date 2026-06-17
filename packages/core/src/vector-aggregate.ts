@@ -13,10 +13,13 @@ import {
   addDistinctStringValues,
   addDistinctValue,
   addDistinctValues,
+  cloneDistinctAggregateState,
   createDistinctAggregateState,
   distinctKey,
   distinctMemoryBytes,
+  distinctValueCount,
   enforceDistinctStateBudget,
+  mergeDistinctSortedValues,
   type VectorDistinctAggregateState,
 } from "./vector-aggregate-distinct.js";
 import {
@@ -549,7 +552,7 @@ function mergeDistinctSnapshot(
       source: snapshot.op,
     });
   }
-  addDistinctValues(target, snapshot.values, budget);
+  mergeDistinctSortedValues(target, snapshot.values, budget);
 }
 
 function sameState<Op extends VectorAggregateState["op"]>(
@@ -590,7 +593,7 @@ function finalizeVectorAggregateState(state: VectorAggregateState): unknown {
       return state.value;
     case "count_distinct":
     case "approx_count_distinct":
-      return state.values.size;
+      return distinctValueCount(state);
     case "mode":
       return finalizeMode(state);
     case "first":
@@ -626,7 +629,7 @@ function cloneVectorAggregateState(state: VectorAggregateState): VectorAggregate
       return { ...state };
     case "count_distinct":
     case "approx_count_distinct":
-      return { op: state.op, values: new Set(state.values), memoryBytes: state.memoryBytes };
+      return cloneDistinctAggregateState(state);
     case "mode":
       return {
         op: "mode",
