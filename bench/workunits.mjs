@@ -555,41 +555,73 @@ async function runDuckDbComparison({ generatedRoot, threshold, expected, iterati
   const files = (await readdir(partsRoot)).filter((file) => file.endsWith(".parquet")).sort();
   let parquetBytes = 0;
   for (const file of files) parquetBytes += (await stat(join(partsRoot, file))).size;
-  const sql = [
+  const fromWhere = [
+    `from read_parquet('${sqlString(`${partsRoot}/*.parquet`)}')`,
+    `where metric >= ${threshold}`,
+  ].join(" ");
+  const fullSql = [
     "select",
     "count(*) as rows,",
     "sum(metric) as totalMetric,",
     "max(metric) as maxMetric,",
     "count(distinct bucket) as buckets",
-    `from read_parquet('${sqlString(`${partsRoot}/*.parquet`)}')`,
-    `where metric >= ${threshold}`,
+    fromWhere,
   ].join(" ");
+  const numericSql = [
+    "select",
+    "count(*) as rows,",
+    "sum(metric) as totalMetric,",
+    "max(metric) as maxMetric",
+    fromWhere,
+  ].join(" ");
+  const distinctSql = ["select", "count(distinct bucket) as buckets", fromWhere].join(" ");
   const duckdb = await DuckDBConnection.create();
-  const first = await timedDuckDb(duckdb, sql);
+  const first = await timedDuckDb(duckdb, fullSql);
   assertDuckDbAggregate(first.rows[0], expected);
   for (let index = 0; index < warmup; index += 1) {
-    const result = await timedDuckDb(duckdb, sql);
-    assertDuckDbAggregate(result.rows[0], expected);
+    assertDuckDbAggregate((await timedDuckDb(duckdb, fullSql)).rows[0], expected);
+    assertDuckDbNumericAggregate((await timedDuckDb(duckdb, numericSql)).rows[0], expected);
+    assertDuckDbDistinctAggregate((await timedDuckDb(duckdb, distinctSql)).rows[0], expected);
   }
-  const samples = [];
-  const rssSamples = [];
-  for (let index = 0; index < iterations; index += 1) {
-    const result = await timedDuckDb(duckdb, sql);
-    assertDuckDbAggregate(result.rows[0], expected);
-    samples.push(result.ms);
-    rssSamples.push(result.peakMemoryBytes);
-  }
-  const summary = summarizeSamples(samples, rssSamples);
+  const full = await timeDuckDbLane(duckdb, fullSql, iterations, (row) =>
+    assertDuckDbAggregate(row, expected),
+  );
+  const numeric = await timeDuckDbLane(duckdb, numericSql, iterations, (row) =>
+    assertDuckDbNumericAggregate(row, expected),
+  );
+  const distinct = await timeDuckDbLane(duckdb, distinctSql, iterations, (row) =>
+    assertDuckDbDistinctAggregate(row, expected),
+  );
   return {
     files: files.length,
     parquetBytes,
     firstMs: first.ms,
-    medianMs: summary.medianMs,
-    p95Ms: summary.p95Ms,
-    minMs: summary.minMs,
-    maxMs: summary.maxMs,
-    peakRssBytes: summary.peakRssBytes,
+    medianMs: full.medianMs,
+    p95Ms: full.p95Ms,
+    minMs: full.minMs,
+    maxMs: full.maxMs,
+    peakRssBytes: full.peakRssBytes,
+    numericMedianMs: numeric.medianMs,
+    numericP95Ms: numeric.p95Ms,
+    numericMinMs: numeric.minMs,
+    numericMaxMs: numeric.maxMs,
+    distinctMedianMs: distinct.medianMs,
+    distinctP95Ms: distinct.p95Ms,
+    distinctMinMs: distinct.minMs,
+    distinctMaxMs: distinct.maxMs,
   };
+}
+
+async function timeDuckDbLane(duckdb, sql, iterations, assertRow) {
+  const samples = [];
+  const rssSamples = [];
+  for (let index = 0; index < iterations; index += 1) {
+    const result = await timedDuckDb(duckdb, sql);
+    assertRow(result.rows[0]);
+    samples.push(result.ms);
+    rssSamples.push(result.peakMemoryBytes);
+  }
+  return summarizeSamples(samples, rssSamples);
 }
 
 async function timedDuckDb(duckdb, sql) {
@@ -616,6 +648,42 @@ function assertDuckDbAggregate(row, expected) {
       `DuckDB aggregate mismatch: expected ${JSON.stringify(expected)}, got ${JSON.stringify(
         actual,
       )}`,
+    );
+  }
+}
+
+function assertDuckDbNumericAggregate(row, expected) {
+  const actual = {
+    rows: Number(row?.rows),
+    totalMetric: Number(row?.totalMetric),
+    maxMetric: row?.maxMetric ?? null,
+  };
+  const expectedNumeric = {
+    rows: expected.rows,
+    totalMetric: expected.totalMetric,
+    maxMetric: expected.maxMetric,
+  };
+  if (JSON.stringify(actual) !== JSON.stringify(expectedNumeric)) {
+    throw new Error(
+      `DuckDB numeric aggregate mismatch: expected ${JSON.stringify(
+        expectedNumeric,
+      )}, got ${JSON.stringify(actual)}`,
+    );
+  }
+}
+
+function assertDuckDbDistinctAggregate(row, expected) {
+  const actual = {
+    buckets: Number(row?.buckets),
+  };
+  const expectedDistinct = {
+    buckets: expected.buckets,
+  };
+  if (JSON.stringify(actual) !== JSON.stringify(expectedDistinct)) {
+    throw new Error(
+      `DuckDB distinct aggregate mismatch: expected ${JSON.stringify(
+        expectedDistinct,
+      )}, got ${JSON.stringify(actual)}`,
     );
   }
 }
@@ -671,10 +739,24 @@ function renderConsole(report) {
     `duckdb_first_ms=${formatOptionalMs(report.duckDb?.firstMs)}`,
     `duckdb_warm_median_ms=${formatOptionalMs(report.duckDb?.medianMs)}`,
     `duckdb_warm_p95_ms=${formatOptionalMs(report.duckDb?.p95Ms)}`,
+    `duckdb_numeric_warm_median_ms=${formatOptionalMs(report.duckDb?.numericMedianMs)}`,
+    `duckdb_numeric_warm_p95_ms=${formatOptionalMs(report.duckDb?.numericP95Ms)}`,
+    `duckdb_distinct_warm_median_ms=${formatOptionalMs(report.duckDb?.distinctMedianMs)}`,
+    `duckdb_distinct_warm_p95_ms=${formatOptionalMs(report.duckDb?.distinctP95Ms)}`,
     `duckdb_lakeql_fanout_ratio=${
       report.duckDb === undefined
         ? "not run"
         : (report.fanOutAggregateMs / report.duckDb.medianMs).toFixed(2)
+    }`,
+    `duckdb_lakeql_numeric_fanout_ratio=${
+      report.duckDb === undefined
+        ? "not run"
+        : (report.numericFanOutAggregateMs / report.duckDb.numericMedianMs).toFixed(2)
+    }`,
+    `duckdb_lakeql_distinct_fanout_ratio=${
+      report.duckDb === undefined
+        ? "not run"
+        : (report.distinctFanOutAggregateMs / report.duckDb.distinctMedianMs).toFixed(2)
     }`,
     `duckdb_lakeql_end_to_end_ratio=${
       report.duckDb === undefined
@@ -805,6 +887,10 @@ HTTP range behavior, and browser memory separately.
 | DuckDB first query ms | ${formatOptionalMs(report.duckDb?.firstMs)} |
 | DuckDB warm median ms | ${formatOptionalMs(report.duckDb?.medianMs)} |
 | DuckDB warm p95 ms | ${formatOptionalMs(report.duckDb?.p95Ms)} |
+| DuckDB numeric warm median ms | ${formatOptionalMs(report.duckDb?.numericMedianMs)} |
+| DuckDB numeric warm p95 ms | ${formatOptionalMs(report.duckDb?.numericP95Ms)} |
+| DuckDB distinct warm median ms | ${formatOptionalMs(report.duckDb?.distinctMedianMs)} |
+| DuckDB distinct warm p95 ms | ${formatOptionalMs(report.duckDb?.distinctP95Ms)} |
 | lakeql fan-out / DuckDB warm median | ${
     report.duckDb === undefined
       ? "not run"
@@ -813,12 +899,12 @@ HTTP range behavior, and browser memory separately.
 | lakeql numeric fan-out / DuckDB warm median | ${
     report.duckDb === undefined
       ? "not run"
-      : `${(report.numericFanOutAggregateMs / report.duckDb.medianMs).toFixed(2)}x`
+      : `${(report.numericFanOutAggregateMs / report.duckDb.numericMedianMs).toFixed(2)}x`
   } |
 | lakeql distinct fan-out / DuckDB warm median | ${
     report.duckDb === undefined
       ? "not run"
-      : `${(report.distinctFanOutAggregateMs / report.duckDb.medianMs).toFixed(2)}x`
+      : `${(report.distinctFanOutAggregateMs / report.duckDb.distinctMedianMs).toFixed(2)}x`
   } |
 | lakeql planning + fan-out / DuckDB warm median | ${
     report.duckDb === undefined

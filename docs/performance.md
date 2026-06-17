@@ -68,8 +68,11 @@ work-unit benchmark guards cold planning at 8 MiB across 100 files and guards
 warm planning at zero object reads.
 
 For local wall-time context, `pnpm bench:workunits:10m:duckdb` adds a comparison
-against Node DuckDB's native engine. Treat that as a strong local CPU baseline,
-not the DuckDB-WASM product comparison: browser WASM needs a separate lane for
+against Node DuckDB's native engine. The report times DuckDB's matching full
+aggregate, numeric-only aggregate, and distinct-only aggregate separately, so the
+lakeql ratios identify whether the gap is broad fan-out overhead, numeric vector
+work, or distinct hashing. Treat Node DuckDB as a strong local CPU baseline, not
+the DuckDB-WASM product comparison: browser WASM needs a separate lane for
 download/compile/init time, HTTP range behavior, warm queries, and browser memory.
 
 For bounded top-k sorts, use `orderBy(...).limit(...).topKWithState()` to
