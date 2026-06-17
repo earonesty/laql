@@ -32,6 +32,7 @@ const maxRowGroupsPerTask = optionalPositiveIntegerEnv("LAKEQL_WORKUNIT_ROW_GROU
 const maxRowsPerTask = optionalPositiveIntegerEnv("LAKEQL_WORKUNIT_ROWS_PER_TASK");
 const maxConcurrentTasks = positiveIntegerEnv("LAKEQL_WORKUNIT_CONCURRENT_TASKS", 1);
 const selectedTailRows = positiveIntegerEnv("LAKEQL_WORKUNIT_SELECTED_TAIL_ROWS", rowGroupRows);
+const bucketCardinality = positiveIntegerEnv("LAKEQL_WORKUNIT_BUCKET_CARDINALITY", 16);
 const maxRssMb = optionalPositiveIntegerEnv("LAKEQL_WORKUNIT_MAX_RSS_MB");
 const maxRssBytes = maxRssMb === undefined ? undefined : maxRssMb * 1024 * 1024;
 const maxFanOutRssDeltaMb = optionalPositiveIntegerEnv("LAKEQL_WORKUNIT_MAX_FANOUT_RSS_DELTA_MB");
@@ -53,7 +54,7 @@ const compareDuckDb = process.env.LAKEQL_WORKUNIT_COMPARE_DUCKDB === "1";
 const duckDbIterations = positiveIntegerEnv("LAKEQL_WORKUNIT_DUCKDB_ITERATIONS", 5);
 const duckDbWarmup = positiveIntegerEnv("LAKEQL_WORKUNIT_DUCKDB_WARMUP", 1);
 const preserveTaskBoundaries = true;
-const datasetConfig = { totalRows, rowsPerFile, rowGroupRows };
+const datasetConfig = { totalRows, rowsPerFile, rowGroupRows, bucketCardinality };
 
 if (regenerate) await rm(generatedRoot, { recursive: true, force: true });
 await mkdir(generatedRoot, { recursive: true });
@@ -390,6 +391,7 @@ const report = {
   rowsPerFile,
   rowGroupRows,
   selectedTailRows,
+  bucketCardinality,
   totalRowGroups,
   plannedRowGroups,
   prunedRowGroups,
@@ -461,7 +463,7 @@ async function ensureDataset(store) {
         {
           name: "bucket",
           type: "STRING",
-          data: range(rows, (index) => `b${(start + index) % 16}`),
+          data: range(rows, (index) => `b${(start + index) % bucketCardinality}`),
         },
       ],
     });
@@ -504,8 +506,17 @@ function expectedAggregate(totalRows, threshold) {
     rows,
     totalMetric: arithmeticSeriesSum(first, totalRows - 1),
     maxMetric: rows === 0 ? null : totalRows - 1,
-    buckets: rows === 0 ? 0 : Math.min(16, rows),
+    buckets: distinctModuloCount(first, totalRows, bucketCardinality),
   };
+}
+
+function distinctModuloCount(first, end, cardinality) {
+  const rows = Math.max(0, end - first);
+  if (rows === 0) return 0;
+  if (rows >= cardinality) return cardinality;
+  const values = new Set();
+  for (let value = first; value < end; value += 1) values.add(value % cardinality);
+  return values.size;
 }
 
 function arithmeticSeriesSum(first, last) {
@@ -710,6 +721,7 @@ function renderConsole(report) {
     `max_rows_per_task=${report.maxRowsPerTask ?? "not set"}`,
     `max_concurrent_tasks=${report.maxConcurrentTasks}`,
     `max_rows_per_fanout_wave=${report.maxRowsPerFanOutWave}`,
+    `bucket_cardinality=${report.bucketCardinality}`,
     `compare_materialized=${report.compareMaterialized}`,
     `query_rows=${report.queryRows}`,
     `fanout_total_metric=${report.fanOutAggregate.totalMetric}`,
@@ -844,6 +856,7 @@ HTTP range behavior, and browser memory separately.
 | rows per file | ${report.rowsPerFile} |
 | row-group rows | ${report.rowGroupRows} |
 | selected tail rows | ${report.selectedTailRows} |
+| bucket cardinality | ${report.bucketCardinality} |
 | total row groups | ${report.totalRowGroups} |
 | planned row groups | ${report.plannedRowGroups} |
 | pruned row groups | ${report.prunedRowGroups} |

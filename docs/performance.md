@@ -53,6 +53,17 @@ work units. Use the numeric and distinct lanes together to decide whether the
 remaining gap is local range-read overhead, Parquet decode/assembly, or distinct
 hashing before adding another specialized execution path.
 
+The default 10M work-unit dataset uses low-cardinality bucket strings. To avoid
+overfitting optimizations to repeated values, run:
+
+```sh
+pnpm bench:workunits:10m:high-cardinality
+```
+
+That variant sets `LAKEQL_WORKUNIT_BUCKET_CARDINALITY=100000`, so the selected
+tail rows exercise high-cardinality distinct state and fan-in behavior. Add the
+`:duckdb` suffix for the same native DuckDB lane comparison.
+
 Pass a shared `planningCache` when repeated queries can reuse object expansion
 for a source pattern. Object-store glob listing is not an atomic snapshot, so the
 cache is explicit runtime policy: uncached planning sees current store state,
