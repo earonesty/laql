@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { batchFromColumns } from "./batch.js";
 import { LakeqlError } from "./errors.js";
 import { and, between, col, eq, fn, gt, isIn, isNull, like, lit, not, or } from "./expr.js";
 import { createBookmark } from "./manifest.js";
@@ -12,6 +13,7 @@ import {
   parseHivePartitions,
   parseJsonQuery,
   type ScanAdapter,
+  type ScanColumnBatch,
   type ScanOptions,
   serializeAggregateOperatorState,
   serializeSortOperatorState,
@@ -23,6 +25,8 @@ import type { Bookmark, Row } from "./types.js";
 
 class FakeScanner implements ScanAdapter {
   readonly requestedColumns: (string[] | undefined)[] = [];
+  readonly requestedColumnBatchColumns: (string[] | undefined)[] = [];
+  readonly requestedColumnBatchWindows: { rowStart?: number; rowEnd?: number }[] = [];
   readonly requestedBatchSizes: number[] = [];
   readonly requestedPaths: string[] = [];
 
@@ -43,6 +47,28 @@ class FakeScanner implements ScanAdapter {
         }
         return out;
       });
+    }
+  }
+
+  async *scanColumnBatches(path: string, options: ScanOptions): AsyncIterable<ScanColumnBatch> {
+    this.requestedPaths.push(path);
+    this.requestedColumnBatchColumns.push(options.columns);
+    this.requestedColumnBatchWindows.push({
+      ...(options.rowStart === undefined ? {} : { rowStart: options.rowStart }),
+      ...(options.rowEnd === undefined ? {} : { rowEnd: options.rowEnd }),
+    });
+    const rows = this.rowsByPath[path] ?? [];
+    const start = options.rowStart ?? 0;
+    const end = Math.min(options.rowEnd ?? rows.length, rows.length);
+    for (let offset = start; offset < end; offset += options.batchSize) {
+      const slice = rows.slice(offset, Math.min(offset + options.batchSize, end));
+      const columns = Object.fromEntries(
+        (options.columns ?? Object.keys(slice[0] ?? {})).map((column) => [
+          column,
+          slice.map((row) => row[column]),
+        ]),
+      );
+      yield { rowOffset: offset, batch: batchFromColumns(columns) };
     }
   }
 }
@@ -133,6 +159,33 @@ describe("Lake query runtime", () => {
 
     await expect(lake.path("table").select(["id"]).limit(20).toArray()).resolves.toHaveLength(20);
     expect(scanner.requestedBatchSizes).toEqual([20]);
+  });
+
+  it("late-materializes projected columns for ordered top-k queries", async () => {
+    const { lake, scanner } = await makeLake({
+      rowsByPath: {
+        table: [
+          { score: 2, payload: "b" },
+          { score: 9, payload: "winner" },
+          { score: 4, payload: "d" },
+          { score: 1, payload: "a" },
+        ],
+      },
+    });
+
+    await expect(
+      lake
+        .path("table")
+        .select(["score", "payload"])
+        .where(gt("score", 3))
+        .orderBy([{ column: "score", direction: "desc" }])
+        .limit(1)
+        .toArray(),
+    ).resolves.toEqual([{ score: 9, payload: "winner" }]);
+
+    expect(scanner.requestedColumnBatchColumns[0]).toEqual(["score"]);
+    expect(scanner.requestedColumnBatchColumns[1]).toEqual(["payload"]);
+    expect(scanner.requestedColumnBatchWindows[1]).toEqual({ rowStart: 1, rowEnd: 2 });
   });
 
   it("evaluates computed projections and reads their source columns", async () => {
@@ -842,7 +895,9 @@ describe("Lake query runtime", () => {
       { id: 3, name: "same-a" },
       { id: 4, name: "low" },
     ]);
-    expect(scanner.requestedColumns[0]).toEqual(["id", "name", "score"]);
+    expect(scanner.requestedColumnBatchColumns[0]).toEqual(["id", "score"]);
+    expect(scanner.requestedColumnBatchColumns[1]).toEqual(["id", "score"]);
+    expect(scanner.requestedColumnBatchColumns).toContainEqual(["name"]);
     await expect(
       lake
         .path("data/*.parquet")

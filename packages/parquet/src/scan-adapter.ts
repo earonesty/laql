@@ -6,6 +6,7 @@ import {
   type ObjectStore,
   type Row,
   type ScanAdapter,
+  type ScanColumnBatch,
   type ScanOptions,
   type ScanTaskPlan,
   type ScanTaskPlanOptions,
@@ -91,12 +92,20 @@ export class ParquetScanAdapter implements ScanAdapter {
   }
 
   async *scanColumns(path: string, options: ScanOptions): AsyncIterable<Batch> {
+    for await (const columnBatch of this.scanColumnBatches(path, options)) {
+      yield columnBatch.batch;
+    }
+  }
+
+  async *scanColumnBatches(path: string, options: ScanOptions): AsyncIterable<ScanColumnBatch> {
     const file = this.scanBuffer(await asyncBufferFromStore(this.store, path, options));
     const metadata = await this.metadata(path, file, options);
     rejectUnsupportedParquetSchema(metadata);
     try {
       for await (const columnBatch of readParquetColumnBatchesFromFile(file, metadata, {
         batchSize: options.batchSize || this.defaultBatchSize,
+        ...(options.rowStart === undefined ? {} : { rowStart: options.rowStart }),
+        ...(options.rowEnd === undefined ? {} : { rowEnd: options.rowEnd }),
         ...(options.columns === undefined ? {} : { columns: options.columns }),
         ...(options.where === undefined ? {} : { where: options.where }),
         ...(this.decodedColumnCache === undefined
@@ -108,7 +117,7 @@ export class ParquetScanAdapter implements ScanAdapter {
         stats: options.stats,
       })) {
         throwIfAborted(options.budget.signal);
-        yield columnBatch.batch;
+        yield columnBatch;
       }
     } catch (cause) {
       if (cause instanceof LakeqlError) throw cause;

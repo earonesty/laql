@@ -1,5 +1,11 @@
 import { continuousQuantile, requiredQuantile } from "./aggregate-quantile.js";
-import { type Batch, materializeBatchRows, predicateSelection, selectedRowCount } from "./batch.js";
+import {
+  type Batch,
+  materializeBatchRows,
+  predicateSelection,
+  selectedRowCount,
+  vectorValue,
+} from "./batch.js";
 import { LakeqlError } from "./errors.js";
 import {
   encodeJsonLine,
@@ -83,6 +89,8 @@ export interface LakeConfig {
 export interface ScanOptions {
   columns?: string[];
   where?: Expr;
+  rowStart?: number;
+  rowEnd?: number;
   batchSize: number;
   stats: QueryStats;
   budget: QueryBudget;
@@ -93,7 +101,13 @@ export interface ScanOptions {
 export interface ScanAdapter {
   scan(path: string, options: ScanOptions): AsyncIterable<Row[]>;
   scanColumns?(path: string, options: ScanOptions): AsyncIterable<Batch>;
+  scanColumnBatches?(path: string, options: ScanOptions): AsyncIterable<ScanColumnBatch>;
   planTask?(path: string, options: ScanTaskPlanOptions): Promise<ScanTaskPlan>;
+}
+
+export interface ScanColumnBatch {
+  rowOffset: number;
+  batch: Batch;
 }
 
 export interface ScanTaskPlanOptions {
@@ -1014,7 +1028,6 @@ export class QueryResult {
   private async tryColumnarTopKRows(): Promise<Row[] | undefined> {
     const config = this.config;
     if (
-      config.scanner.scanColumns === undefined ||
       config.orderBy === undefined ||
       config.limit === undefined ||
       config.distinct === true ||
@@ -1027,6 +1040,9 @@ export class QueryResult {
     const orderBy = normalizeOrderBy(config.orderBy);
     const topK = (config.offset ?? 0) + config.limit;
     const startedAt = config.now();
+    const lateMaterialized = await this.tryLateMaterializedTopKRows(orderBy, topK, startedAt);
+    if (lateMaterialized !== undefined) return lateMaterialized;
+    if (config.scanner.scanColumns === undefined) return undefined;
     let retained: Batch | undefined;
     for await (const batch of this.columnBatches(
       projectedReadColumns(config.select, config.where, orderBy, config.projections),
@@ -1057,6 +1073,126 @@ export class QueryResult {
       enforceBudget(config.budget, this.stats, config.now, startedAt);
     }
     this.stats.elapsedMs = config.now() - startedAt;
+    return rows;
+  }
+
+  private async tryLateMaterializedTopKRows(
+    orderBy: OrderByTerm[],
+    topK: number,
+    startedAt: number,
+  ): Promise<Row[] | undefined> {
+    const config = this.config;
+    if (
+      config.scanner.scanColumnBatches === undefined ||
+      config.select === undefined ||
+      config.select.length === 0
+    ) {
+      return undefined;
+    }
+    const rankColumns = rankReadColumns(config.where, orderBy);
+    if (rankColumns.length === 0) return undefined;
+    const outputColumns = [...new Set([...config.select, ...orderBy.map((term) => term.column)])];
+    if (outputColumns.every((column) => rankColumns.includes(column))) return undefined;
+
+    const retained: RankedRowRef[] = [];
+    const scanColumnBatches = config.scanner.scanColumnBatches;
+    const { planned: paths, skipped: skippedFiles } = await this.planObjects();
+    this.stats.filesSkipped = skippedFiles;
+    for (const object of paths) {
+      this.stats.filesPlanned += 1;
+      this.stats.filesRead += 1;
+      this.stats.bytesRequested += object.size;
+      enforceBudget(config.budget, this.stats, config.now, startedAt);
+      const scanOptions: ScanOptions = {
+        columns: rankColumns,
+        ...(config.where === undefined ? {} : { where: config.where }),
+        batchSize: columnarBatchSize(config.batchSize),
+        stats: this.stats,
+        budget: config.budget,
+        now: config.now,
+        startedAt,
+      };
+      for await (const { rowOffset, batch } of scanColumnBatches.call(
+        config.scanner,
+        object.path,
+        scanOptions,
+      )) {
+        const selection = predicateSelection(batch, config.where);
+        this.stats.rowsMatched += selectedRowCount(batch.rowCount, selection);
+        addRankedRefs(
+          retained,
+          object.path,
+          rowOffset,
+          batch,
+          selection,
+          rankColumns,
+          orderBy,
+          topK,
+        );
+        enforceBufferedRowsBudget(config.budget, retained.length);
+        enforceOperatorMemoryBudget(config.budget, estimateOperatorMemoryBytes(retained));
+        enforceBudget(config.budget, this.stats, config.now, startedAt);
+      }
+    }
+    retained.sort((left, right) => compareRankedRefs(left, right, orderBy));
+    const limit = config.limit;
+    if (limit === undefined) return undefined;
+    const selected = retained.slice(config.offset ?? 0, (config.offset ?? 0) + limit);
+    const rowsByRef = await this.materializeRowRefs(
+      selected,
+      outputColumns,
+      rankColumns,
+      startedAt,
+    );
+    const rows = selected
+      .map((ref) => rowsByRef.get(rowRefKey(ref)))
+      .filter((row): row is Row => row !== undefined);
+    for (const _row of rows) {
+      this.stats.rowsReturned += 1;
+      enforceBudget(config.budget, this.stats, config.now, startedAt);
+    }
+    this.stats.elapsedMs = config.now() - startedAt;
+    return rows.map((row) => project(row, config.select, undefined));
+  }
+
+  private async materializeRowRefs(
+    refs: readonly RankedRowRef[],
+    columns: readonly string[],
+    rankColumns: readonly string[],
+    startedAt: number,
+  ): Promise<Map<string, Row>> {
+    const scanColumnBatches = this.config.scanner.scanColumnBatches;
+    if (scanColumnBatches === undefined) return new Map();
+    const rows = new Map<string, Row>();
+    for (const ref of refs) rows.set(rowRefKey(ref), { ...ref.keys });
+    const lateColumns = columns.filter((column) => !rankColumns.includes(column));
+    if (lateColumns.length === 0) return rows;
+    for (const window of materializationWindows(refs, columnarBatchSize(this.config.batchSize))) {
+      const scanOptions: ScanOptions = {
+        columns: lateColumns,
+        rowStart: window.rowStart,
+        rowEnd: window.rowEnd,
+        batchSize: columnarBatchSize(this.config.batchSize),
+        stats: this.stats,
+        budget: this.config.budget,
+        now: this.config.now,
+        startedAt,
+      };
+      for await (const { rowOffset, batch } of scanColumnBatches.call(
+        this.config.scanner,
+        window.path,
+        scanOptions,
+      )) {
+        const materialized = materializeBatchRows(batch);
+        for (let index = 0; index < materialized.length; index += 1) {
+          const rowIndex = rowOffset + index;
+          const key = rowRefKey({ path: window.path, rowIndex });
+          const existing = rows.get(key);
+          const row = materialized[index];
+          if (existing !== undefined && row !== undefined) rows.set(key, { ...existing, ...row });
+        }
+      }
+    }
     return rows;
   }
 
@@ -2749,6 +2885,128 @@ function limitAwareBatchSize(
 
 function columnarBatchSize(batchSize: number | undefined): number {
   return Math.max(batchSize ?? 0, DEFAULT_COLUMNAR_BATCH_SIZE);
+}
+
+interface RankedRowRef {
+  path: string;
+  rowIndex: number;
+  keys: Row;
+}
+
+interface MaterializationWindow {
+  path: string;
+  rowStart: number;
+  rowEnd: number;
+}
+
+function rankReadColumns(where: Expr | undefined, orderBy: readonly OrderByTerm[]): string[] {
+  const columns = new Set<string>();
+  for (const term of orderBy) columns.add(term.column);
+  collectExprColumns(where, columns);
+  return [...columns].sort();
+}
+
+function addRankedRefs(
+  retained: RankedRowRef[],
+  path: string,
+  rowOffset: number,
+  batch: Batch,
+  selection: Uint8Array,
+  rankColumns: readonly string[],
+  orderBy: readonly OrderByTerm[],
+  topK: number,
+): void {
+  if (topK === 0) return;
+  for (let index = 0; index < batch.rowCount; index += 1) {
+    if (selection[index] !== 1) continue;
+    const ref: RankedRowRef = {
+      path,
+      rowIndex: rowOffset + index,
+      keys: rankKeyRow(batch, index, rankColumns),
+    };
+    addRankedRef(retained, ref, orderBy, topK);
+  }
+}
+
+function materializationWindows(
+  refs: readonly RankedRowRef[],
+  maxWindowRows: number,
+): MaterializationWindow[] {
+  const out: MaterializationWindow[] = [];
+  const sorted = [...refs].sort(
+    (left, right) => left.path.localeCompare(right.path) || left.rowIndex - right.rowIndex,
+  );
+  for (const ref of sorted) {
+    const current = out[out.length - 1];
+    if (
+      current !== undefined &&
+      current.path === ref.path &&
+      ref.rowIndex + 1 - current.rowStart <= maxWindowRows
+    ) {
+      current.rowEnd = Math.max(current.rowEnd, ref.rowIndex + 1);
+      continue;
+    }
+    out.push({ path: ref.path, rowStart: ref.rowIndex, rowEnd: ref.rowIndex + 1 });
+  }
+  return out;
+}
+
+function addRankedRef(
+  retained: RankedRowRef[],
+  ref: RankedRowRef,
+  orderBy: readonly OrderByTerm[],
+  topK: number,
+): void {
+  if (retained.length < topK) {
+    retained.push(ref);
+    return;
+  }
+  let worstIndex = 0;
+  for (let index = 1; index < retained.length; index += 1) {
+    const candidate = retained[index];
+    const worst = retained[worstIndex];
+    if (
+      candidate !== undefined &&
+      worst !== undefined &&
+      compareRankedRefs(candidate, worst, orderBy) > 0
+    ) {
+      worstIndex = index;
+    }
+  }
+  const worst = retained[worstIndex];
+  if (worst !== undefined && compareRankedRefs(ref, worst, orderBy) < 0) {
+    retained[worstIndex] = ref;
+  }
+}
+
+function rankKeyRow(batch: Batch, rowIndex: number, columns: readonly string[]): Row {
+  const row: Row = {};
+  for (const column of columns) {
+    const vector = batch.columns[column];
+    if (vector === undefined) {
+      throw new LakeqlError("LAKEQL_UNKNOWN_COLUMN", `Unknown column ${column}`, {
+        column,
+      });
+    }
+    row[column] = vectorValue(vector, rowIndex);
+  }
+  return row;
+}
+
+function compareRankedRefs(
+  left: RankedRowRef,
+  right: RankedRowRef,
+  orderBy: readonly OrderByTerm[],
+): number {
+  return (
+    compareRows(left.keys, right.keys, [...orderBy]) ||
+    left.path.localeCompare(right.path) ||
+    left.rowIndex - right.rowIndex
+  );
+}
+
+function rowRefKey(ref: Pick<RankedRowRef, "path" | "rowIndex">): string {
+  return `${ref.path}\u001f${ref.rowIndex}`;
 }
 
 function collectExprColumns(expr: Expr | undefined, columns: Set<string>): void {
