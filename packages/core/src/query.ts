@@ -28,6 +28,11 @@ import type {
 import { pruneFilesWithIndex, type SidecarFileIndex } from "./sidecar-index.js";
 import type { ObjectInfo, ObjectStore } from "./store.js";
 import type { Bookmark, BookmarkQuery, QueryStats, Row, SliceResult } from "./types.js";
+import {
+  createVectorGroupByState,
+  finalizeVectorGroupByRows,
+  updateVectorGroupByState,
+} from "./vector-group-by.js";
 import { vectorProjectBatch } from "./vector-project.js";
 import { concatBatches, vectorTopKBatch } from "./vector-sort.js";
 
@@ -848,7 +853,52 @@ export class QueryResult {
     spec: AggregateSpec,
     options: AggregateOptions = {},
   ): Promise<Row[]> {
+    const columnarRows = await this.tryColumnarAggregateRows(groupColumns, spec, options);
+    if (columnarRows !== undefined) return columnarRows;
     return (await this.aggregateWithState(groupColumns, spec, options)).rows;
+  }
+
+  private async tryColumnarAggregateRows(
+    groupColumns: string[],
+    spec: AggregateSpec,
+    options: AggregateOptions,
+  ): Promise<Row[] | undefined> {
+    const config = this.config;
+    if (
+      config.scanner.scanColumns === undefined ||
+      config.projections !== undefined ||
+      config.hive === true ||
+      options.operatorState !== undefined ||
+      options.spill !== undefined ||
+      options.having !== undefined ||
+      !vectorExprSupported(config.where) ||
+      !aggregateSpecVectorSupported(spec)
+    ) {
+      return undefined;
+    }
+    validateAggregateRequest(groupColumns, spec, options);
+    await ensureGeoBackendForExprs(Object.values(spec).map((aggregate) => aggregate.expr));
+    const startedAt = config.now();
+    const state = createVectorGroupByState(groupColumns, spec);
+    for await (const batch of this.columnBatches(
+      aggregateReadColumns(groupColumns, spec, config.where),
+      startedAt,
+    )) {
+      const selection = predicateSelection(batch, config.where);
+      this.stats.rowsMatched += selectedRowCount(batch.rowCount, selection);
+      updateVectorGroupByState(state, batch, selection, {
+        budget: config.budget,
+        ...(options.maxGroups === undefined ? {} : { maxGroups: options.maxGroups }),
+      });
+      enforceBufferedRowsBudget(config.budget, state.groups.size);
+    }
+    const rows = applyAggregateResultOptions(finalizeVectorGroupByRows(state), options);
+    for (const _row of rows) {
+      this.stats.rowsReturned += 1;
+      enforceBudget(config.budget, this.stats, config.now, startedAt);
+    }
+    this.stats.elapsedMs = config.now() - startedAt;
+    return rows;
   }
 
   async aggregateWithState(
@@ -2778,6 +2828,12 @@ function vectorExprSupported(expr: Expr | undefined): boolean {
     case "like":
       return false;
   }
+}
+
+function aggregateSpecVectorSupported(spec: AggregateSpec): boolean {
+  return Object.values(spec).every(
+    (aggregate) => aggregate.expr === undefined || vectorExprSupported(aggregate.expr),
+  );
 }
 
 function project(
