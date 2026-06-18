@@ -15,6 +15,7 @@ import { readParquetColumnBatchesFromFile } from "./column-batches.js";
 import type { DecodedColumnCache } from "./decoded-column-cache.js";
 import { normalizeDecodedRows } from "./decoded-rows.js";
 import { readCachedParquetMetadata } from "./metadata-cache.js";
+import { cachedRangeBuffer } from "./range-cache.js";
 import { recordReadColumns } from "./read-metrics.js";
 import { planRowGroupsFromMetadata } from "./row-group-plan.js";
 import { rowGroupMayMatch } from "./row-group-pruning.js";
@@ -44,7 +45,7 @@ export class ParquetScanAdapter implements ScanAdapter {
 
   async *scan(path: string, options: ScanOptions): AsyncIterable<Row[]> {
     const batchSize = options.batchSize || this.defaultBatchSize;
-    const file = await asyncBufferFromStore(this.store, path, options);
+    const file = cachedRangeBuffer(await asyncBufferFromStore(this.store, path, options));
     const metadata = await this.metadata(path, file, options);
     rejectUnsupportedParquetSchema(metadata);
     const readColumns = options.columns;
@@ -87,7 +88,7 @@ export class ParquetScanAdapter implements ScanAdapter {
   }
 
   async *scanColumns(path: string, options: ScanOptions): AsyncIterable<Batch> {
-    const file = await asyncBufferFromStore(this.store, path, options);
+    const file = cachedRangeBuffer(await asyncBufferFromStore(this.store, path, options));
     const metadata = await this.metadata(path, file, options);
     rejectUnsupportedParquetSchema(metadata);
     try {

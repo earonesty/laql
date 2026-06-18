@@ -9,7 +9,7 @@ import duckdbWasmEh from "@duckdb/duckdb-wasm/dist/duckdb-eh.wasm?url";
 import duckdbWasmMvp from "@duckdb/duckdb-wasm/dist/duckdb-mvp.wasm?url";
 import { tags } from "@lezer/highlight";
 import { basicSetup } from "codemirror";
-import type { ObjectStore } from "lakeql-core";
+import type { ObjectStore, QueryStats } from "lakeql-core";
 import { httpStore } from "lakeql-http";
 import { createParquetLake } from "lakeql-parquet";
 import { parseSql } from "lakeql-sql";
@@ -232,7 +232,9 @@ function createLakeRuntime(cacheMode: LakeCacheMode): { lake: Lake; cacheMode: L
   return { lake, cacheMode };
 }
 
-async function runLakeql(sqlText: string): Promise<{ rows: Row[]; ms: number; stats: Stats }> {
+async function runLakeql(
+  sqlText: string,
+): Promise<{ rows: Row[]; ms: number; stats: Stats; lakeStats: QueryStats }> {
   await resetProxyStats();
   if (lakeCacheMode === "fresh" || !lakeRuntime || lakeRuntime.cacheMode !== lakeCacheMode) {
     lakeRuntime = createLakeRuntime(lakeCacheMode);
@@ -244,20 +246,30 @@ async function runLakeql(sqlText: string): Promise<{ rows: Row[]; ms: number; st
     ast.aggregates && Object.keys(ast.aggregates).length > 0 ? ast.aggregates : undefined;
   const grouped = (ast.groupBy?.length ?? 0) > 0;
   let rows: Row[];
+  let lakeStats: QueryStats;
 
   if (!aggregates && !grouped) {
-    rows = (await applyAst(lake.path(DATASET_KEY), ast).toArray()) as Row[];
+    const result = applyAst(lake.path(DATASET_KEY), ast).run();
+    rows = (await result.toArray()) as Row[];
+    lakeStats = result.stats;
   } else {
     let base = lake.path(DATASET_KEY);
     if (ast.where) base = base.where(ast.where);
-    rows = (await base.groupBy(ast.groupBy ?? []).aggregate(aggregates ?? {})) as Row[];
+    const result = base.run();
+    rows = (await result.aggregate(ast.groupBy ?? [], aggregates ?? {})) as Row[];
+    lakeStats = result.stats;
     if (ast.orderBy) rows = sortRows(rows, ast.orderBy);
     const offset = ast.offset ?? 0;
     if (ast.limit !== undefined) rows = rows.slice(offset, offset + ast.limit);
     else if (offset > 0) rows = rows.slice(offset);
   }
 
-  return { rows, ms: performance.now() - started, stats: await serviceWorkerRequest("getStats") };
+  return {
+    rows,
+    ms: performance.now() - started,
+    stats: await serviceWorkerRequest("getStats"),
+    lakeStats,
+  };
 }
 
 async function initDuckDb() {
@@ -325,9 +337,17 @@ async function run(): Promise<void> {
 
   try {
     if (engine === "lakeql") {
-      const { rows, ms, stats } = await runLakeql(text);
+      const { rows, ms, stats, lakeStats } = await runLakeql(text);
       renderResult(rows);
-      setGauges({ rows: rows.length, ms, initMs: 0, requests: stats.requests, bytes: stats.bytes });
+      setGauges({
+        rows: rows.length,
+        ms,
+        initMs: 0,
+        requests: stats.requests,
+        bytes: stats.bytes,
+        rowGroups: rowGroupSummary(lakeStats),
+        decodedRows: lakeStats.rowsDecoded,
+      });
     } else {
       const { rows, ms, initMs, stats } = await runDuckDb(text);
       renderResult(rows);
@@ -347,6 +367,8 @@ function setGauges(input: {
   initMs: number;
   requests: number | undefined;
   bytes: number | undefined;
+  rowGroups?: string;
+  decodedRows?: number;
 }): void {
   setGauge("g-rows", String(input.rows));
   setGauge("g-ms", input.ms < 10 ? input.ms.toFixed(1) : Math.round(input.ms).toString());
@@ -360,6 +382,13 @@ function setGauges(input: {
   setGauge(
     "g-bytes",
     input.bytes === undefined || !Number.isFinite(input.bytes) ? "n/a" : formatBytes(input.bytes),
+  );
+  setGauge("g-rowgroups", input.rowGroups ?? "n/a");
+  setGauge(
+    "g-decoded",
+    input.decodedRows === undefined || !Number.isFinite(input.decodedRows)
+      ? "n/a"
+      : formatCount(input.decodedRows),
   );
   setGauge("g-engine", engine === "lakeql" ? "lakeql" : "duckdb");
 }
@@ -411,6 +440,14 @@ function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function formatCount(count: number): string {
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(count);
+}
+
+function rowGroupSummary(stats: QueryStats): string {
+  return `${stats.rowGroupsRead}/${stats.rowGroupsRead + stats.rowGroupsSkipped}`;
 }
 
 function showError(error: unknown): void {
