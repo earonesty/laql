@@ -18,6 +18,7 @@ const fixturePath = externalFixturePath(EXTERNAL_PLOTLY.flights2015);
 const fixtureRoot = dirname(fixturePath);
 const fixtureKey = basename(fixturePath);
 const reportPath = resolve("bench/generated/flights-hot-performance.jsonl");
+const scanRangeCacheBytes = 32 * 1024 * 1024;
 
 interface StoreCounters {
   get: number;
@@ -133,6 +134,7 @@ async function runCase(
       const store = fileStore(fixtureRoot);
       const lake = createParquetLake({
         store,
+        scanRangeCache: { maxBytes: scanRangeCacheBytes },
         ...(phase === "cold" ? {} : { cache: { maxBytes: 256 * 1024 * 1024, policy: "latency" } }),
         queryId: () => `hot-flights-${hotCase.name}-${phase}`,
       });

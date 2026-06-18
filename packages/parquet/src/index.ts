@@ -25,6 +25,7 @@ import { readParquetColumnBatchesFromFile } from "./column-batches.js";
 import { DecodedColumnCache } from "./decoded-column-cache.js";
 import { readParquetMetadataFromFile } from "./metadata-cache.js";
 import { readParquetObjectBatchesFromFile } from "./object-batches.js";
+import type { RangeCacheOptions } from "./range-cache.js";
 import { type ParquetRowGroupPlan, planRowGroupsFromMetadata } from "./row-group-plan.js";
 import { ParquetScanAdapter } from "./scan-adapter.js";
 import { rejectUnsupportedParquetSchema } from "./schema.js";
@@ -172,6 +173,7 @@ export interface ParquetLakeConfig extends Omit<LakeConfig, "scanner"> {
   batchSize?: number;
   cache?: ObjectStoreCacheOptions;
   metadataCache?: CacheAdapter<ParquetMetadata>;
+  scanRangeCache?: RangeCacheOptions;
 }
 
 /**
@@ -1032,8 +1034,10 @@ export function createParquetLake(config: ParquetLakeConfig): Lake {
     batchSize?: number;
     metadataCache?: CacheAdapter<ParquetMetadata>;
     decodedColumnCache?: DecodedColumnCache;
+    scanRangeCache?: RangeCacheOptions;
   } = {};
   if (config.batchSize !== undefined) scannerOptions.batchSize = config.batchSize;
+  if (config.scanRangeCache !== undefined) scannerOptions.scanRangeCache = config.scanRangeCache;
   if (config.metadataCache !== undefined) scannerOptions.metadataCache = config.metadataCache;
   else if (config.cache !== undefined)
     scannerOptions.metadataCache = memoryCache<ParquetMetadata>();

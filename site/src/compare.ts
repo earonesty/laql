@@ -26,6 +26,7 @@ type Lake = ReturnType<typeof createParquetLake>;
 const DATASET_KEY = "2015_flights.parquet";
 const DATASET_PROXY_PATH = "compare-data/2015_flights.parquet";
 const DATASET_SIZE = 25_238_218;
+const SCAN_RANGE_CACHE_BYTES = 32 * 1024 * 1024;
 
 const EXAMPLES = [
   {
@@ -227,8 +228,12 @@ function createLakeRuntime(cacheMode: LakeCacheMode): { lake: Lake; cacheMode: L
   const store = knownSizeStore(httpStore({ baseUrl: datasetProxyBase() }));
   const lake =
     cacheMode === "cached"
-      ? createParquetLake({ store, cache: { maxBytes: 64 * 1024 * 1024 } })
-      : createParquetLake({ store });
+      ? createParquetLake({
+          store,
+          cache: { maxBytes: 64 * 1024 * 1024 },
+          scanRangeCache: { maxBytes: SCAN_RANGE_CACHE_BYTES },
+        })
+      : createParquetLake({ store, scanRangeCache: { maxBytes: SCAN_RANGE_CACHE_BYTES } });
   return { lake, cacheMode };
 }
 

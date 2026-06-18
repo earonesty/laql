@@ -1,10 +1,9 @@
 import type { StoreAsyncBuffer } from "./types.js";
 
-const DEFAULT_MAX_BYTES = 64 * 1024 * 1024;
 const DEFAULT_MAX_ENTRY_BYTES = 16 * 1024 * 1024;
 
 export interface RangeCacheOptions {
-  maxBytes?: number;
+  maxBytes: number;
   maxEntryBytes?: number;
 }
 
@@ -15,9 +14,9 @@ interface RangeCacheEntry {
 
 export function cachedRangeBuffer(
   file: StoreAsyncBuffer,
-  options: RangeCacheOptions = {},
+  options: RangeCacheOptions,
 ): StoreAsyncBuffer {
-  const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
+  const maxBytes = options.maxBytes;
   const maxEntryBytes = options.maxEntryBytes ?? DEFAULT_MAX_ENTRY_BYTES;
   if (maxBytes <= 0 || maxEntryBytes <= 0) return file;
   const cache = new Map<string, RangeCacheEntry>();

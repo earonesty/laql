@@ -13,7 +13,7 @@ describe("cachedRangeBuffer", () => {
         return source.buffer.slice(start, end);
       },
     };
-    const cached = cachedRangeBuffer(file);
+    const cached = cachedRangeBuffer(file, { maxBytes: 6 });
 
     await expect(bytes(cached.slice(1, 4))).resolves.toEqual([2, 3, 4]);
     await expect(bytes(cached.slice(1, 4))).resolves.toEqual([2, 3, 4]);
