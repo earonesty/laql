@@ -10,6 +10,7 @@ import {
   type ScanOptions,
   type ScanTaskPlan,
   type ScanTaskPlanOptions,
+  type ScanVectorBatch,
   throwIfAborted,
 } from "lakeql-core";
 import { readParquetColumnBatchesFromFile } from "./column-batches.js";
@@ -92,12 +93,16 @@ export class ParquetScanAdapter implements ScanAdapter {
   }
 
   async *scanColumns(path: string, options: ScanOptions): AsyncIterable<Batch> {
-    for await (const columnBatch of this.scanColumnBatches(path, options)) {
-      yield columnBatch.batch;
+    for await (const vectorBatch of this.scanVectorBatches(path, options)) {
+      yield vectorBatch.batch;
     }
   }
 
   async *scanColumnBatches(path: string, options: ScanOptions): AsyncIterable<ScanColumnBatch> {
+    yield* this.scanVectorBatches(path, options);
+  }
+
+  async *scanVectorBatches(path: string, options: ScanOptions): AsyncIterable<ScanVectorBatch> {
     const file = this.scanBuffer(await asyncBufferFromStore(this.store, path, options));
     const metadata = await this.metadata(path, file, options);
     rejectUnsupportedParquetSchema(metadata);

@@ -4,7 +4,7 @@ import {
   batchExprValues,
   batchFromColumns,
   type Selection,
-  vectorValue,
+  scalarVectorValue,
 } from "./batch.js";
 import { LakeqlError } from "./errors.js";
 import type { Scalar } from "./expr.js";
@@ -87,7 +87,7 @@ export function updateVectorGroupByState(
   const aggregateInputs = aggregateInputValues(state.spec, batch);
   for (let index = 0; index < batch.rowCount; index += 1) {
     if (selection !== undefined && selection[index] !== 1) continue;
-    const keyValues = keyVectors.map((vector) => vectorValue(vector, index));
+    const keyValues = keyVectors.map((vector) => scalarVectorValue(vector, index));
     const key = groupKey(keyValues);
     let group = state.groups.get(key);
     if (group === undefined) {
@@ -249,7 +249,7 @@ function aggregateInputValueAt(
       column: aggregate.column,
     });
   }
-  return (index) => vectorValue(vector, index);
+  return (index) => scalarVectorValue(vector, index);
 }
 
 function aggregateValue(values: BatchExprValues, index: number): VectorAggregateValue {

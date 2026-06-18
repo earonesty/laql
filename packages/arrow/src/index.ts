@@ -21,7 +21,14 @@ import {
   vectorValue,
 } from "lakeql-core";
 
-export type ArrowScalar = string | number | bigint | boolean | null;
+export type ArrowValue =
+  | string
+  | number
+  | bigint
+  | boolean
+  | null
+  | unknown[]
+  | Record<string, unknown>;
 
 export interface ArrowTableOptions {
   columns?: string[];
@@ -68,7 +75,7 @@ export function rowsToArrowTable(rows: readonly Row[], options: ArrowTableOption
 
 export function batchToArrowTable(batch: Batch, options: ArrowTableOptions = {}): Table {
   const columns = options.columns ?? Object.keys(batch.columns);
-  const out: Record<string, ArrowScalar[]> = {};
+  const out: Record<string, ArrowValue[]> = {};
   for (const column of columns) {
     const vector = batch.columns[column];
     if (vector === undefined) {
@@ -136,8 +143,8 @@ function rowsToArrowStreamTable(rows: readonly Row[], columns: string[]): Table 
   return tableFromArrays(vectors as unknown as Record<string, readonly unknown[]>);
 }
 
-function columnsFromRows(rows: readonly Row[], columns: string[]): Record<string, ArrowScalar[]> {
-  const out: Record<string, ArrowScalar[]> = Object.fromEntries(
+function columnsFromRows(rows: readonly Row[], columns: string[]): Record<string, ArrowValue[]> {
+  const out: Record<string, ArrowValue[]> = Object.fromEntries(
     columns.map((column) => [column, []]),
   );
   for (const [rowIndex, row] of rows.entries()) {
@@ -161,7 +168,7 @@ function inferColumns(rows: readonly Row[]): string[] {
   return columns;
 }
 
-function arrowVectorType(values: readonly ArrowScalar[]) {
+function arrowVectorType(values: readonly ArrowValue[]) {
   const value = values.find((entry) => entry !== null);
   switch (typeof value) {
     case "string":
@@ -174,10 +181,18 @@ function arrowVectorType(values: readonly ArrowScalar[]) {
       return new Bool();
     case "undefined":
       return new Utf8();
+    case "object":
+      throw new LakeqlError(
+        "LAKEQL_TYPE_ERROR",
+        "Arrow conversion for nested values is unsupported",
+        {
+          value,
+        },
+      );
   }
 }
 
-function normalizeArrowCell(value: unknown, rowIndex: number, column: string): ArrowScalar {
+function normalizeArrowCell(value: unknown, rowIndex: number, column: string): ArrowValue {
   if (value === null || value === undefined) return null;
   if (
     typeof value === "string" ||

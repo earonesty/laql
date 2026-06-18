@@ -3,9 +3,9 @@ import {
   type Batch,
   batchExprValues,
   type Selection,
+  scalarVectorValue,
   selectedRowCount,
   type Vector,
-  vectorValue,
 } from "./batch.js";
 import { LakeqlError } from "./errors.js";
 import type { AggregateExpr, AggregateSpec, QueryBudget } from "./query.js";
@@ -270,7 +270,7 @@ function updateVectorAggregateState(
         ? values.valueAt(index)
         : vector === undefined
           ? true
-          : vectorValue(vector, index);
+          : scalarVectorValue(vector, index);
     updateStateValue(state, value, budget);
   }
 }

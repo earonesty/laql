@@ -59,6 +59,62 @@ describe("column batches", () => {
     expect(() => batchFromColumns({ a: [1, "two"] })).toThrowError(LakeqlError);
   });
 
+  it("represents nested values as recursive vectors and materializes them at the boundary", () => {
+    const batch = batchFromColumns({
+      id: [1, 2, 3],
+      tags: [["late", "weather"], null, []],
+      route: [
+        { origin: "JFK", dest: "LAX", legs: [1, 2] },
+        { origin: "SFO", dest: "SEA", legs: [1] },
+        null,
+      ],
+      attrs: [
+        new Map<string, unknown>([
+          ["carrier", "AA"],
+          ["status", "active"],
+        ]),
+        null,
+        new Map<string, unknown>([["carrier", "DL"]]),
+      ],
+    });
+
+    expect(batch.columns.tags?.type).toBe("list");
+    expect(batch.columns.route?.type).toBe("struct");
+    expect(batch.columns.attrs?.type).toBe("map");
+    expect(materializeBatchRows(batch)).toEqual([
+      {
+        id: 1,
+        tags: ["late", "weather"],
+        route: { dest: "LAX", legs: [1, 2], origin: "JFK" },
+        attrs: { carrier: "AA", status: "active" },
+      },
+      {
+        id: 2,
+        tags: null,
+        route: { dest: "SEA", legs: [1], origin: "SFO" },
+        attrs: null,
+      },
+      {
+        id: 3,
+        tags: [],
+        route: null,
+        attrs: { carrier: "DL" },
+      },
+    ]);
+  });
+
+  it("requires scalar values for vector predicates", () => {
+    const batch = batchFromColumns({
+      id: [1],
+      tags: [["late"]],
+    });
+
+    expect(() => predicateSelection(batch, isNotNull("tags"))).not.toThrow();
+    expect(() => predicateSelection(batch, eq("tags", "late"))).toThrowError(
+      expect.objectContaining({ code: "LAKEQL_TYPE_ERROR" }),
+    );
+  });
+
   it("counts selected rows without materializing row objects", () => {
     const batch = batchFromColumns({ id: [1, 2, 3] });
     expect(selectedRowCount(batch.rowCount)).toBe(3);

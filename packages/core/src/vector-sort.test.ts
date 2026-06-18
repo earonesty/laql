@@ -105,6 +105,23 @@ describe("vector sort kernels", () => {
     ]);
   });
 
+  it("preserves nested payload vectors while ordering by scalar columns", () => {
+    const batch = batchFromColumns({
+      score: [2, 9, 4],
+      events: [[{ code: "b" }], [{ code: "winner" }], []],
+      metadata: [{ carrier: "AA" }, { carrier: "DL" }, null],
+    });
+
+    expect(
+      materializeBatchRows(
+        vectorTopKBatch(batch, [{ column: "score", direction: "desc" }], { limit: 2 }),
+      ),
+    ).toEqual([
+      { score: 9, events: [{ code: "winner" }], metadata: { carrier: "DL" } },
+      { score: 4, events: [], metadata: null },
+    ]);
+  });
+
   it("concatenates compatible typed batches with validity masks", () => {
     const left = batchFromColumns({
       id: [1, 2],

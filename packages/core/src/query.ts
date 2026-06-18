@@ -101,8 +101,14 @@ export interface ScanOptions {
 export interface ScanAdapter {
   scan(path: string, options: ScanOptions): AsyncIterable<Row[]>;
   scanColumns?(path: string, options: ScanOptions): AsyncIterable<Batch>;
+  scanVectorBatches?(path: string, options: ScanOptions): AsyncIterable<ScanVectorBatch>;
   scanColumnBatches?(path: string, options: ScanOptions): AsyncIterable<ScanColumnBatch>;
   planTask?(path: string, options: ScanTaskPlanOptions): Promise<ScanTaskPlan>;
+}
+
+export interface ScanVectorBatch {
+  rowOffset: number;
+  batch: Batch;
 }
 
 export interface ScanColumnBatch {
@@ -1083,7 +1089,7 @@ export class QueryResult {
   ): Promise<Row[] | undefined> {
     const config = this.config;
     if (
-      config.scanner.scanColumnBatches === undefined ||
+      vectorBatchScanner(config.scanner) === undefined ||
       config.select === undefined ||
       config.select.length === 0
     ) {
@@ -1095,7 +1101,8 @@ export class QueryResult {
     if (outputColumns.every((column) => rankColumns.includes(column))) return undefined;
 
     const retained: RankedRowRef[] = [];
-    const scanColumnBatches = config.scanner.scanColumnBatches;
+    const scanVectorBatches = vectorBatchScanner(config.scanner);
+    if (scanVectorBatches === undefined) return undefined;
     const { planned: paths, skipped: skippedFiles } = await this.planObjects();
     this.stats.filesSkipped = skippedFiles;
     for (const object of paths) {
@@ -1112,7 +1119,7 @@ export class QueryResult {
         now: config.now,
         startedAt,
       };
-      for await (const { rowOffset, batch } of scanColumnBatches.call(
+      for await (const { rowOffset, batch } of scanVectorBatches(
         config.scanner,
         object.path,
         scanOptions,
@@ -1161,8 +1168,8 @@ export class QueryResult {
     rankColumns: readonly string[],
     startedAt: number,
   ): Promise<Map<string, Row>> {
-    const scanColumnBatches = this.config.scanner.scanColumnBatches;
-    if (scanColumnBatches === undefined) return new Map();
+    const scanVectorBatches = vectorBatchScanner(this.config.scanner);
+    if (scanVectorBatches === undefined) return new Map();
     const rows = new Map<string, Row>();
     for (const ref of refs) rows.set(rowRefKey(ref), { ...ref.keys });
     const lateColumns = columns.filter((column) => !rankColumns.includes(column));
@@ -1178,7 +1185,7 @@ export class QueryResult {
         now: this.config.now,
         startedAt,
       };
-      for await (const { rowOffset, batch } of scanColumnBatches.call(
+      for await (const { rowOffset, batch } of scanVectorBatches(
         this.config.scanner,
         window.path,
         scanOptions,
@@ -2886,6 +2893,24 @@ function limitAwareBatchSize(
 function columnarBatchSize(batchSize: number | undefined): number {
   return Math.max(batchSize ?? 0, DEFAULT_COLUMNAR_BATCH_SIZE);
 }
+
+function vectorBatchScanner(
+  scanner: ScanAdapter,
+):
+  | ((scanner: ScanAdapter, path: string, options: ScanOptions) => AsyncIterable<ScanVectorBatch>)
+  | undefined {
+  if (scanner.scanVectorBatches !== undefined) {
+    return (target, path, options) =>
+      target.scanVectorBatches?.(path, options) ?? emptyVectorBatches();
+  }
+  if (scanner.scanColumnBatches !== undefined) {
+    return (target, path, options) =>
+      target.scanColumnBatches?.(path, options) ?? emptyVectorBatches();
+  }
+  return undefined;
+}
+
+async function* emptyVectorBatches(): AsyncIterable<ScanVectorBatch> {}
 
 interface RankedRowRef {
   path: string;

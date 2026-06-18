@@ -4,10 +4,14 @@ import type { CompareOp, Expr, Scalar } from "./expr.js";
 import type { Row } from "./types.js";
 
 export type Vector =
+  | { type: "null"; length: number }
   | { type: "f64"; values: Float64Array; valid?: Uint8Array }
   | { type: "i64"; values: BigInt64Array; valid?: Uint8Array }
   | { type: "bool"; values: Uint8Array; valid?: Uint8Array }
-  | { type: "utf8"; values: string[]; valid?: Uint8Array };
+  | { type: "utf8"; values: string[]; valid?: Uint8Array }
+  | { type: "list"; offsets: Int32Array; child: Vector; valid?: Uint8Array }
+  | { type: "struct"; fields: Record<string, Vector>; length: number; valid?: Uint8Array }
+  | { type: "map"; offsets: Int32Array; keys: Vector; values: Vector; valid?: Uint8Array };
 
 export interface Batch {
   rowCount: number;
@@ -17,6 +21,7 @@ export interface Batch {
 export type Selection = Uint8Array;
 
 type VectorValue = unknown;
+type VectorShape = Vector["type"];
 
 export function batchFromColumns(columns: Record<string, ArrayLike<VectorValue>>): Batch {
   let rowCount: number | undefined;
@@ -38,6 +43,8 @@ export function batchFromColumns(columns: Record<string, ArrayLike<VectorValue>>
 export function vectorFromValues(values: ArrayLike<VectorValue>): Vector {
   const { type, valid } = vectorShape(values);
   switch (type) {
+    case "null":
+      return { type, length: values.length };
     case "f64":
       return optionalValidity({ type, values: f64Values(values) }, valid);
     case "i64":
@@ -46,6 +53,12 @@ export function vectorFromValues(values: ArrayLike<VectorValue>): Vector {
       return optionalValidity({ type, values: boolValues(values) }, valid);
     case "utf8":
       return optionalValidity({ type, values: utf8Values(values) }, valid);
+    case "list":
+      return optionalValidity(listValues(values), valid);
+    case "struct":
+      return optionalValidity(structValues(values), valid);
+    case "map":
+      return optionalValidity(mapValues(values), valid);
   }
 }
 
@@ -101,15 +114,17 @@ export function tryPredicateSelection(batch: Batch, expr: Expr | undefined): Sel
 export function vectorValue(
   vector: Vector,
   index: number,
-): string | number | bigint | boolean | null {
-  if (index < 0 || index >= vector.values.length) {
+): string | number | bigint | boolean | unknown[] | Record<string, unknown> | null {
+  if (index < 0 || index >= vectorLength(vector)) {
     throw new LakeqlError("LAKEQL_TYPE_ERROR", "Vector index is out of bounds", {
       index,
-      length: vector.values.length,
+      length: vectorLength(vector),
     });
   }
-  if (vector.valid !== undefined && vector.valid[index] === 0) return null;
+  if ("valid" in vector && vector.valid !== undefined && vector.valid[index] === 0) return null;
   switch (vector.type) {
+    case "null":
+      return null;
     case "f64":
       return vector.values[index] ?? 0;
     case "i64":
@@ -118,14 +133,57 @@ export function vectorValue(
       return vector.values[index] === 1;
     case "utf8":
       return vector.values[index] ?? "";
+    case "list": {
+      const start = vector.offsets[index] ?? 0;
+      const end = vector.offsets[index + 1] ?? start;
+      const out: unknown[] = [];
+      for (let childIndex = start; childIndex < end; childIndex += 1) {
+        out.push(vectorValue(vector.child, childIndex));
+      }
+      return out;
+    }
+    case "struct": {
+      const out: Record<string, unknown> = {};
+      for (const [name, field] of Object.entries(vector.fields)) {
+        out[name] = vectorValue(field, index);
+      }
+      return out;
+    }
+    case "map": {
+      const start = vector.offsets[index] ?? 0;
+      const end = vector.offsets[index + 1] ?? start;
+      const out: Record<string, unknown> = {};
+      for (let childIndex = start; childIndex < end; childIndex += 1) {
+        const key = vectorValue(vector.keys, childIndex);
+        if (key === null) continue;
+        out[String(key)] = vectorValue(vector.values, childIndex);
+      }
+      return out;
+    }
+  }
+}
+
+export function vectorLength(vector: Vector): number {
+  switch (vector.type) {
+    case "null":
+    case "struct":
+      return vector.length;
+    case "list":
+    case "map":
+      return Math.max(0, vector.offsets.length - 1);
+    case "f64":
+    case "i64":
+    case "bool":
+    case "utf8":
+      return vector.values.length;
   }
 }
 
 function vectorShape(values: ArrayLike<VectorValue>): {
-  type: Vector["type"];
+  type: VectorShape;
   valid?: Uint8Array;
 } {
-  let type: Vector["type"] | undefined;
+  let type: VectorShape | undefined;
   let valid: Uint8Array | undefined;
   for (let index = 0; index < values.length; index += 1) {
     const value = values[index];
@@ -138,7 +196,7 @@ function vectorShape(values: ArrayLike<VectorValue>): {
       continue;
     }
     if (valid !== undefined) valid[index] = 1;
-    const next = valueType(value);
+    const next = vectorShapeForValue(value);
     if (type === undefined) {
       type = next;
       continue;
@@ -151,12 +209,14 @@ function vectorShape(values: ArrayLike<VectorValue>): {
       });
     }
   }
-  const shape: { type: Vector["type"]; valid?: Uint8Array } = { type: type ?? "utf8" };
+  const shape: { type: VectorShape; valid?: Uint8Array } = { type: type ?? "null" };
   if (valid !== undefined) shape.valid = valid;
   return shape;
 }
 
-function valueType(value: Exclude<VectorValue, null | undefined>): Vector["type"] {
+function vectorShapeForValue(value: Exclude<VectorValue, null | undefined>): VectorShape {
+  if (Array.isArray(value)) return "list";
+  if (value instanceof Map) return "map";
   switch (typeof value) {
     case "number":
       return "f64";
@@ -166,6 +226,8 @@ function valueType(value: Exclude<VectorValue, null | undefined>): Vector["type"
       return "bool";
     case "string":
       return "utf8";
+    case "object":
+      return "struct";
     default:
       throw new LakeqlError("LAKEQL_TYPE_ERROR", "Unsupported vector value type", {
         type: typeof value,
@@ -215,6 +277,84 @@ function utf8Values(values: ArrayLike<VectorValue>): string[] {
   return out;
 }
 
+function listValues(values: ArrayLike<VectorValue>): Extract<Vector, { type: "list" }> {
+  const offsets = new Int32Array(values.length + 1);
+  const childValues: unknown[] = [];
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index];
+    if (value != null) {
+      if (!Array.isArray(value)) {
+        throw new LakeqlError("LAKEQL_TYPE_ERROR", "List vector values must be arrays", {
+          index,
+          type: typeof value,
+        });
+      }
+      childValues.push(...value);
+    }
+    offsets[index + 1] = childValues.length;
+  }
+  return { type: "list", offsets, child: vectorFromValues(childValues) };
+}
+
+function structValues(values: ArrayLike<VectorValue>): Extract<Vector, { type: "struct" }> {
+  const fieldNames = new Set<string>();
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index];
+    if (value == null) continue;
+    if (!isPlainRecord(value)) {
+      throw new LakeqlError("LAKEQL_TYPE_ERROR", "Struct vector values must be records", {
+        index,
+        type: typeof value,
+      });
+    }
+    for (const field of Object.keys(value)) fieldNames.add(field);
+  }
+  const fields: Record<string, Vector> = {};
+  for (const field of [...fieldNames].sort()) {
+    const fieldValues = new Array<unknown>(values.length);
+    for (let index = 0; index < values.length; index += 1) {
+      const value = values[index];
+      fieldValues[index] = isPlainRecord(value) && field in value ? value[field] : null;
+    }
+    fields[field] = vectorFromValues(fieldValues);
+  }
+  return { type: "struct", fields, length: values.length };
+}
+
+function mapValues(values: ArrayLike<VectorValue>): Extract<Vector, { type: "map" }> {
+  const offsets = new Int32Array(values.length + 1);
+  const keys: unknown[] = [];
+  const mapValues: unknown[] = [];
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index];
+    if (value != null) {
+      if (!(value instanceof Map)) {
+        throw new LakeqlError("LAKEQL_TYPE_ERROR", "Map vector values must be Map instances", {
+          index,
+          type: typeof value,
+        });
+      }
+      for (const [key, inner] of value.entries()) {
+        keys.push(key);
+        mapValues.push(inner);
+      }
+    }
+    offsets[index + 1] = keys.length;
+  }
+  return {
+    type: "map",
+    offsets,
+    keys: vectorFromValues(keys),
+    values: vectorFromValues(mapValues),
+  };
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === "object" && value !== null && !Array.isArray(value) && !(value instanceof Map)
+  );
+}
+
 function optionalValidity<T extends Vector>(vector: T, valid: Uint8Array | undefined): T {
   if (valid === undefined) return vector;
   return { ...vector, valid };
@@ -254,6 +394,15 @@ function predicateMask(batch: Batch, expr: Expr): Uint8Array {
       );
     }
     case "null-check":
+      if (expr.target.kind === "column") {
+        const vector = batch.columns[expr.target.name];
+        if (vector === undefined) {
+          throw new LakeqlError("LAKEQL_UNKNOWN_COLUMN", `Unknown column ${expr.target.name}`, {
+            column: expr.target.name,
+          });
+        }
+        return vectorNullCheckMask(vector, expr.negated);
+      }
       return nullCheckMask(batchExprValues(batch, expr.target), expr.negated);
     case "logical": {
       const masks = expr.operands.map((operand) => predicateMask(batch, operand));
@@ -288,7 +437,7 @@ export function batchExprValues(batch: Batch, expr: Expr): BatchExprValues {
       return {
         rowCount: batch.rowCount,
         valueAt(index) {
-          return vectorValue(vector, index);
+          return scalarVectorValue(vector, index);
         },
       };
     }
@@ -335,6 +484,22 @@ export function batchExprValues(batch: Batch, expr: Expr): BatchExprValues {
   }
 }
 
+export function scalarVectorValue(vector: Vector, index: number): Scalar {
+  const value = vectorValue(vector, index);
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    typeof value === "bigint"
+  ) {
+    return value;
+  }
+  throw new LakeqlError("LAKEQL_TYPE_ERROR", "Vector expression requires a scalar value", {
+    vectorType: vector.type,
+  });
+}
+
 function literalValues(rowCount: number, value: Scalar): BatchExprValues {
   return { rowCount, valueAt: () => value };
 }
@@ -379,6 +544,16 @@ function nullCheckMask(values: BatchExprValues, negated: boolean): Uint8Array {
   for (let index = 0; index < values.rowCount; index += 1) {
     const result = values.valueAt(index) === null;
     mask[index] = (negated ? !result : result) ? 1 : 0;
+  }
+  return mask;
+}
+
+function vectorNullCheckMask(vector: Vector, negated: boolean): Uint8Array {
+  const rowCount = vectorLength(vector);
+  const mask = new Uint8Array(rowCount);
+  for (let index = 0; index < rowCount; index += 1) {
+    const isNull = vectorValue(vector, index) === null;
+    mask[index] = (negated ? !isNull : isNull) ? 1 : 0;
   }
   return mask;
 }

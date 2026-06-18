@@ -1,4 +1,10 @@
-import { type Batch, batchFromColumns, type Selection, vectorValue } from "./batch.js";
+import {
+  type Batch,
+  batchFromColumns,
+  type Selection,
+  scalarVectorValue,
+  vectorValue,
+} from "./batch.js";
 import { LakeqlError } from "./errors.js";
 import type { Scalar } from "./expr.js";
 import type { JoinKey, JoinType } from "./join.js";
@@ -14,7 +20,7 @@ export interface VectorHashJoinOptions {
   rightSelection?: Selection;
 }
 
-type OutputColumns = Record<string, Scalar[]>;
+type OutputColumns = Record<string, unknown[]>;
 
 export function vectorHashJoin(left: Batch, right: Batch, options: VectorHashJoinOptions): Batch {
   const normalized = validateVectorJoinOptions(left, right, options);
@@ -185,7 +191,7 @@ function scalarJoinValue(batch: Batch, index: number, column: string): Scalar {
   const vector = batch.columns[column];
   if (vector === undefined)
     throw new LakeqlError("LAKEQL_UNKNOWN_COLUMN", `Unknown join key ${column}`, { column });
-  return vectorValue(vector, index);
+  return scalarVectorValue(vector, index);
 }
 
 function normalizeJoinKeys(key: JoinKey, label: string): string[] {

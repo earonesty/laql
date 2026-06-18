@@ -63,8 +63,11 @@ function cloneBatch(batch: Batch): Batch {
 }
 
 function cloneVector(vector: Vector): Vector {
-  const valid = vector.valid === undefined ? undefined : new Uint8Array(vector.valid);
+  const valid =
+    "valid" in vector && vector.valid !== undefined ? new Uint8Array(vector.valid) : undefined;
   switch (vector.type) {
+    case "null":
+      return { type: "null", length: vector.length };
     case "f64":
       return withValid({ type: "f64", values: new Float64Array(vector.values) }, valid);
     case "i64":
@@ -73,6 +76,36 @@ function cloneVector(vector: Vector): Vector {
       return withValid({ type: "bool", values: new Uint8Array(vector.values) }, valid);
     case "utf8":
       return withValid({ type: "utf8", values: [...vector.values] }, valid);
+    case "list":
+      return withValid(
+        {
+          type: "list",
+          offsets: new Int32Array(vector.offsets),
+          child: cloneVector(vector.child),
+        },
+        valid,
+      );
+    case "struct":
+      return withValid(
+        {
+          type: "struct",
+          fields: Object.fromEntries(
+            Object.entries(vector.fields).map(([name, field]) => [name, cloneVector(field)]),
+          ),
+          length: vector.length,
+        },
+        valid,
+      );
+    case "map":
+      return withValid(
+        {
+          type: "map",
+          offsets: new Int32Array(vector.offsets),
+          keys: cloneVector(vector.keys),
+          values: cloneVector(vector.values),
+        },
+        valid,
+      );
   }
 }
 
@@ -84,17 +117,34 @@ function withValid<T extends Vector>(vector: T, valid: Uint8Array | undefined): 
 function estimateBatchBytes(batch: Batch): number {
   let bytes = 0;
   for (const vector of Object.values(batch.columns)) {
-    if (vector.valid !== undefined) bytes += vector.valid.byteLength;
-    switch (vector.type) {
-      case "f64":
-      case "i64":
-      case "bool":
-        bytes += vector.values.byteLength;
-        break;
-      case "utf8":
-        for (const value of vector.values) bytes += value.length * 2;
-        break;
-    }
+    bytes += estimateVectorBytes(vector);
   }
   return bytes;
+}
+
+function estimateVectorBytes(vector: Vector): number {
+  let bytes = "valid" in vector && vector.valid !== undefined ? vector.valid.byteLength : 0;
+  switch (vector.type) {
+    case "null":
+      return bytes;
+    case "f64":
+    case "i64":
+    case "bool":
+      return bytes + vector.values.byteLength;
+    case "utf8":
+      for (const value of vector.values) bytes += value.length * 2;
+      return bytes;
+    case "list":
+      return bytes + vector.offsets.byteLength + estimateVectorBytes(vector.child);
+    case "struct":
+      for (const field of Object.values(vector.fields)) bytes += estimateVectorBytes(field);
+      return bytes;
+    case "map":
+      return (
+        bytes +
+        vector.offsets.byteLength +
+        estimateVectorBytes(vector.keys) +
+        estimateVectorBytes(vector.values)
+      );
+  }
 }

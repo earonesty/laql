@@ -1,4 +1,11 @@
-import { type Batch, type Selection, type Vector, vectorValue } from "./batch.js";
+import {
+  type Batch,
+  type Selection,
+  type Vector,
+  vectorFromValues,
+  vectorLength,
+  vectorValue,
+} from "./batch.js";
 import { LakeqlError } from "./errors.js";
 import type { OrderByTerm } from "./query.js";
 
@@ -226,8 +233,13 @@ function worstKeptIndex(
 }
 
 function gatherVector(vector: Vector, indices: readonly number[]): Vector {
-  const valid = vector.valid === undefined ? undefined : gatherValid(vector.valid, indices);
+  const valid =
+    "valid" in vector && vector.valid !== undefined
+      ? gatherValid(vector.valid, indices)
+      : undefined;
   switch (vector.type) {
+    case "null":
+      return { type: "null", length: indices.length };
     case "f64":
       return optionalValidity(
         {
@@ -257,6 +269,10 @@ function gatherVector(vector: Vector, indices: readonly number[]): Vector {
         { type: vector.type, values: indices.map((index) => vector.values[index] ?? "") },
         valid,
       );
+    case "list":
+    case "struct":
+    case "map":
+      return vectorFromValues(indices.map((index) => vectorValue(vector, index)));
   }
 }
 
@@ -278,11 +294,18 @@ function concatVectors(name: string, vectors: readonly Vector[]): Vector {
   }
   const valid = concatValid(vectors);
   switch (first.type) {
+    case "null":
+      return {
+        type: "null",
+        length: vectors.reduce((sum, vector) => sum + vectorLength(vector), 0),
+      };
     case "f64":
       return optionalValidity(
         {
           type: first.type,
-          values: concatTypedArrays(vectors.map((vector) => vector.values as Float64Array)),
+          values: concatTypedArrays(
+            vectors.map((vector) => requireVectorType(vector, "f64").values),
+          ),
         },
         valid,
       );
@@ -290,7 +313,9 @@ function concatVectors(name: string, vectors: readonly Vector[]): Vector {
       return optionalValidity(
         {
           type: first.type,
-          values: concatBigIntArrays(vectors.map((vector) => vector.values as BigInt64Array)),
+          values: concatBigIntArrays(
+            vectors.map((vector) => requireVectorType(vector, "i64").values),
+          ),
         },
         valid,
       );
@@ -298,16 +323,42 @@ function concatVectors(name: string, vectors: readonly Vector[]): Vector {
       return optionalValidity(
         {
           type: first.type,
-          values: concatTypedArrays(vectors.map((vector) => vector.values as Uint8Array)),
+          values: concatTypedArrays(
+            vectors.map((vector) => requireVectorType(vector, "bool").values),
+          ),
         },
         valid,
       );
     case "utf8":
       return optionalValidity(
-        { type: first.type, values: vectors.flatMap((vector) => [...(vector.values as string[])]) },
+        {
+          type: first.type,
+          values: vectors.flatMap((vector) => [...requireVectorType(vector, "utf8").values]),
+        },
         valid,
       );
+    case "list":
+    case "struct":
+    case "map":
+      return vectorFromValues(
+        vectors.flatMap((vector) =>
+          Array.from({ length: vectorLength(vector) }, (_, index) => vectorValue(vector, index)),
+        ),
+      );
   }
+}
+
+function requireVectorType<T extends Vector["type"]>(
+  vector: Vector,
+  type: T,
+): Extract<Vector, { type: T }> {
+  if (vector.type !== type) {
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "Unexpected vector type", {
+      expected: type,
+      actual: vector.type,
+    });
+  }
+  return vector as Extract<Vector, { type: T }>;
 }
 
 function concatTypedArrays<T extends Float64Array | Uint8Array>(arrays: readonly T[]): T {
@@ -338,14 +389,15 @@ function concatBigIntArrays(arrays: readonly BigInt64Array[]): BigInt64Array {
 }
 
 function concatValid(vectors: readonly Vector[]): Uint8Array | undefined {
-  const hasNull = vectors.some((vector) => vector.valid !== undefined);
+  const hasNull = vectors.some((vector) => "valid" in vector && vector.valid !== undefined);
   if (!hasNull) return undefined;
-  const out = new Uint8Array(vectors.reduce((sum, vector) => sum + vector.values.length, 0));
+  const out = new Uint8Array(vectors.reduce((sum, vector) => sum + vectorLength(vector), 0));
   let offset = 0;
   for (const vector of vectors) {
-    if (vector.valid === undefined) out.fill(1, offset, offset + vector.values.length);
+    const length = vectorLength(vector);
+    if (!("valid" in vector) || vector.valid === undefined) out.fill(1, offset, offset + length);
     else out.set(vector.valid, offset);
-    offset += vector.values.length;
+    offset += length;
   }
   return out;
 }
