@@ -28,5 +28,6 @@
         "noExplicitAny": "error"
       }
     }
-  }
+  },
+  "plugins": ["./biome-plugins/no-new-optional-chain-constructor-member.grit"]
 }

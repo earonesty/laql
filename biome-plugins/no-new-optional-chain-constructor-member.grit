@@ -1,0 +1,3 @@
+`new ($obj?.constructor as $type)($args)` as $new_expr where {
+  register_diagnostic(span=$new_expr, message="Do not use optional chaining as a constructor target")
+}

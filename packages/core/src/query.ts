@@ -100,7 +100,7 @@ export interface ScanTaskPlanOptions {
   columns?: string[];
   where?: Expr;
   partitionValues: Record<string, string>;
-  object: ObjectInfo;
+  object?: ObjectInfo;
 }
 
 export interface ScanTaskPlan {

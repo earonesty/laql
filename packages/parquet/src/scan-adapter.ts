@@ -116,7 +116,10 @@ export class ParquetScanAdapter implements ScanAdapter {
   }
 
   async planTask(path: string, options: ScanTaskPlanOptions): Promise<ScanTaskPlan> {
-    const file = asyncBufferFromObjectInfo(this.store, options.object);
+    const file =
+      options.object === undefined
+        ? await asyncBufferFromStore(this.store, path)
+        : asyncBufferFromObjectInfo(this.store, options.object);
     const metadata = await this.metadata(path, file);
     return {
       rowGroupCount: metadata.row_groups.length,

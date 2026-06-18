@@ -312,7 +312,12 @@ function concatVectors(name: string, vectors: readonly Vector[]): Vector {
 
 function concatTypedArrays<T extends Float64Array | Uint8Array>(arrays: readonly T[]): T {
   const length = arrays.reduce((sum, array) => sum + array.length, 0);
-  const out = new (arrays[0]?.constructor as { new (length: number): T })(length);
+  const first = arrays[0];
+  if (first === undefined) {
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "No arrays to concatenate");
+  }
+  const ArrayConstructor = first.constructor as { new (length: number): T };
+  const out = new ArrayConstructor(length);
   let offset = 0;
   for (const array of arrays) {
     out.set(array, offset);
