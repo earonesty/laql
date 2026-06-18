@@ -37,6 +37,7 @@ import { vectorProjectBatch } from "./vector-project.js";
 import { concatBatches, vectorTopKBatch } from "./vector-sort.js";
 
 const textEncoder = new TextEncoder();
+const DEFAULT_COLUMNAR_BATCH_SIZE = 262_144;
 
 export interface QueryBudget {
   maxFiles?: number;
@@ -883,6 +884,7 @@ export class QueryResult {
     for await (const batch of this.columnBatches(
       aggregateReadColumns(groupColumns, spec, config.where),
       startedAt,
+      columnarBatchSize(config.batchSize),
     )) {
       const selection = predicateSelection(batch, config.where);
       this.stats.rowsMatched += selectedRowCount(batch.rowCount, selection);
@@ -1029,6 +1031,7 @@ export class QueryResult {
     for await (const batch of this.columnBatches(
       projectedReadColumns(config.select, config.where, orderBy, config.projections),
       startedAt,
+      columnarBatchSize(config.batchSize),
     )) {
       const selection = predicateSelection(batch, config.where);
       this.stats.rowsMatched += selectedRowCount(batch.rowCount, selection);
@@ -1060,6 +1063,7 @@ export class QueryResult {
   private async *columnBatches(
     readColumns: string[] | undefined,
     startedAt: number,
+    batchSize = this.config.batchSize ?? 4096,
   ): AsyncIterable<Batch> {
     const config = this.config;
     const scanColumns = config.scanner.scanColumns;
@@ -1072,7 +1076,7 @@ export class QueryResult {
       this.stats.bytesRequested += object.size;
       enforceBudget(config.budget, this.stats, config.now, startedAt);
       const scanOptions: ScanOptions = {
-        batchSize: config.batchSize ?? 4096,
+        batchSize,
         stats: this.stats,
         budget: config.budget,
         now: config.now,
@@ -2741,6 +2745,10 @@ function limitAwareBatchSize(
 ): number {
   if (limit === undefined) return batchSize;
   return Math.min(batchSize, Math.max(1, (offset ?? 0) + limit));
+}
+
+function columnarBatchSize(batchSize: number | undefined): number {
+  return Math.max(batchSize ?? 0, DEFAULT_COLUMNAR_BATCH_SIZE);
 }
 
 function collectExprColumns(expr: Expr | undefined, columns: Set<string>): void {

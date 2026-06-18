@@ -133,7 +133,7 @@ async function runCase(
       const store = fileStore(fixtureRoot);
       const lake = createParquetLake({
         store,
-        ...(phase === "cold" ? {} : { cache: { maxBytes: 64 * 1024 * 1024 } }),
+        ...(phase === "cold" ? {} : { cache: { maxBytes: 256 * 1024 * 1024, policy: "latency" } }),
         queryId: () => `hot-flights-${hotCase.name}-${phase}`,
       });
       return { lake, store };
