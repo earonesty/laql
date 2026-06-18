@@ -1,5 +1,5 @@
 import { continuousQuantile, requiredQuantile } from "./aggregate-quantile.js";
-import type { Batch } from "./batch.js";
+import { type Batch, materializeBatchRows, predicateSelection, selectedRowCount } from "./batch.js";
 import { LakeqlError } from "./errors.js";
 import {
   encodeJsonLine,
@@ -28,6 +28,8 @@ import type {
 import { pruneFilesWithIndex, type SidecarFileIndex } from "./sidecar-index.js";
 import type { ObjectInfo, ObjectStore } from "./store.js";
 import type { Bookmark, BookmarkQuery, QueryStats, Row, SliceResult } from "./types.js";
+import { vectorProjectBatch } from "./vector-project.js";
+import { concatBatches, vectorTopKBatch } from "./vector-sort.js";
 
 const textEncoder = new TextEncoder();
 
@@ -914,6 +916,14 @@ export class QueryResult {
   private async *orderedBatches(): AsyncIterable<Row[]> {
     const config = this.config;
     const { stats } = this;
+    const columnarRows = await this.tryColumnarTopKRows();
+    if (columnarRows !== undefined) {
+      const batchSize = config.batchSize ?? 4096;
+      for (let index = 0; index < columnarRows.length; index += batchSize) {
+        yield columnarRows.slice(index, index + batchSize);
+      }
+      return;
+    }
     const matched: Row[] = [];
     const topK =
       config.distinct === true || config.limit === undefined
@@ -947,6 +957,86 @@ export class QueryResult {
     }
     stats.elapsedMs = config.now() - startedAt;
     if (batch.length > 0) yield batch;
+  }
+
+  private async tryColumnarTopKRows(): Promise<Row[] | undefined> {
+    const config = this.config;
+    if (
+      config.scanner.scanColumns === undefined ||
+      config.orderBy === undefined ||
+      config.limit === undefined ||
+      config.distinct === true ||
+      config.projections !== undefined ||
+      config.hive === true ||
+      !vectorExprSupported(config.where)
+    ) {
+      return undefined;
+    }
+    const orderBy = normalizeOrderBy(config.orderBy);
+    const topK = (config.offset ?? 0) + config.limit;
+    const startedAt = config.now();
+    let retained: Batch | undefined;
+    for await (const batch of this.columnBatches(
+      projectedReadColumns(config.select, config.where, orderBy, config.projections),
+      startedAt,
+    )) {
+      const selection = predicateSelection(batch, config.where);
+      this.stats.rowsMatched += selectedRowCount(batch.rowCount, selection);
+      const candidates = vectorTopKBatch(batch, orderBy, { limit: topK }, selection);
+      retained =
+        retained === undefined
+          ? candidates
+          : vectorTopKBatch(concatBatches([retained, candidates]), orderBy, { limit: topK });
+      enforceBufferedRowsBudget(config.budget, retained.rowCount);
+      enforceOperatorMemoryBudget(
+        config.budget,
+        estimateOperatorMemoryBytes(materializeBatchRows(retained)),
+      );
+    }
+    if (retained === undefined) return [];
+    const result = vectorTopKBatch(retained, orderBy, {
+      offset: config.offset ?? 0,
+      limit: config.limit,
+    });
+    const rows = materializeBatchRows(vectorProjectBatch(result, config.select));
+    for (const _row of rows) {
+      this.stats.rowsReturned += 1;
+      enforceBudget(config.budget, this.stats, config.now, startedAt);
+    }
+    this.stats.elapsedMs = config.now() - startedAt;
+    return rows;
+  }
+
+  private async *columnBatches(
+    readColumns: string[] | undefined,
+    startedAt: number,
+  ): AsyncIterable<Batch> {
+    const config = this.config;
+    const scanColumns = config.scanner.scanColumns;
+    if (scanColumns === undefined) return;
+    const { planned: paths, skipped: skippedFiles } = await this.planObjects();
+    this.stats.filesSkipped = skippedFiles;
+    for (const object of paths) {
+      this.stats.filesPlanned += 1;
+      this.stats.filesRead += 1;
+      this.stats.bytesRequested += object.size;
+      enforceBudget(config.budget, this.stats, config.now, startedAt);
+      const scanOptions: ScanOptions = {
+        batchSize: config.batchSize ?? 4096,
+        stats: this.stats,
+        budget: config.budget,
+        now: config.now,
+        startedAt,
+      };
+      if (readColumns !== undefined && readColumns.length > 0) scanOptions.columns = readColumns;
+      if (config.where !== undefined) scanOptions.where = config.where;
+      for await (const batch of scanColumns.call(config.scanner, object.path, scanOptions)) {
+        enforceBudget(config.budget, this.stats, config.now, startedAt);
+        yield batch;
+        this.stats.elapsedMs = config.now() - startedAt;
+      }
+    }
+    this.stats.elapsedMs = config.now() - startedAt;
   }
 
   private async collectOrderedMatches(
@@ -2650,6 +2740,43 @@ function collectExprColumns(expr: Expr | undefined, columns: Set<string>): void 
       }
       collectExprColumns(expr.else, columns);
       return;
+  }
+}
+
+function vectorExprSupported(expr: Expr | undefined): boolean {
+  if (expr === undefined) return true;
+  switch (expr.kind) {
+    case "literal":
+    case "column":
+      return true;
+    case "compare":
+      return vectorExprSupported(expr.left) && vectorExprSupported(expr.right);
+    case "in":
+      return vectorExprSupported(expr.target) && expr.values.every(vectorExprSupported);
+    case "between":
+      return (
+        vectorExprSupported(expr.target) &&
+        vectorExprSupported(expr.low) &&
+        vectorExprSupported(expr.high)
+      );
+    case "null-check":
+      return vectorExprSupported(expr.target);
+    case "logical":
+      return expr.operands.every(vectorExprSupported);
+    case "not":
+      return vectorExprSupported(expr.operand);
+    case "call":
+      return expr.args.every(vectorExprSupported);
+    case "arithmetic":
+      return vectorExprSupported(expr.left) && vectorExprSupported(expr.right);
+    case "case":
+      return (
+        expr.whens.every(
+          (branch) => vectorExprSupported(branch.when) && vectorExprSupported(branch.value),
+        ) && vectorExprSupported(expr.else)
+      );
+    case "like":
+      return false;
   }
 }
 
