@@ -1,6 +1,7 @@
 # Geospatial
 
-The current geospatial functions operate over GeoJSON or BBox JSON strings:
+The current geospatial functions operate over GeoJSON strings, BBox JSON strings, and WKT point
+strings such as `POINT(-118.24 34.05)`:
 
 ```ts
 fn("st_point", lit(-118.24), lit(34.05));

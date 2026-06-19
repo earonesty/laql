@@ -1,6 +1,7 @@
 import { LakeqlError } from "./errors.js";
 import type { Expr, Scalar } from "./expr.js";
 import { regexpMatchesValue, regexpReplaceValue } from "./regex-functions.js";
+import { compareTimestampValues, isTimestampValue, timestampValueFromIso } from "./timestamp.js";
 import type { Row } from "./types.js";
 
 export type SqlBoolean = boolean | null;
@@ -187,6 +188,7 @@ export function matches(expr: Expr | undefined, row: Row): boolean {
 }
 
 export function jsonSafeValue(value: unknown): unknown {
+  if (isTimestampValue(value)) return value.toJSON();
   if (typeof value === "bigint") {
     const asNumber = Number(value);
     return Number.isSafeInteger(asNumber) ? asNumber : value.toString();
@@ -214,7 +216,8 @@ function rowValue(row: Row, name: string): EvalValue {
     typeof value === "string" ||
     typeof value === "number" ||
     typeof value === "boolean" ||
-    typeof value === "bigint"
+    typeof value === "bigint" ||
+    isTimestampValue(value)
   ) {
     return value;
   }
@@ -234,6 +237,17 @@ function toSqlBoolean(value: EvalValue): SqlBoolean {
 
 function compare(op: "eq" | "ne" | "lt" | "lte" | "gt" | "gte", left: EvalValue, right: EvalValue) {
   if (left === null || right === null) return null;
+  if (isTimestampValue(left) || isTimestampValue(right)) {
+    const leftTimestamp = timestampEvalValue(left);
+    const rightTimestamp = timestampEvalValue(right);
+    if (leftTimestamp === undefined || rightTimestamp === undefined) {
+      throw new LakeqlError("LAKEQL_TYPE_ERROR", "Cannot compare timestamp with non-timestamp", {
+        leftType: evalValueType(left),
+        rightType: evalValueType(right),
+      });
+    }
+    return compareOrder(op, compareTimestampValues(leftTimestamp, rightTimestamp));
+  }
   if (typeof left !== typeof right && !(isNumberLike(left) && isNumberLike(right))) {
     throw new LakeqlError("LAKEQL_TYPE_ERROR", "Cannot compare values of different types", {
       leftType: typeof left,
@@ -241,6 +255,10 @@ function compare(op: "eq" | "ne" | "lt" | "lte" | "gt" | "gte", left: EvalValue,
     });
   }
   const order = left < right ? -1 : left > right ? 1 : 0;
+  return compareOrder(op, order);
+}
+
+function compareOrder(op: "eq" | "ne" | "lt" | "lte" | "gt" | "gte", order: number): boolean {
   switch (op) {
     case "eq":
       return order === 0;
@@ -255,6 +273,16 @@ function compare(op: "eq" | "ne" | "lt" | "lte" | "gt" | "gte", left: EvalValue,
     case "gte":
       return order >= 0;
   }
+}
+
+function timestampEvalValue(value: EvalValue) {
+  if (isTimestampValue(value)) return value;
+  if (typeof value === "string") return timestampValueFromIso(value);
+  return undefined;
+}
+
+function evalValueType(value: EvalValue): string {
+  return isTimestampValue(value) ? "timestamp" : typeof value;
 }
 
 function arithmetic(
@@ -757,6 +785,8 @@ function envelope(value: EvalValue, name: string): BBox {
 
 export function parseGeometry(value: EvalValue, name: string): Record<string, unknown> {
   if (typeof value !== "string") throwType(name, "GeoJSON or BBox JSON string", value);
+  const wkt = parseWktGeometry(value);
+  if (wkt !== undefined) return wkt;
   let parsed: unknown;
   try {
     parsed = JSON.parse(value);
@@ -769,6 +799,21 @@ export function parseGeometry(value: EvalValue, name: string): Record<string, un
     throw new LakeqlError("LAKEQL_TYPE_ERROR", `${name}() expects GeoJSON or BBox JSON`);
   }
   return parsed;
+}
+
+function parseWktGeometry(value: string): Record<string, unknown> | undefined {
+  const point =
+    /^POINT\s*\(\s*([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)\s*\)$/iu.exec(
+      value,
+    );
+  if (point !== null) {
+    const lon = Number(point[1]);
+    const lat = Number(point[2]);
+    if (Number.isFinite(lon) && Number.isFinite(lat)) {
+      return { type: "Point", coordinates: [lon, lat] };
+    }
+  }
+  return undefined;
 }
 
 export function envelopeFromGeometry(parsed: Record<string, unknown>, name: string): BBox {
@@ -1031,6 +1076,7 @@ function leastGreatest(name: string, args: EvalValue[], mode: "least" | "greates
 
 function parseDateArg(name: string, value: EvalValue): Date | null {
   if (value === null) return null;
+  if (isTimestampValue(value)) return new Date(Number(value.epochNanoseconds / 1_000_000n));
   if (typeof value !== "string" && typeof value !== "number") throwType(name, "date string", value);
   const date = new Date(value);
   if (Number.isNaN(date.valueOf())) {

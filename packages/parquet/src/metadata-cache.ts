@@ -1,11 +1,15 @@
 import { parquetMetadataAsync } from "hyparquet";
 import type { CacheAdapter } from "lakeql-core";
+import { lakeqlParquetParsers } from "./parsers.js";
 import type { ParquetMetadata, StoreAsyncBuffer } from "./types.js";
 
 const metadataInitialFetchSize = 64 * 1024;
 
 export function readParquetMetadataFromFile(file: StoreAsyncBuffer): Promise<ParquetMetadata> {
-  return parquetMetadataAsync(file, { initialFetchSize: metadataInitialFetchSize });
+  return parquetMetadataAsync(file, {
+    initialFetchSize: metadataInitialFetchSize,
+    parsers: lakeqlParquetParsers,
+  });
 }
 
 export async function readCachedParquetMetadata(

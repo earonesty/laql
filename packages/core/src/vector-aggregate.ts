@@ -9,6 +9,7 @@ import {
 } from "./batch.js";
 import { LakeqlError } from "./errors.js";
 import type { AggregateExpr, AggregateSpec, QueryBudget } from "./query.js";
+import { compareTimestampValues, isTimestampValue, type TimestampValue } from "./timestamp.js";
 import {
   addDistinctSortedStringRun,
   addDistinctValue,
@@ -27,7 +28,7 @@ import {
   vectorAggregateStateFromSnapshot,
 } from "./vector-aggregate-snapshot.js";
 
-export type VectorAggregateValue = string | number | boolean | bigint | null;
+export type VectorAggregateValue = string | number | boolean | bigint | TimestampValue | null;
 
 export type VectorAggregateState =
   | { op: "count"; count: number }
@@ -59,7 +60,13 @@ export type VectorAggregateSnapshotValue =
   | number
   | boolean
   | null
-  | { type: "bigint"; value: string };
+  | { type: "bigint"; value: string }
+  | {
+      type: "timestamp";
+      epochNanoseconds: string;
+      unit: TimestampValue["unit"];
+      isAdjustedToUTC: boolean;
+    };
 
 export type VectorAggregateStateSnapshot =
   | { op: "count"; count: number }
@@ -400,7 +407,8 @@ function updateMinMax(
     typeof value !== "string" &&
     typeof value !== "number" &&
     typeof value !== "boolean" &&
-    typeof value !== "bigint"
+    typeof value !== "bigint" &&
+    !isTimestampValue(value)
   ) {
     throwAggregateType(state.op);
   }
@@ -409,6 +417,12 @@ function updateMinMax(
     return;
   }
   if (typeof state.value !== typeof value) throwAggregateType(state.op);
+  if (isTimestampValue(state.value) || isTimestampValue(value)) {
+    if (!isTimestampValue(state.value) || !isTimestampValue(value)) throwAggregateType(state.op);
+    const comparison = compareTimestampValues(value, state.value);
+    if (state.op === "min" ? comparison < 0 : comparison > 0) state.value = value;
+    return;
+  }
   if (state.op === "min" ? value < state.value : value > state.value) state.value = value;
 }
 

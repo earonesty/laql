@@ -162,6 +162,7 @@ function estimateVectorBytes(vector: Vector): number {
       return bytes;
     case "f64":
     case "i64":
+    case "timestamp":
     case "bool":
       return bytes + vector.values.byteLength;
     case "utf8":

@@ -1,3 +1,4 @@
+import { isTimestampValue, TimestampValue } from "./timestamp.js";
 import type {
   VectorAggregateSnapshotValue,
   VectorAggregateState,
@@ -99,11 +100,22 @@ export function vectorAggregateStateFromSnapshot(
 }
 
 function snapshotValue(value: VectorAggregateValue): VectorAggregateSnapshotValue {
+  if (isTimestampValue(value)) {
+    return {
+      type: "timestamp",
+      epochNanoseconds: value.epochNanoseconds.toString(),
+      unit: value.unit,
+      isAdjustedToUTC: value.isAdjustedToUTC,
+    };
+  }
   return typeof value === "bigint" ? { type: "bigint", value: value.toString() } : value;
 }
 
 function restoreValue(value: VectorAggregateSnapshotValue): VectorAggregateValue {
   if (isBigintSnapshot(value)) return BigInt(value.value);
+  if (isTimestampSnapshot(value)) {
+    return new TimestampValue(BigInt(value.epochNanoseconds), value.unit, value.isAdjustedToUTC);
+  }
   return value;
 }
 
@@ -117,5 +129,25 @@ function isBigintSnapshot(
     value.type === "bigint" &&
     "value" in value &&
     typeof value.value === "string"
+  );
+}
+
+function isTimestampSnapshot(value: VectorAggregateSnapshotValue): value is {
+  type: "timestamp";
+  epochNanoseconds: string;
+  unit: TimestampValue["unit"];
+  isAdjustedToUTC: boolean;
+} {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    value.type === "timestamp" &&
+    "epochNanoseconds" in value &&
+    typeof value.epochNanoseconds === "string" &&
+    "unit" in value &&
+    (value.unit === "millis" || value.unit === "micros" || value.unit === "nanos") &&
+    "isAdjustedToUTC" in value &&
+    typeof value.isAdjustedToUTC === "boolean"
   );
 }

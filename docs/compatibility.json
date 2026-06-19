@@ -122,19 +122,23 @@
     "evidence": [
       {
         "file": "packages/parquet/src/index.test.ts",
-        "pattern": "rejects precision-sensitive Parquet logical values that would decode lossy"
+        "pattern": "rejects unsupported precision-sensitive decimals without rejecting timestamps"
       }
     ]
   },
   {
     "area": "Parquet",
     "feature": "Timestamp micros/nanos",
-    "status": "detected+rejected",
-    "notes": "Sub-millisecond timestamp units are rejected with LAKEQL_UNSUPPORTED_PARQUET_FEATURE to avoid truncating precision.",
+    "status": "supported+tested",
+    "notes": "TIMESTAMP_MICROS and TIMESTAMP_NANOS are represented as precision-preserving timestamp values for filtering, ordering, aggregation, and JSON output.",
     "evidence": [
       {
         "file": "packages/parquet/src/index.test.ts",
-        "pattern": "rejects precision-sensitive Parquet logical values that would decode lossy"
+        "pattern": "reads and queries Parquet TIMESTAMP_MICROS without precision loss"
+      },
+      {
+        "file": "packages/core/src/batch.test.ts",
+        "pattern": "evaluates timestamp vectors with precision-preserving predicate semantics"
       }
     ]
   },

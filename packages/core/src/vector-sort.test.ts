@@ -6,6 +6,7 @@ import {
   predicateSelection,
 } from "./batch.js";
 import { gte } from "./expr.js";
+import { timestampFromEpoch } from "./timestamp.js";
 import {
   concatBatches,
   gatherBatch,
@@ -89,6 +90,28 @@ describe("vector sort kernels", () => {
       { id: 3, score: 50 },
       { id: 5, score: 40 },
     ]);
+  });
+
+  it("orders timestamp vectors by epoch precision", () => {
+    const batch = batchFromColumns({
+      id: [1, 2, 3],
+      loaded_at: [
+        timestampFromEpoch(1_700_000_000_000_999n, "micros"),
+        timestampFromEpoch(1_700_000_000_000_001n, "micros"),
+        timestampFromEpoch(1_700_000_000_000_500n, "micros"),
+      ],
+    });
+
+    expect(
+      materializeBatchRows(
+        vectorOrderByBatch(batch, [{ column: "loaded_at", direction: "asc" }]),
+      ).map((row) => row.id),
+    ).toEqual([2, 3, 1]);
+    expect(
+      materializeBatchRows(
+        vectorTopKBatch(batch, [{ column: "loaded_at", direction: "desc" }], { limit: 1 }),
+      ).map((row) => row.id),
+    ).toEqual([1]);
   });
 
   it("gathers typed columns and validity masks without changing vector layout", () => {

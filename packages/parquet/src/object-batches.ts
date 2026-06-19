@@ -1,5 +1,6 @@
 import { parquetReadObjects } from "hyparquet";
 import { normalizeDecodedRows } from "./decoded-rows.js";
+import { lakeqlParquetParsers } from "./parsers.js";
 import {
   recordReadColumns,
   recordRowGroupRead,
@@ -46,6 +47,7 @@ export async function* readParquetObjectBatchesFromFile(
         rowFormat: "object",
         rowStart,
         rowEnd,
+        parsers: lakeqlParquetParsers,
       };
       if (options.columns) readOptions.columns = options.columns;
       const rows = normalizeDecodedRows(await parquetReadObjects(readOptions));

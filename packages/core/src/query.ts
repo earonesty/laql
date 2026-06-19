@@ -37,6 +37,7 @@ import type {
 } from "./runtime.js";
 import { pruneFilesWithIndex, type SidecarFileIndex } from "./sidecar-index.js";
 import type { ObjectInfo, ObjectStore } from "./store.js";
+import { compareTimestampValues, isTimestampValue, type TimestampValue } from "./timestamp.js";
 import type { Bookmark, BookmarkQuery, QueryStats, Row, SliceResult } from "./types.js";
 import type { VectorAggregateValue } from "./vector-aggregate.js";
 import {
@@ -721,8 +722,12 @@ export class QueryResult {
 
   private tryColumnarProjectedBatches(): AsyncIterable<Row[]> | undefined {
     const config = this.config;
+    const hasProjectedShape =
+      config.select !== undefined ||
+      (config.projections !== undefined && Object.keys(config.projections).length > 0);
     if (
       config.scanner.scanVectorBatches === undefined ||
+      !hasProjectedShape ||
       config.distinct === true ||
       config.hive === true ||
       !vectorExprSupported(config.where) ||
@@ -3612,6 +3617,17 @@ function compareSortValues(left: unknown, right: unknown, term: OrderByTerm): nu
       column: term.column,
     });
   }
+  if (isTimestampValue(left) || isTimestampValue(right)) {
+    if (!isTimestampValue(left) || !isTimestampValue(right)) {
+      throw new LakeqlError(
+        "LAKEQL_TYPE_ERROR",
+        "orderBy timestamp values must have matching types",
+        { column: term.column },
+      );
+    }
+    const direction = term.direction === "desc" ? -1 : 1;
+    return compareTimestampValues(left, right) * direction;
+  }
   if (typeof left !== typeof right) {
     throw new LakeqlError("LAKEQL_TYPE_ERROR", "orderBy values must have matching types", {
       column: term.column,
@@ -3623,12 +3639,15 @@ function compareSortValues(left: unknown, right: unknown, term: OrderByTerm): nu
   return 0;
 }
 
-function isSortableValue(value: unknown): value is string | number | bigint | boolean {
+function isSortableValue(
+  value: unknown,
+): value is string | number | bigint | boolean | TimestampValue {
   return (
     typeof value === "string" ||
     typeof value === "number" ||
     typeof value === "bigint" ||
-    typeof value === "boolean"
+    typeof value === "boolean" ||
+    isTimestampValue(value)
   );
 }
 

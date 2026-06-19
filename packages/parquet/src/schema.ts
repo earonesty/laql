@@ -89,15 +89,6 @@ function rejectUnsupportedParquetLeaf(element: ParquetSchemaElement, path: strin
       { column, feature: "decimal-precision", precision: decimalPrecision },
     );
   }
-
-  const timestampUnit = parquetTimestampUnit(element);
-  if (timestampUnit === "MICROS" || timestampUnit === "NANOS") {
-    throw new LakeqlError(
-      "LAKEQL_UNSUPPORTED_PARQUET_FEATURE",
-      "Parquet timestamps below millisecond precision are not supported",
-      { column, feature: "timestamp-precision", unit: timestampUnit.toLowerCase() },
-    );
-  }
 }
 
 function parquetLogicalTypeName(value: unknown): string | undefined {
@@ -112,18 +103,4 @@ function logicalTypeRecord(value: unknown): Record<string, unknown> | undefined 
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
-}
-
-function parquetTimestampUnit(element: ParquetSchemaElement): string | undefined {
-  const convertedType = String(element.converted_type ?? "").toUpperCase();
-  if (convertedType === "TIMESTAMP_MILLIS") return "MILLIS";
-  if (convertedType === "TIMESTAMP_MICROS") return "MICROS";
-  const logicalType = logicalTypeRecord(element.logical_type);
-  if (
-    String(logicalType?.type ?? "").toUpperCase() === "TIMESTAMP" &&
-    typeof logicalType?.unit === "string"
-  ) {
-    return logicalType.unit.toUpperCase();
-  }
-  return undefined;
 }

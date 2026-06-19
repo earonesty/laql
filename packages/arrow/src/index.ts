@@ -13,6 +13,7 @@ import {
   type Batch,
   createInMemoryLake,
   type InMemoryLakeOptions,
+  isTimestampValue,
   type Lake,
   LakeqlError,
   type QueryBuilder,
@@ -81,9 +82,10 @@ export function batchToArrowTable(batch: Batch, options: ArrowTableOptions = {})
     if (vector === undefined) {
       throw new LakeqlError("LAKEQL_UNKNOWN_COLUMN", `Unknown batch column ${column}`, { column });
     }
-    out[column] = Array.from({ length: batch.rowCount }, (_value, index) =>
-      vectorValue(vector, index),
-    );
+    out[column] = Array.from({ length: batch.rowCount }, (_value, index) => {
+      const value = vectorValue(vector, index);
+      return isTimestampValue(value) ? value.toJSON() : value;
+    });
   }
   return tableFromArrays(out);
 }

@@ -1,12 +1,27 @@
 import { batchCallExprValues, batchCallPredicateMask } from "./batch-call.js";
 import { LakeqlError } from "./errors.js";
 import type { CompareOp, Expr, Scalar } from "./expr.js";
+import {
+  compareTimestampValues,
+  isTimestampValue,
+  type TimestampUnit,
+  TimestampValue,
+  timestampEpochForUnit,
+  timestampValueFromIso,
+} from "./timestamp.js";
 import type { Row } from "./types.js";
 
 export type Vector =
   | { type: "null"; length: number }
   | { type: "f64"; values: Float64Array; valid?: Uint8Array }
   | { type: "i64"; values: BigInt64Array; valid?: Uint8Array }
+  | {
+      type: "timestamp";
+      values: BigInt64Array;
+      unit: TimestampUnit;
+      isAdjustedToUTC: boolean;
+      valid?: Uint8Array;
+    }
   | { type: "bool"; values: Uint8Array; valid?: Uint8Array }
   | { type: "utf8"; values: string[]; valid?: Uint8Array }
   | { type: "dict"; indices: Uint32Array; dictionary: Vector; valid?: Uint8Array }
@@ -66,6 +81,10 @@ export function vectorFromValues(values: ArrayLike<VectorValue>): Vector {
       return optionalValidity({ type, values: f64Values(values) }, valid);
     case "i64":
       return optionalValidity({ type, values: i64Values(values) }, valid);
+    case "timestamp": {
+      const timestamp = timestampValues(values);
+      return optionalValidity({ type, ...timestamp }, valid);
+    }
     case "bool":
       return optionalValidity({ type, values: boolValues(values) }, valid);
     case "utf8":
@@ -143,7 +162,15 @@ export function tryPredicateSelection(batch: Batch, expr: Expr | undefined): Sel
 export function vectorValue(
   vector: Vector,
   index: number,
-): string | number | bigint | boolean | unknown[] | Record<string, unknown> | null {
+):
+  | string
+  | number
+  | bigint
+  | boolean
+  | TimestampValue
+  | unknown[]
+  | Record<string, unknown>
+  | null {
   if (index < 0 || index >= vectorLength(vector)) {
     throw new LakeqlError("LAKEQL_TYPE_ERROR", "Vector index is out of bounds", {
       index,
@@ -158,6 +185,12 @@ export function vectorValue(
       return vector.values[index] ?? 0;
     case "i64":
       return vector.values[index] ?? 0n;
+    case "timestamp":
+      return new TimestampValue(
+        timestampNanos(vector.values[index] ?? 0n, vector.unit),
+        vector.unit,
+        vector.isAdjustedToUTC,
+      );
     case "bool":
       return vector.values[index] === 1;
     case "utf8":
@@ -204,6 +237,7 @@ export function vectorLength(vector: Vector): number {
       return Math.max(0, vector.offsets.length - 1);
     case "f64":
     case "i64":
+    case "timestamp":
     case "bool":
     case "utf8":
       return vector.values.length;
@@ -255,17 +289,43 @@ function vectorShapeForValue(value: Exclude<VectorValue, null | undefined>): Vec
       return "f64";
     case "bigint":
       return "i64";
+    case "object":
+      if (isTimestampValue(value)) return "timestamp";
+      return "struct";
     case "boolean":
       return "bool";
     case "string":
       return "utf8";
-    case "object":
-      return "struct";
     default:
       throw new LakeqlError("LAKEQL_TYPE_ERROR", "Unsupported vector value type", {
         type: typeof value,
       });
   }
+}
+
+function timestampValues(values: ArrayLike<VectorValue>): {
+  values: BigInt64Array;
+  unit: TimestampUnit;
+  isAdjustedToUTC: boolean;
+} {
+  let unit: TimestampUnit | undefined;
+  let isAdjustedToUTC = true;
+  const out = new BigInt64Array(values.length);
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index];
+    if (value == null) continue;
+    if (!isTimestampValue(value)) {
+      throw new LakeqlError("LAKEQL_TYPE_ERROR", "Expected timestamp vector value", {
+        type: typeof value,
+      });
+    }
+    if (unit === undefined) {
+      unit = value.unit;
+      isAdjustedToUTC = value.isAdjustedToUTC;
+    }
+    out[index] = timestampEpochForUnit(value, unit);
+  }
+  return { values: out, unit: unit ?? "millis", isAdjustedToUTC };
 }
 
 function bigintValue(value: VectorValue): bigint {
@@ -544,6 +604,12 @@ export function scalarVectorValue(vector: Vector, index: number): Scalar {
       return vector.values[index] ?? 0;
     case "i64":
       return vector.values[index] ?? 0n;
+    case "timestamp":
+      return new TimestampValue(
+        timestampNanos(vector.values[index] ?? 0n, vector.unit),
+        vector.unit,
+        vector.isAdjustedToUTC,
+      );
     case "bool":
       return vector.values[index] === 1;
     case "utf8":
@@ -618,6 +684,10 @@ function compareVectorLiteralMasks(
   if (vector.type === "i64" && typeof literal === "number" && Number.isSafeInteger(literal)) {
     return compareI64LiteralMasks(op, vector, BigInt(literal));
   }
+  if (vector.type === "timestamp") {
+    const timestamp = timestampLiteral(literal);
+    if (timestamp !== undefined) return compareTimestampLiteralMasks(op, vector, timestamp);
+  }
   return undefined;
 }
 
@@ -672,6 +742,25 @@ function compareI64LiteralMasks(
     }
     const value = vector.values[index] ?? 0n;
     mask[index] = compareNumberMaskValue(op, value < literal ? -1 : value > literal ? 1 : 0, 0);
+  }
+  return mask;
+}
+
+function compareTimestampLiteralMasks(
+  op: CompareOp,
+  vector: Extract<Vector, { type: "timestamp" }>,
+  literal: TimestampValue,
+): Uint8Array {
+  const mask = new Uint8Array(vector.values.length);
+  const valid = vector.valid;
+  const target = timestampEpochForUnit(literal, vector.unit);
+  for (let index = 0; index < vector.values.length; index += 1) {
+    if (valid !== undefined && valid[index] === 0) {
+      mask[index] = 2;
+      continue;
+    }
+    const value = vector.values[index] ?? 0n;
+    mask[index] = compareNumberMaskValue(op, value < target ? -1 : value > target ? 1 : 0, 0);
   }
   return mask;
 }
@@ -772,6 +861,18 @@ function sqlNotMask(input: Uint8Array): Uint8Array {
 
 function compareValue(op: CompareOp, left: Scalar, right: Scalar): boolean | null {
   if (left === null || right === null) return null;
+  if (isTimestampValue(left) || isTimestampValue(right)) {
+    const leftTimestamp = timestampLiteral(left);
+    const rightTimestamp = timestampLiteral(right);
+    if (leftTimestamp === undefined || rightTimestamp === undefined) {
+      throw new LakeqlError("LAKEQL_TYPE_ERROR", "Cannot compare timestamp with non-timestamp", {
+        leftType: scalarType(left),
+        rightType: scalarType(right),
+      });
+    }
+    const order = compareTimestampValues(leftTimestamp, rightTimestamp);
+    return compareOrder(op, order);
+  }
   if (typeof left !== typeof right && !(isNumberLike(left) && isNumberLike(right))) {
     throw new LakeqlError("LAKEQL_TYPE_ERROR", "Cannot compare values of different types", {
       leftType: typeof left,
@@ -779,6 +880,10 @@ function compareValue(op: CompareOp, left: Scalar, right: Scalar): boolean | nul
     });
   }
   const order = left < right ? -1 : left > right ? 1 : 0;
+  return compareOrder(op, order);
+}
+
+function compareOrder(op: CompareOp, order: number): boolean {
   switch (op) {
     case "eq":
       return order === 0;
@@ -862,6 +967,27 @@ function maskValue(value: number | undefined): boolean | null {
 
 function isNumberLike(value: Scalar): boolean {
   return typeof value === "number" || typeof value === "bigint";
+}
+
+function timestampLiteral(value: Scalar): TimestampValue | undefined {
+  if (isTimestampValue(value)) return value;
+  if (typeof value === "string") return timestampValueFromIso(value);
+  return undefined;
+}
+
+function timestampNanos(value: bigint, unit: TimestampUnit): bigint {
+  switch (unit) {
+    case "millis":
+      return value * 1_000_000n;
+    case "micros":
+      return value * 1_000n;
+    case "nanos":
+      return value;
+  }
+}
+
+function scalarType(value: Scalar): string {
+  return isTimestampValue(value) ? "timestamp" : typeof value;
 }
 
 function throwUnsupportedVectorPredicate(kind: Expr["kind"]): never {

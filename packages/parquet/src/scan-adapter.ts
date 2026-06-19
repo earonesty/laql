@@ -17,6 +17,7 @@ import { readParquetColumnBatchesFromFile } from "./column-batches.js";
 import type { DecodedColumnCache } from "./decoded-column-cache.js";
 import { normalizeDecodedRows } from "./decoded-rows.js";
 import { readCachedParquetMetadata } from "./metadata-cache.js";
+import { lakeqlParquetParsers } from "./parsers.js";
 import { cachedRangeBuffer, type RangeCacheOptions } from "./range-cache.js";
 import { recordReadColumns } from "./read-metrics.js";
 import { planRowGroupsFromMetadata } from "./row-group-plan.js";
@@ -78,6 +79,7 @@ export class ParquetScanAdapter implements ScanAdapter {
           rowFormat: "object",
           rowStart,
           rowEnd,
+          parsers: lakeqlParquetParsers,
         };
         if (readColumns) readOptions.columns = readColumns;
         try {

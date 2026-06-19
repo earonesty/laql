@@ -8,6 +8,7 @@ import {
 } from "./batch.js";
 import { LakeqlError } from "./errors.js";
 import type { OrderByTerm } from "./query.js";
+import { compareTimestampValues, isTimestampValue, type TimestampValue } from "./timestamp.js";
 
 export interface VectorTopKOptions {
   offset?: number;
@@ -192,6 +193,19 @@ function compareSortValues(left: unknown, right: unknown, term: OrderByTerm): nu
       column: term.column,
     });
   }
+  if (isTimestampValue(left) || isTimestampValue(right)) {
+    if (!isTimestampValue(left) || !isTimestampValue(right)) {
+      throw new LakeqlError(
+        "LAKEQL_TYPE_ERROR",
+        "orderBy timestamp values must have matching types",
+        {
+          column: term.column,
+        },
+      );
+    }
+    const direction = term.direction === "desc" ? -1 : 1;
+    return compareTimestampValues(left, right) * direction;
+  }
   if (typeof left !== typeof right) {
     throw new LakeqlError("LAKEQL_TYPE_ERROR", "orderBy values must have matching types", {
       column: term.column,
@@ -253,6 +267,16 @@ function gatherVector(vector: Vector, indices: readonly number[]): Vector {
         {
           type: vector.type,
           values: BigInt64Array.from(indices, (index) => vector.values[index] ?? 0n),
+        },
+        valid,
+      );
+    case "timestamp":
+      return optionalValidity(
+        {
+          type: vector.type,
+          values: BigInt64Array.from(indices, (index) => vector.values[index] ?? 0n),
+          unit: vector.unit,
+          isAdjustedToUTC: vector.isAdjustedToUTC,
         },
         valid,
       );
@@ -328,6 +352,30 @@ function concatVectors(name: string, vectors: readonly Vector[]): Vector {
         },
         valid,
       );
+    case "timestamp": {
+      const timestampVectors = vectors.map((vector) => requireVectorType(vector, "timestamp"));
+      if (
+        timestampVectors.some(
+          (vector) =>
+            vector.unit !== first.unit || vector.isAdjustedToUTC !== first.isAdjustedToUTC,
+        )
+      ) {
+        return vectorFromValues(
+          vectors.flatMap((vector) =>
+            Array.from({ length: vectorLength(vector) }, (_, index) => vectorValue(vector, index)),
+          ),
+        );
+      }
+      return optionalValidity(
+        {
+          type: first.type,
+          values: concatBigIntArrays(timestampVectors.map((vector) => vector.values)),
+          unit: first.unit,
+          isAdjustedToUTC: first.isAdjustedToUTC,
+        },
+        valid,
+      );
+    }
     case "bool":
       return optionalValidity(
         {
@@ -470,11 +518,14 @@ function validateTopKOptions(options: VectorTopKOptions): void {
   }
 }
 
-function isSortableValue(value: unknown): value is string | number | bigint | boolean {
+function isSortableValue(
+  value: unknown,
+): value is string | number | bigint | boolean | TimestampValue {
   return (
     typeof value === "string" ||
     typeof value === "number" ||
     typeof value === "bigint" ||
-    typeof value === "boolean"
+    typeof value === "boolean" ||
+    isTimestampValue(value)
   );
 }

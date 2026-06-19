@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { batchFromColumns, predicateSelection } from "./batch.js";
 import { col, fn, gt, lit, mul } from "./expr.js";
+import { timestampFromEpoch } from "./timestamp.js";
 import {
   createVectorAggregateStates,
   finalizeVectorAggregateStates,
@@ -80,6 +81,28 @@ describe("vector aggregate kernels", () => {
       numericMode: 2,
       stringMode: "b",
       allNullMode: null,
+    });
+  });
+
+  it("aggregates timestamp min and max with snapshot round trips", () => {
+    const batch = batchFromColumns({
+      loaded_at: [
+        timestampFromEpoch(1_700_000_000_000_999n, "micros"),
+        timestampFromEpoch(1_700_000_000_000_001n, "micros"),
+        null,
+      ],
+    });
+    const spec = {
+      firstLoaded: { op: "min", column: "loaded_at" },
+      lastLoaded: { op: "max", column: "loaded_at" },
+    } as const;
+    const states = createVectorAggregateStates(spec);
+    updateVectorAggregateStates(states, spec, batch);
+    const restored = restoreVectorAggregateStates(snapshotVectorAggregateStates(states));
+
+    expect(finalizeVectorAggregateStates(restored)).toEqual({
+      firstLoaded: timestampFromEpoch(1_700_000_000_000_001n, "micros"),
+      lastLoaded: timestampFromEpoch(1_700_000_000_000_999n, "micros"),
     });
   });
 

@@ -9,6 +9,7 @@ import type { ColumnDecoder } from "hyparquet/src/types.js";
 import {
   type Batch,
   batchFromVectors,
+  isTimestampValue,
   type Vector,
   vectorFromValues,
   vectorLength,
@@ -18,6 +19,7 @@ import {
   decodedColumnPageCacheKey,
   decodedDictionaryPageCacheKey,
 } from "./decoded-column-cache.js";
+import { lakeqlParquetParsers } from "./parsers.js";
 import {
   recordReadColumns,
   recordRowGroupRead,
@@ -115,7 +117,57 @@ function directVectorColumns(columns: readonly string[] | undefined): string[] |
 
 function canDirectVector(metadata: ParquetMetadata, column: ColumnMetaData): boolean {
   const schemaPath = getSchemaPath(metadata.schema, column.path_in_schema);
-  return isFlatColumn(schemaPath);
+  if (!isFlatColumn(schemaPath)) return false;
+  const leaf = schemaPath[schemaPath.length - 1]?.element;
+  if (leaf === undefined) return false;
+  return canRepresentDirectVectorLeaf(leaf);
+}
+
+function canRepresentDirectVectorLeaf(leaf: ColumnDecoder["element"]): boolean {
+  const logicalType = leaf.logical_type;
+  if (
+    leaf.converted_type === "TIMESTAMP_MILLIS" ||
+    leaf.converted_type === "TIMESTAMP_MICROS" ||
+    logicalType?.type === "TIMESTAMP"
+  ) {
+    return true;
+  }
+  if (
+    leaf.converted_type === "UTF8" ||
+    leaf.converted_type === "JSON" ||
+    logicalType?.type === "STRING"
+  ) {
+    return true;
+  }
+  if (
+    leaf.converted_type === "UINT_64" ||
+    (logicalType?.type === "INTEGER" && logicalType.bitWidth === 64 && !logicalType.isSigned)
+  ) {
+    return false;
+  }
+  if (
+    leaf.converted_type === "DATE" ||
+    leaf.converted_type === "BSON" ||
+    leaf.converted_type === "INTERVAL" ||
+    logicalType?.type === "DATE" ||
+    logicalType?.type === "UUID" ||
+    logicalType?.type === "GEOMETRY" ||
+    logicalType?.type === "GEOGRAPHY"
+  ) {
+    return false;
+  }
+  switch (leaf.type) {
+    case "BOOLEAN":
+    case "DOUBLE":
+    case "FLOAT":
+    case "INT32":
+    case "INT64":
+      return true;
+    case "BYTE_ARRAY":
+      return leaf.converted_type === undefined && logicalType === undefined;
+    default:
+      return false;
+  }
 }
 
 interface ColumnVectorCursor {
@@ -219,7 +271,7 @@ async function* readColumnVectorBatches(
     pathInSchema: columnMetadata.path_in_schema,
     element: leaf.element,
     schemaPath,
-    parsers: DEFAULT_PARSERS,
+    parsers: { ...DEFAULT_PARSERS, ...lakeqlParquetParsers },
     ...columnMetadata,
   } satisfies ColumnDecoder;
   let dictionary: DecodedArray | undefined;
@@ -470,6 +522,16 @@ function sliceVector(vector: Vector, start: number, end: number): Vector {
         { type: "i64", values: vector.values.subarray(start, end) },
         valid,
       );
+    case "timestamp":
+      return optionalVectorValidity(
+        {
+          type: "timestamp",
+          values: vector.values.subarray(start, end),
+          unit: vector.unit,
+          isAdjustedToUTC: vector.isAdjustedToUTC,
+        },
+        valid,
+      );
     case "bool":
       return optionalVectorValidity(
         { type: "bool", values: vector.values.subarray(start, end) },
@@ -625,6 +687,9 @@ function arrayFlatVector(values: unknown[], start: number, end: number): Vector 
     }
     case "string":
       return { type: "utf8", values: values.slice(start, end).map((value) => String(value ?? "")) };
+    case "object":
+      if (isTimestampValue(first)) return vectorFromValues(values.slice(start, end));
+      return { type: "null", length: end - start };
     default:
       return { type: "null", length: end - start };
   }
@@ -670,6 +735,14 @@ function nullableArrayFlatVector(
         if (out[index] === undefined) out[index] = "";
       }
       return optionalVectorValidity({ type: "utf8", values: out }, valid);
+    }
+    case "object": {
+      if (!isTimestampValue(first)) return { type: "null", length };
+      const out = new Array<unknown>(length);
+      copyNullableValues(definitionLevels, start, end, valid, (outIndex, valueIndex) => {
+        out[outIndex] = values[valueIndex];
+      });
+      return optionalVectorValidity(vectorFromValues(out), valid);
     }
     default:
       return { type: "null", length };

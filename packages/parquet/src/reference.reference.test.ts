@@ -11,6 +11,7 @@ import {
   gt,
   isIn,
   isNull,
+  isTimestampValue,
   like,
   memoryStore,
   not,
@@ -611,6 +612,7 @@ function normalizeRow(row: Row): Row {
 function normalizeValue(value: unknown): unknown {
   if (typeof value === "bigint") return value.toString();
   if (value instanceof Date) return value.toISOString();
+  if (isTimestampValue(value)) return value.toJSON();
   if (value instanceof Uint8Array) return Array.from(value);
   if (Array.isArray(value)) return value.map(normalizeValue);
   if (value && typeof value === "object") {
@@ -628,6 +630,7 @@ function sqlString(value: string): string {
 function isoDateString(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   if (value instanceof Date) return value.toISOString();
+  if (isTimestampValue(value)) return value.toJSON();
   throw new Error(`Expected Date-compatible Parquet value, got ${String(value)}`);
 }
 

@@ -1,7 +1,14 @@
 import type { RowGroup } from "hyparquet";
-import type { CompareOp, Expr } from "lakeql-core";
+import {
+  type CompareOp,
+  compareTimestampValues,
+  type Expr,
+  isTimestampValue,
+  type TimestampValue,
+  timestampValueFromIso,
+} from "lakeql-core";
 
-type StatsValue = string | number | bigint | boolean;
+type StatsValue = string | number | bigint | boolean | TimestampValue;
 
 /** @internal Exposed for pruning tests; not part of the stable public API. */
 export function rowGroupMayMatch(rowGroup: RowGroup, expr: Expr | undefined): boolean {
@@ -364,11 +371,15 @@ function isStatsValue(value: unknown): value is StatsValue {
     typeof value === "string" ||
     (typeof value === "number" && Number.isFinite(value)) ||
     typeof value === "bigint" ||
-    typeof value === "boolean"
+    typeof value === "boolean" ||
+    isTimestampValue(value)
   );
 }
 
 function sameComparableType(left: StatsValue, right: StatsValue): boolean {
+  if (isTimestampValue(left) || isTimestampValue(right)) {
+    return timestampStatsValue(left) !== undefined && timestampStatsValue(right) !== undefined;
+  }
   if (typeof left === "number" && !Number.isFinite(left)) return false;
   if (typeof right === "number" && !Number.isFinite(right)) return false;
   if (typeof left === typeof right) return true;
@@ -386,7 +397,18 @@ function isLosslessNumberBigIntPair(left: StatsValue, right: StatsValue): boolea
 }
 
 function compareValues(left: StatsValue, right: StatsValue): number {
+  const leftTimestamp = timestampStatsValue(left);
+  const rightTimestamp = timestampStatsValue(right);
+  if (leftTimestamp !== undefined && rightTimestamp !== undefined) {
+    return compareTimestampValues(leftTimestamp, rightTimestamp);
+  }
   if (left < right) return -1;
   if (left > right) return 1;
   return 0;
+}
+
+function timestampStatsValue(value: StatsValue): TimestampValue | undefined {
+  if (isTimestampValue(value)) return value;
+  if (typeof value === "string") return timestampValueFromIso(value);
+  return undefined;
 }

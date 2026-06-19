@@ -2,6 +2,7 @@ import type { ColumnData } from "hyparquet";
 import { parquetRead, parquetSchema } from "hyparquet";
 import { type Batch, batchFromColumns } from "lakeql-core";
 import { decodedColumnCacheKey } from "./decoded-column-cache.js";
+import { lakeqlParquetParsers } from "./parsers.js";
 import {
   recordReadColumns,
   recordRowGroupRead,
@@ -91,6 +92,7 @@ async function readParquetColumnBatch(
     columns,
     rowStart,
     rowEnd,
+    parsers: lakeqlParquetParsers,
     onChunk(chunk) {
       appendColumnChunk(columnValues, chunk, rowStart, rowEnd);
     },

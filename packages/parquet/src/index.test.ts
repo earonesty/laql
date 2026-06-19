@@ -33,6 +33,7 @@ import {
   or,
   restoreVectorAggregateStates,
   stableStringify,
+  timestampFromEpoch,
 } from "lakeql-core";
 import {
   fixturePath,
@@ -2264,6 +2265,46 @@ describe("readParquetMetadata", () => {
   });
 });
 
+describe("timestamp logical values", () => {
+  it("reads and queries Parquet TIMESTAMP_MICROS without precision loss", async () => {
+    const path = "data/timestamp-micros.parquet";
+    await writeParquet(store, path, {
+      schema: [
+        { name: "root", num_children: 2 },
+        { name: "id", type: "INT32", repetition_type: "OPTIONAL" },
+        {
+          name: "loaded_at",
+          type: "INT64",
+          converted_type: "TIMESTAMP_MICROS",
+          repetition_type: "OPTIONAL",
+        },
+      ],
+      columnData: [
+        { name: "id", data: [1, 2, 3] },
+        {
+          name: "loaded_at",
+          data: [1_700_000_000_000_001n, 1_700_000_000_000_999n, null],
+        },
+      ],
+    });
+
+    const lake = createParquetLake({ store });
+    await expect(lake.path(path).select(["id", "loaded_at"]).toArray()).resolves.toEqual([
+      { id: 1, loaded_at: timestampFromEpoch(1_700_000_000_000_001n, "micros") },
+      { id: 2, loaded_at: timestampFromEpoch(1_700_000_000_000_999n, "micros") },
+      { id: 3, loaded_at: null },
+    ]);
+    await expect(
+      lake
+        .path(path)
+        .where(gt("loaded_at", "2023-11-14T22:13:20.000500Z"))
+        .orderBy([{ column: "loaded_at", direction: "desc" }])
+        .select(["id"])
+        .toArray(),
+    ).resolves.toEqual([{ id: 2 }]);
+  });
+});
+
 describe("rejectUnsupportedParquetSchema", () => {
   it("accepts absent or empty schema metadata", () => {
     expect(() => rejectUnsupportedParquetSchema(metadataWithSchema([]))).not.toThrow();
@@ -2293,7 +2334,7 @@ describe("rejectUnsupportedParquetSchema", () => {
     ).toThrow(/struct/u);
   });
 
-  it("rejects precision-sensitive Parquet logical values that would decode lossy", () => {
+  it("rejects unsupported precision-sensitive decimals without rejecting timestamps", () => {
     expect(() =>
       rejectUnsupportedParquetSchema(
         metadataWithSchema([
@@ -2311,19 +2352,7 @@ describe("rejectUnsupportedParquetSchema", () => {
     expect(() =>
       rejectUnsupportedParquetSchema(
         metadataWithSchema([
-          { name: "root", num_children: 1 },
-          {
-            name: "nanos",
-            type: "INT64",
-            logical_type: { type: "TIMESTAMP", unit: "NANOS", isAdjustedToUTC: false },
-          },
-        ]),
-      ),
-    ).toThrow(/millisecond/u);
-    expect(() =>
-      rejectUnsupportedParquetSchema(
-        metadataWithSchema([
-          { name: "root", num_children: 2 },
+          { name: "root", num_children: 4 },
           {
             name: "safe_decimal",
             type: "INT32",
@@ -2332,6 +2361,12 @@ describe("rejectUnsupportedParquetSchema", () => {
             scale: 2,
           },
           { name: "millis", type: "INT64", converted_type: "TIMESTAMP_MILLIS" },
+          { name: "micros", type: "INT64", converted_type: "TIMESTAMP_MICROS" },
+          {
+            name: "nanos",
+            type: "INT64",
+            logical_type: { type: "TIMESTAMP", unit: "NANOS", isAdjustedToUTC: false },
+          },
         ]),
       ),
     ).not.toThrow();

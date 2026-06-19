@@ -13,7 +13,6 @@ These are stable rejection surfaces callers can catch by `LakeqlError.code`.
 | Unknown Iceberg delete-file content | Strict file planning | `LAKEQL_UNSUPPORTED_DELETE_FILES` | Future delete formats are not silently ignored. |
 | Iceberg deletion vectors | Strict file planning | `LAKEQL_UNSUPPORTED_DELETE_FILES` | Vectors are detected as delete metadata, but vector decoding is not implemented. |
 | Parquet decimals above precision 15 | Parquet schema validation | `LAKEQL_UNSUPPORTED_PARQUET_FEATURE` | Prevents lossy JS number decoding for wide decimal values. |
-| Parquet microsecond/nanosecond timestamps | Parquet schema validation | `LAKEQL_UNSUPPORTED_PARQUET_FEATURE` | Prevents silent truncation when decoded into millisecond `Date` values. |
 | Unsafe Iceberg manifest paths | Manifest validation | `LAKEQL_CATALOG_ERROR` | Absolute paths and traversal outside the table root are rejected. |
 | Parquet struct columns | Parquet schema validation | `LAKEQL_UNSUPPORTED_PARQUET_FEATURE` | Struct groups are rejected before scan/planning so nested data is not silently flattened. |
 | Unsupported SQL syntax outside the documented subset | SQL AST mapping | `LAKEQL_SQL_UNSUPPORTED` | Broad join forms, unsupported subqueries, nested or recursive CTEs, simple `CASE <expr>` forms, and broad SQL execution are intentionally out of scope. |

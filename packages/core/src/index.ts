@@ -12,6 +12,7 @@ export * from "./query.js";
 export * from "./runtime.js";
 export * from "./sidecar-index.js";
 export * from "./store.js";
+export * from "./timestamp.js";
 export * from "./types.js";
 export * from "./vector-aggregate.js";
 export * from "./vector-group-by.js";

@@ -28,6 +28,7 @@ import {
   not,
   or,
 } from "./expr.js";
+import { timestampFromEpoch } from "./timestamp.js";
 
 describe("column batches", () => {
   it("infers vector types, validity masks, and materializes rows at the boundary", () => {
@@ -141,6 +142,22 @@ describe("column batches", () => {
       { amount: 20 },
     ]);
     expect([...predicateSelection(batch, gt("amount", 10))]).toEqual([0, 1, 0, 1]);
+  });
+
+  it("evaluates timestamp vectors with precision-preserving predicate semantics", () => {
+    const batch = batchFromColumns({
+      id: [1, 2, 3],
+      loaded_at: [
+        timestampFromEpoch(1_700_000_000_000_001n, "micros"),
+        timestampFromEpoch(1_700_000_000_000_999n, "micros"),
+        null,
+      ],
+    });
+
+    expect([...predicateSelection(batch, gt("loaded_at", "2023-11-14T22:13:20.000500Z"))]).toEqual([
+      0, 1, 2,
+    ]);
+    expect(JSON.stringify(materializeBatchRows(batch)[0])).toContain("2023-11-14T22:13:20.000001Z");
   });
 
   it("evaluates vector predicate selections with SQL null semantics", () => {
@@ -261,6 +278,7 @@ describe("column batches", () => {
     const downtown = JSON.stringify({ type: "Point", coordinates: [-118.25, 34.05] });
     const valley = JSON.stringify({ type: "Point", coordinates: [-118.45, 34.2] });
     const outside = JSON.stringify({ type: "Point", coordinates: [-119.1, 35.1] });
+    const downtownWkt = "POINT(-118.25 34.05)";
     const losAngelesBox = JSON.stringify({
       type: "Polygon",
       coordinates: [
@@ -283,6 +301,7 @@ describe("column batches", () => {
       h3Values[index] = index % 3 === 0 ? h3A : index % 3 === 1 ? h3B : h3C;
     }
     const batch = batchFromColumns({ geom: geomValues, h3_8: h3Values });
+    const wktBatch = batchFromColumns({ geom: [downtownWkt, "POINT(-119.1 35.1)"] });
 
     const intersects = predicateSelection(
       batch,
@@ -352,5 +371,11 @@ describe("column batches", () => {
     expect([
       ...predicateSelection(dictionaryBatch, fn("h3_within", col("h3_8"), lit(h3B), lit(0))),
     ]).toEqual([0, 1, 0, 0, 0, 1]);
+    expect([
+      ...predicateSelection(
+        wktBatch,
+        fn("st_intersects", col("geom"), fn("st_bbox", lit(-118.5), lit(34), lit(-118), lit(34.3))),
+      ),
+    ]).toEqual([1, 0]);
   });
 });

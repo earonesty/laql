@@ -12,6 +12,7 @@ import {
 import { LakeqlError } from "./errors.js";
 import type { Scalar } from "./expr.js";
 import type { AggregateExpr, AggregateSpec, QueryBudget } from "./query.js";
+import { isTimestampValue, TimestampValue } from "./timestamp.js";
 import type { Row } from "./types.js";
 import {
   createVectorAggregateStates,
@@ -47,7 +48,13 @@ export type VectorGroupBySnapshotValue =
   | number
   | boolean
   | null
-  | { type: "bigint"; value: string };
+  | { type: "bigint"; value: string }
+  | {
+      type: "timestamp";
+      epochNanoseconds: string;
+      unit: TimestampValue["unit"];
+      isAdjustedToUTC: boolean;
+    };
 
 export interface VectorGroupByGroupSnapshot {
   keyValues: VectorGroupBySnapshotValue[];
@@ -194,6 +201,7 @@ function canEncodeScalarVector(vector: Vector): boolean {
     case "null":
     case "f64":
     case "i64":
+    case "timestamp":
     case "bool":
     case "utf8":
     case "dict":
@@ -357,6 +365,8 @@ function vectorGroupKeyPart(vector: Vector, index: number): string {
       return scalarGroupKeyPart(vector.values[index] ?? 0);
     case "i64":
       return scalarGroupKeyPart(vector.values[index] ?? 0n);
+    case "timestamp":
+      return scalarGroupKeyPart(scalarVectorValue(vector, index));
     case "bool":
       return scalarGroupKeyPart(vector.values[index] === 1);
     case "utf8":
@@ -615,15 +625,27 @@ function groupKey(values: readonly Scalar[]): string {
 function scalarGroupKeyPart(value: Scalar): string {
   if (value === null) return "null:";
   if (typeof value === "bigint") return `bigint:${value}`;
+  if (typeof value === "object") return `timestamp:${value.epochNanoseconds}`;
   return `${typeof value}:${value}`;
 }
 
 function snapshotGroupValue(value: Scalar): VectorGroupBySnapshotValue {
+  if (isTimestampValue(value)) {
+    return {
+      type: "timestamp",
+      epochNanoseconds: value.epochNanoseconds.toString(),
+      unit: value.unit,
+      isAdjustedToUTC: value.isAdjustedToUTC,
+    };
+  }
   return typeof value === "bigint" ? { type: "bigint", value: value.toString() } : value;
 }
 
 function restoreGroupValue(value: VectorGroupBySnapshotValue): Scalar {
   if (typeof value !== "object" || value === null) return value;
+  if (value.type === "timestamp") {
+    return new TimestampValue(BigInt(value.epochNanoseconds), value.unit, value.isAdjustedToUTC);
+  }
   return BigInt(value.value);
 }
 

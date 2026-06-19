@@ -2,6 +2,7 @@ import {
   type AggregateOp,
   type AggregateSpec,
   type Expr,
+  isTimestampValue,
   LakeqlError,
   type OrderByTerm,
   type PathQueryInit,
@@ -896,6 +897,7 @@ function isScalar(value: unknown): value is Scalar {
     typeof value === "string" ||
     typeof value === "boolean" ||
     typeof value === "bigint" ||
+    isTimestampValue(value) ||
     (typeof value === "number" && Number.isFinite(value))
   );
 }
@@ -1038,8 +1040,9 @@ function formatArithmeticOp(op: "add" | "sub" | "mul" | "div" | "mod"): string {
   }
 }
 
-function formatLiteral(value: string | number | boolean | bigint | null): string {
+function formatLiteral(value: Scalar): string {
   if (value === null) return "null";
+  if (isTimestampValue(value)) return `'${value.toJSON()}'`;
   if (typeof value === "string") return `'${value.replaceAll("'", "''")}'`;
   if (typeof value === "bigint") return value.toString();
   return String(value);
