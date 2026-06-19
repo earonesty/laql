@@ -308,6 +308,65 @@ describe("parseSql", () => {
     expect(parseSql(formatSql(parameterizedQuantile))).toEqual(parameterizedQuantile);
   });
 
+  it("round-trips rich computed aggregate queries", () => {
+    const ast = parseSql(
+      `
+      select region,
+        date_trunc('month', loaded_at) as loaded_month,
+        case
+          when amount >= 1000 then 'large'
+          when amount >= 100 then 'medium'
+          else 'small'
+        end as amount_bucket,
+        sum(round(amount, 2)) as rounded_total,
+        avg(nullif(discount, 0)) as avg_discount,
+        max(coalesce(updated_at, loaded_at)) as last_seen
+      from events
+      where regexp_matches(source, '^web|app$', 'i')
+        and not (status in ('cancelled', 'void'))
+        and amount between 0 and $1
+      group by region, loaded_month, amount_bucket
+      having rounded_total > 10
+      order by loaded_month desc nulls last, region asc
+      limit $2
+      offset $3
+    `,
+      {
+        parameters: [5000, 25, 5],
+      },
+    );
+
+    expect(ast).toMatchObject({
+      source: "events",
+      select: ["region"],
+      projections: {
+        loaded_month: { kind: "call", fn: "date_trunc" },
+        amount_bucket: {
+          kind: "case",
+          whens: [
+            { when: { kind: "compare", op: "gte" } },
+            { when: { kind: "compare", op: "gte" } },
+          ],
+          else: { kind: "literal", value: "small" },
+        },
+      },
+      aggregates: {
+        rounded_total: { op: "sum", expr: { kind: "call", fn: "round" } },
+        avg_discount: { op: "avg", expr: { kind: "call", fn: "nullif" } },
+        last_seen: { op: "max", expr: { kind: "call", fn: "coalesce" } },
+      },
+      groupBy: ["region", "loaded_month", "amount_bucket"],
+      having: { kind: "compare", left: { kind: "column", name: "rounded_total" } },
+      orderBy: [
+        { column: "loaded_month", direction: "desc", nulls: "last" },
+        { column: "region", direction: "asc" },
+      ],
+      limit: 25,
+      offset: 5,
+    });
+    expect(parseSql(formatSql(ast))).toEqual(ast);
+  });
+
   it("compiles bounded equi-join clauses", () => {
     const ast = parseSql(`
       select s.store_id, d.segment

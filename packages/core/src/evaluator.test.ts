@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { LakeqlError } from "./errors.js";
-import { evaluate, jsonSafeValue, loadGeoBackend, matches } from "./evaluator.js";
+import { encodeJsonLine, evaluate, jsonSafeValue, loadGeoBackend, matches } from "./evaluator.js";
 import {
   and,
   between,
@@ -22,6 +22,7 @@ import {
   notIn,
   or,
 } from "./expr.js";
+import { timestampFromEpoch } from "./timestamp.js";
 
 const row = {
   name: " Alice ",
@@ -155,6 +156,55 @@ describe("evaluate", () => {
         row,
       ),
     ).toBeNull();
+  });
+
+  it("evaluates timestamp, CASE, predicate, and JSON output semantics together", () => {
+    const loadedAt = timestampFromEpoch(1_700_000_000_000_123n, "micros");
+    const event = {
+      loaded_at: loadedAt,
+      updated_at: "2023-11-14T22:13:21.000124Z",
+      amount: 250,
+      status: "paid",
+      discount: 0,
+      tags: ["web", 1n, loadedAt],
+    };
+    const bucket = {
+      kind: "case",
+      whens: [
+        { when: gte("amount", 1000), value: { kind: "literal", value: "large" } },
+        { when: gte("amount", 100), value: { kind: "literal", value: "medium" } },
+      ],
+      else: { kind: "literal", value: "small" },
+    } as const;
+
+    expect(evaluate(gt("updated_at", col("loaded_at")), event)).toBe(true);
+    expect(evaluate(fn("year", col("loaded_at")), event)).toBe(2023);
+    expect(evaluate(fn("date_trunc", "hour", col("loaded_at")), event)).toBe(
+      "2023-11-14T22:00:00.000Z",
+    );
+    expect(evaluate(bucket, event)).toBe("medium");
+    expect(
+      matches(
+        and(
+          between("amount", 0, 500),
+          not(isIn("status", ["cancelled", "void"])),
+          eq(fn("nullif", col("discount"), 0), null),
+        ),
+        event,
+      ),
+    ).toBe(false);
+    expect(
+      jsonSafeValue({
+        loaded_at: loadedAt,
+        tags: event.tags,
+      }),
+    ).toEqual({
+      loaded_at: "2023-11-14T22:13:20.000123Z",
+      tags: ["web", 1, "2023-11-14T22:13:20.000123Z"],
+    });
+    expect(new TextDecoder().decode(encodeJsonLine({ loaded_at: loadedAt }))).toBe(
+      '{"loaded_at":"2023-11-14T22:13:20.000123Z"}\n',
+    );
   });
 
   it("supports the phase 1 scalar function families", () => {
