@@ -122,6 +122,49 @@ describe("vector group-by kernels", () => {
     ]);
   });
 
+  it("groups sparse selected numeric keys through vector key readers", () => {
+    const batch = batchFromColumns({
+      id: [1, 2, 3, 4, 5, 6],
+      account: [10n, 10n, 20n, 20n, 30n, 30n],
+      amount: [5, 7, 11, 13, 17, 19],
+    });
+    const selection = predicateSelection(batch, gt("id", 3));
+
+    expect(
+      materializeBatchRows(
+        vectorGroupByBatch(
+          ["account"],
+          {
+            rows: { op: "count" },
+            total: { op: "sum", column: "amount" },
+          },
+          batch,
+          selection,
+        ),
+      ),
+    ).toEqual([
+      { account: 20n, rows: 1, total: 13 },
+      { account: 30n, rows: 2, total: 36 },
+    ]);
+  });
+
+  it("keeps composite numeric vector keys collision-resistant", () => {
+    const batch = batchFromColumns({
+      left: [1, 11],
+      right: [23, 3],
+      amount: [10, 20],
+    });
+
+    expect(
+      materializeBatchRows(
+        vectorGroupByBatch(["left", "right"], { total: { op: "sum", column: "amount" } }, batch),
+      ),
+    ).toEqual([
+      { left: 1, right: 23, total: 10 },
+      { left: 11, right: 3, total: 20 },
+    ]);
+  });
+
   it("supports aggregate expression inputs and distinct budgets", () => {
     const batch = batchFromColumns({
       region: ["east", "east", "west", "west"],

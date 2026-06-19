@@ -19,7 +19,8 @@ const fixtureRoot = dirname(fixturePath);
 const fixtureKey = basename(fixturePath);
 const reportPath = resolve("bench/generated/flights-hot-performance.jsonl");
 const scanRangeCacheBytes = 32 * 1024 * 1024;
-const lakeCacheBytes = 64 * 1024 * 1024;
+const lakeCacheBytes = positiveIntegerEnv("LAKEQL_HOT_PERF_CACHE_BYTES", 64 * 1024 * 1024);
+const lakeCachePolicy = cachePolicyEnv("LAKEQL_HOT_PERF_CACHE_POLICY");
 
 interface StoreCounters {
   get: number;
@@ -136,7 +137,14 @@ async function runCase(
       const lake = createParquetLake({
         store,
         scanRangeCache: { maxBytes: scanRangeCacheBytes },
-        ...(phase === "cold" ? {} : { cache: { maxBytes: lakeCacheBytes } }),
+        ...(phase === "cold"
+          ? {}
+          : {
+              cache: {
+                maxBytes: lakeCacheBytes,
+                ...(lakeCachePolicy === undefined ? {} : { policy: lakeCachePolicy }),
+              },
+            }),
         queryId: () => `hot-flights-${hotCase.name}-${phase}`,
       });
       return { lake, store };
@@ -304,4 +312,11 @@ function positiveIntegerEnv(name: string, fallback: number): number {
     throw new Error(`${name} must be a positive integer`);
   }
   return parsed;
+}
+
+function cachePolicyEnv(name: string): "balanced" | "io" | "latency" | undefined {
+  const value = process.env[name];
+  if (value === undefined) return undefined;
+  if (value === "balanced" || value === "io" || value === "latency") return value;
+  throw new Error(`${name} must be balanced, io, or latency`);
 }

@@ -105,6 +105,19 @@ export function selectedRowCount(rowCount: number, selection?: Selection): numbe
   return count;
 }
 
+export function selectedRowIndices(rowCount: number, selection?: Selection): Iterable<number> {
+  if (selection === undefined) return allRowIndices(rowCount);
+  const indices: number[] = [];
+  for (let index = 0; index < rowCount; index += 1) {
+    if (selection[index] === 1) indices.push(index);
+  }
+  return indices;
+}
+
+function* allRowIndices(rowCount: number): Iterable<number> {
+  for (let index = 0; index < rowCount; index += 1) yield index;
+}
+
 export function predicateSelection(batch: Batch, expr: Expr | undefined): Selection {
   if (expr === undefined) return allSelected(batch.rowCount);
   const mask = predicateMask(batch, expr);
@@ -436,6 +449,8 @@ function predicateMask(batch: Batch, expr: Expr): Uint8Array {
 
 export interface BatchExprValues {
   rowCount: number;
+  vector?: Vector;
+  literal?: Scalar;
   valueAt(index: number): Scalar;
 }
 
@@ -452,6 +467,7 @@ export function batchExprValues(batch: Batch, expr: Expr): BatchExprValues {
       }
       return {
         rowCount: batch.rowCount,
+        vector,
         valueAt(index) {
           return scalarVectorValue(vector, index);
         },
@@ -501,23 +517,35 @@ export function batchExprValues(batch: Batch, expr: Expr): BatchExprValues {
 }
 
 export function scalarVectorValue(vector: Vector, index: number): Scalar {
-  const value = vectorValue(vector, index);
-  if (
-    value === null ||
-    typeof value === "string" ||
-    typeof value === "number" ||
-    typeof value === "boolean" ||
-    typeof value === "bigint"
-  ) {
-    return value;
+  if (index < 0 || index >= vectorLength(vector)) {
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "Vector index is out of bounds", {
+      index,
+      length: vectorLength(vector),
+    });
   }
-  throw new LakeqlError("LAKEQL_TYPE_ERROR", "Vector expression requires a scalar value", {
-    vectorType: vector.type,
-  });
+  if ("valid" in vector && vector.valid !== undefined && vector.valid[index] === 0) return null;
+  switch (vector.type) {
+    case "null":
+      return null;
+    case "f64":
+      return vector.values[index] ?? 0;
+    case "i64":
+      return vector.values[index] ?? 0n;
+    case "bool":
+      return vector.values[index] === 1;
+    case "utf8":
+      return vector.values[index] ?? "";
+    case "list":
+    case "struct":
+    case "map":
+      throw new LakeqlError("LAKEQL_TYPE_ERROR", "Vector expression requires a scalar value", {
+        vectorType: vector.type,
+      });
+  }
 }
 
 function literalValues(rowCount: number, value: Scalar): BatchExprValues {
-  return { rowCount, valueAt: () => value };
+  return { rowCount, literal: value, valueAt: () => value };
 }
 
 function scalarToPredicateMask(values: BatchExprValues): Uint8Array {
@@ -536,11 +564,120 @@ function scalarToPredicateMask(values: BatchExprValues): Uint8Array {
 }
 
 function compareMasks(op: CompareOp, left: BatchExprValues, right: BatchExprValues): Uint8Array {
+  const fast = fastCompareMasks(op, left, right);
+  if (fast !== undefined) return fast;
   const mask = new Uint8Array(left.rowCount);
   for (let index = 0; index < left.rowCount; index += 1) {
     mask[index] = sqlMaskValue(compareValue(op, left.valueAt(index), right.valueAt(index)));
   }
   return mask;
+}
+
+function fastCompareMasks(
+  op: CompareOp,
+  left: BatchExprValues,
+  right: BatchExprValues,
+): Uint8Array | undefined {
+  if (left.vector !== undefined && right.literal !== undefined) {
+    return compareVectorLiteralMasks(op, left.vector, right.literal);
+  }
+  if (left.literal !== undefined && right.vector !== undefined) {
+    return compareVectorLiteralMasks(flipCompareOp(op), right.vector, left.literal);
+  }
+  return undefined;
+}
+
+function compareVectorLiteralMasks(
+  op: CompareOp,
+  vector: Vector,
+  literal: Scalar,
+): Uint8Array | undefined {
+  if (literal === null) return nullCompareMask(vectorLength(vector));
+  if (vector.type === "f64" && typeof literal === "number") {
+    return compareF64LiteralMasks(op, vector, literal);
+  }
+  if (vector.type === "i64" && typeof literal === "bigint") {
+    return compareI64LiteralMasks(op, vector, literal);
+  }
+  if (vector.type === "i64" && typeof literal === "number" && Number.isSafeInteger(literal)) {
+    return compareI64LiteralMasks(op, vector, BigInt(literal));
+  }
+  return undefined;
+}
+
+function compareF64LiteralMasks(
+  op: CompareOp,
+  vector: Extract<Vector, { type: "f64" }>,
+  literal: number,
+): Uint8Array {
+  const mask = new Uint8Array(vector.values.length);
+  const valid = vector.valid;
+  for (let index = 0; index < vector.values.length; index += 1) {
+    if (valid !== undefined && valid[index] === 0) {
+      mask[index] = 2;
+      continue;
+    }
+    const value = vector.values[index] ?? 0;
+    mask[index] = compareNumberMaskValue(op, value, literal);
+  }
+  return mask;
+}
+
+function compareI64LiteralMasks(
+  op: CompareOp,
+  vector: Extract<Vector, { type: "i64" }>,
+  literal: bigint,
+): Uint8Array {
+  const mask = new Uint8Array(vector.values.length);
+  const valid = vector.valid;
+  for (let index = 0; index < vector.values.length; index += 1) {
+    if (valid !== undefined && valid[index] === 0) {
+      mask[index] = 2;
+      continue;
+    }
+    const value = vector.values[index] ?? 0n;
+    mask[index] = compareNumberMaskValue(op, value < literal ? -1 : value > literal ? 1 : 0, 0);
+  }
+  return mask;
+}
+
+function compareNumberMaskValue(op: CompareOp, left: number, right: number): SqlMaskValue {
+  switch (op) {
+    case "eq":
+      return left === right ? 1 : 0;
+    case "ne":
+      return left !== right ? 1 : 0;
+    case "lt":
+      return left < right ? 1 : 0;
+    case "lte":
+      return left <= right ? 1 : 0;
+    case "gt":
+      return left > right ? 1 : 0;
+    case "gte":
+      return left >= right ? 1 : 0;
+  }
+}
+
+function nullCompareMask(rowCount: number): Uint8Array {
+  const mask = new Uint8Array(rowCount);
+  mask.fill(2);
+  return mask;
+}
+
+function flipCompareOp(op: CompareOp): CompareOp {
+  switch (op) {
+    case "lt":
+      return "gt";
+    case "lte":
+      return "gte";
+    case "gt":
+      return "lt";
+    case "gte":
+      return "lte";
+    case "eq":
+    case "ne":
+      return op;
+  }
 }
 
 function inMask(target: BatchExprValues, values: BatchExprValues[], negated: boolean): Uint8Array {

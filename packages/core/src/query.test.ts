@@ -932,6 +932,29 @@ describe("Lake query runtime", () => {
     ).toMatchObject({ projectedColumns: ["score"] });
   });
 
+  it("applies top-k over sparse selected vector rows", async () => {
+    const rows = Array.from({ length: 100 }, (_, index) => ({
+      id: index,
+      keep: index % 10 === 0,
+      score: 1000 - index,
+    }));
+    const { lake } = await makeLake({ rowsByPath: { table: rows } });
+
+    await expect(
+      lake
+        .path("table")
+        .select(["id", "score"])
+        .where(eq("keep", true))
+        .orderBy([{ column: "score", direction: "desc" }])
+        .limit(3)
+        .toArray(),
+    ).resolves.toEqual([
+      { id: 0, score: 1000 },
+      { id: 10, score: 990 },
+      { id: 20, score: 980 },
+    ]);
+  });
+
   it("enforces buffered-row budgets for ordered queries", async () => {
     const rowsByPath = { table: [{ id: 3 }, { id: 1 }, { id: 2 }] };
 

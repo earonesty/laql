@@ -4,6 +4,7 @@ import {
   materializeBatchRows,
   predicateSelection,
   selectedRowCount,
+  selectedRowIndices,
   vectorValue,
 } from "./batch.js";
 import { LakeqlError } from "./errors.js";
@@ -907,8 +908,7 @@ export class QueryResult {
       columnarBatchSize(config.batchSize),
     )) {
       const selection = predicateSelection(batch, config.where);
-      this.stats.rowsMatched += selectedRowCount(batch.rowCount, selection);
-      updateVectorGroupByState(state, batch, selection, {
+      this.stats.rowsMatched += updateVectorGroupByState(state, batch, selection, {
         budget: config.budget,
         ...(options.maxGroups === undefined ? {} : { maxGroups: options.maxGroups }),
       });
@@ -2946,8 +2946,7 @@ function addRankedRefs(
   topK: number,
 ): void {
   if (topK === 0) return;
-  for (let index = 0; index < batch.rowCount; index += 1) {
-    if (selection[index] !== 1) continue;
+  for (const index of selectedRowIndices(batch.rowCount, selection)) {
     const ref: RankedRowRef = {
       path,
       rowIndex: rowOffset + index,

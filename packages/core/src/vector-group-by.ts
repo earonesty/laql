@@ -5,6 +5,8 @@ import {
   batchFromColumns,
   type Selection,
   scalarVectorValue,
+  selectedRowIndices,
+  type Vector,
 } from "./batch.js";
 import { LakeqlError } from "./errors.js";
 import type { Scalar } from "./expr.js";
@@ -76,19 +78,13 @@ export function updateVectorGroupByState(
   batch: Batch,
   selection?: Selection,
   options: VectorGroupByOptions = {},
-): void {
-  const keyVectors = state.keys.map((key) => {
-    const vector = batch.columns[key];
-    if (vector === undefined) {
-      throw new LakeqlError("LAKEQL_UNKNOWN_COLUMN", `Unknown column ${key}`, { column: key });
-    }
-    return vector;
-  });
+): number {
+  const keyReader = vectorGroupKeyReader(state.keys, batch);
   const aggregateInputs = aggregateInputValues(state.spec, batch);
-  for (let index = 0; index < batch.rowCount; index += 1) {
-    if (selection !== undefined && selection[index] !== 1) continue;
-    const keyValues = keyVectors.map((vector) => scalarVectorValue(vector, index));
-    const key = groupKey(keyValues);
+  let matched = 0;
+  for (const index of selectedRowIndices(batch.rowCount, selection)) {
+    matched += 1;
+    const key = keyReader.keyAt(index);
     let group = state.groups.get(key);
     if (group === undefined) {
       if (options.maxGroups !== undefined && state.groups.size >= options.maxGroups) {
@@ -98,6 +94,7 @@ export function updateVectorGroupByState(
           { limit: options.maxGroups, actual: state.groups.size + 1 },
         );
       }
+      const keyValues = keyReader.valuesAt(index);
       group = {
         keyValues,
         states: createVectorAggregateStates(state.spec, options),
@@ -119,6 +116,69 @@ export function updateVectorGroupByState(
       updateVectorAggregateStateValue(aggregateState, input.valueAt(index), options);
     }
     enforceGroupByMemoryBudget(state, options.budget);
+  }
+  return matched;
+}
+
+interface VectorGroupKeyReader {
+  keyAt(index: number): string;
+  valuesAt(index: number): Scalar[];
+}
+
+function vectorGroupKeyReader(keys: readonly string[], batch: Batch): VectorGroupKeyReader {
+  const vectors = keys.map((key) => {
+    const vector = batch.columns[key];
+    if (vector === undefined) {
+      throw new LakeqlError("LAKEQL_UNKNOWN_COLUMN", `Unknown column ${key}`, { column: key });
+    }
+    return vector;
+  });
+  if (vectors.length === 1) {
+    const vector = vectors[0];
+    if (vector === undefined) {
+      throw new LakeqlError("LAKEQL_TYPE_ERROR", "Group key vector is missing");
+    }
+    return {
+      keyAt(index) {
+        return vectorGroupKeyPart(vector, index);
+      },
+      valuesAt(index) {
+        return [scalarVectorValue(vector, index)];
+      },
+    };
+  }
+  return {
+    keyAt(index) {
+      let key = "";
+      for (const vector of vectors) {
+        const part = vectorGroupKeyPart(vector, index);
+        key += `${part.length}:${part}`;
+      }
+      return key;
+    },
+    valuesAt(index) {
+      return vectors.map((vector) => scalarVectorValue(vector, index));
+    },
+  };
+}
+
+function vectorGroupKeyPart(vector: Vector, index: number): string {
+  if ("valid" in vector && vector.valid !== undefined && vector.valid[index] === 0) return "null:";
+  switch (vector.type) {
+    case "null":
+      return "null:";
+    case "f64":
+      return `number:${vector.values[index] ?? 0}`;
+    case "i64":
+      return `bigint:${vector.values[index] ?? 0n}`;
+    case "bool":
+      return `boolean:${vector.values[index] === 1}`;
+    case "utf8":
+      return `string:${vector.values[index] ?? ""}`;
+    case "list":
+    case "struct":
+    case "map":
+      return groupKey([scalarVectorValue(vector, index)]);
   }
 }
 

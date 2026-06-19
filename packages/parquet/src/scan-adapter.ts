@@ -114,6 +114,12 @@ export class ParquetScanAdapter implements ScanAdapter {
         ...(options.rowEnd === undefined ? {} : { rowEnd: options.rowEnd }),
         ...(options.columns === undefined ? {} : { columns: options.columns }),
         ...(options.where === undefined ? {} : { where: options.where }),
+        ...(this.decodedColumnCache === undefined
+          ? {}
+          : {
+              decodedColumnCache: this.decodedColumnCache,
+              decodedColumnCacheKey: path,
+            }),
         stats: options.stats,
       };
       if (canReadParquetVectorBatches(metadata, vectorOptions)) {

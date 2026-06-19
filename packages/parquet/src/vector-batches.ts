@@ -6,7 +6,15 @@ import { readPlain } from "hyparquet/src/plain.js";
 import { getSchemaPath, isFlatColumn } from "hyparquet/src/schema.js";
 import { deserializeTCompactProtocol } from "hyparquet/src/thrift.js";
 import type { ColumnDecoder } from "hyparquet/src/types.js";
-import { type Batch, batchFromVectors, type Vector } from "lakeql-core";
+import {
+  type Batch,
+  batchFromVectors,
+  type Vector,
+  vectorFromValues,
+  vectorLength,
+  vectorValue,
+} from "lakeql-core";
+import { decodedColumnCacheKey } from "./decoded-column-cache.js";
 import {
   recordReadColumns,
   recordRowGroupRead,
@@ -26,14 +34,19 @@ export function canReadParquetVectorBatches(
   options: ReadParquetBatchOptions,
 ): boolean {
   const columns = directVectorColumns(options.columns);
-  const column = columns?.length === 1 ? columns[0] : undefined;
-  if (column === undefined) return false;
+  if (columns === undefined) return false;
+  if (columns.length > 1 && options.rowStart !== undefined && options.rowEnd !== undefined) {
+    const requestedRows = options.rowEnd - options.rowStart;
+    if (requestedRows < (options.batchSize ?? 262_144)) return false;
+  }
   for (const rowGroup of metadata.row_groups) {
-    const chunk = rowGroup.columns.find(
-      (candidate) => candidate.meta_data?.path_in_schema.join(".") === column,
-    );
-    if (chunk?.meta_data === undefined || !canDirectVector(metadata, chunk.meta_data)) {
-      return false;
+    for (const column of columns) {
+      const chunk = rowGroup.columns.find(
+        (candidate) => candidate.meta_data?.path_in_schema.join(".") === column,
+      );
+      if (chunk?.meta_data === undefined || !canDirectVector(metadata, chunk.meta_data)) {
+        return false;
+      }
     }
   }
   return true;
@@ -46,11 +59,9 @@ export async function* readParquetVectorBatchesFromFile(
 ): AsyncIterable<ParquetVectorBatch> {
   const columns = directVectorColumns(options.columns);
   if (columns === undefined) return;
-  const column = columns.length === 1 ? columns[0] : undefined;
-  if (column === undefined) return;
   const requestedStart = options.rowStart ?? 0;
   const requestedEnd = options.rowEnd ?? Number(metadata.num_rows);
-  recordReadColumns(options.stats, [column]);
+  recordReadColumns(options.stats, columns);
   let rowGroupStart = 0;
   for (let rowGroupIndex = 0; rowGroupIndex < metadata.row_groups.length; rowGroupIndex += 1) {
     const rowGroup = metadata.row_groups[rowGroupIndex];
@@ -65,24 +76,36 @@ export async function* readParquetVectorBatchesFromFile(
       rowGroupStart = rowGroupEnd;
       continue;
     }
-    const chunk = rowGroup.columns.find(
-      (candidate) => candidate.meta_data?.path_in_schema.join(".") === column,
-    );
-    const columnMetadata = chunk?.meta_data;
-    if (columnMetadata === undefined || !canDirectVector(metadata, columnMetadata)) return;
+    const columnMetadata = columns.map((column) => {
+      const chunk = rowGroup.columns.find(
+        (candidate) => candidate.meta_data?.path_in_schema.join(".") === column,
+      );
+      return chunk?.meta_data;
+    });
+    if (
+      columnMetadata.some(
+        (metadataForColumn) =>
+          metadataForColumn === undefined || !canDirectVector(metadata, metadataForColumn),
+      )
+    ) {
+      return;
+    }
     recordRowGroupRead(options.stats);
     const start = Math.max(rowGroupStart, requestedStart);
     const end = Math.min(rowGroupEnd, requestedEnd);
-    yield* readColumnVectorBatches(
+    for await (const vectorBatch of readAlignedColumnVectorBatches(
       file,
       metadata,
-      columnMetadata,
-      column,
+      columnMetadata as ColumnMetaData[],
+      columns,
       rowGroupStart,
       start,
       end,
       options,
-    );
+    )) {
+      recordRowsDecoded(options.stats, vectorBatch.batch.rowCount);
+      yield vectorBatch;
+    }
     rowGroupStart = rowGroupEnd;
   }
 }
@@ -94,6 +117,83 @@ function directVectorColumns(columns: readonly string[] | undefined): string[] |
 function canDirectVector(metadata: ParquetMetadata, column: ColumnMetaData): boolean {
   const schemaPath = getSchemaPath(metadata.schema, column.path_in_schema);
   return isFlatColumn(schemaPath);
+}
+
+interface ColumnVectorCursor {
+  column: string;
+  iterator: AsyncIterator<ParquetVectorBatch>;
+  current?: ParquetVectorBatch;
+}
+
+async function* readAlignedColumnVectorBatches(
+  file: StoreAsyncBuffer,
+  metadata: ParquetMetadata,
+  columnMetadata: ColumnMetaData[],
+  columns: string[],
+  rowGroupStart: number,
+  requestedStart: number,
+  requestedEnd: number,
+  options: ReadParquetBatchOptions,
+): AsyncIterable<ParquetVectorBatch> {
+  const cursors: ColumnVectorCursor[] = columnMetadata.map((metadataForColumn, index) => {
+    const column = columns[index];
+    if (column === undefined) throw new Error("Missing vector column");
+    return {
+      column,
+      iterator: readColumnVectorBatches(
+        file,
+        metadata,
+        metadataForColumn,
+        column,
+        rowGroupStart,
+        requestedStart,
+        requestedEnd,
+        options,
+      )[Symbol.asyncIterator](),
+    };
+  });
+  for (const cursor of cursors) {
+    const next = await cursor.iterator.next();
+    if (next.done === true) return;
+    cursor.current = next.value;
+  }
+
+  while (cursors.every((cursor) => cursor.current !== undefined)) {
+    const rowOffset = Math.max(...cursors.map((cursor) => cursor.current?.rowOffset ?? 0));
+    const rowEnd = Math.min(
+      ...cursors.map((cursor) => {
+        const current = cursor.current;
+        return current === undefined
+          ? Number.NEGATIVE_INFINITY
+          : current.rowOffset + current.batch.rowCount;
+      }),
+    );
+    if (rowOffset < rowEnd) {
+      const vectors: Record<string, Vector> = {};
+      for (const cursor of cursors) {
+        const current = cursor.current;
+        if (current === undefined) return;
+        const vector = current.batch.columns[cursor.column];
+        if (vector === undefined) return;
+        vectors[cursor.column] = sliceVector(
+          vector,
+          rowOffset - current.rowOffset,
+          rowEnd - current.rowOffset,
+        );
+      }
+      yield { rowOffset, batch: batchFromVectors(vectors) };
+    }
+
+    for (const cursor of cursors) {
+      const current = cursor.current;
+      if (current === undefined) return;
+      if (current.rowOffset + current.batch.rowCount <= rowEnd) {
+        const next = await cursor.iterator.next();
+        if (next.done === true) delete cursor.current;
+        else cursor.current = next.value;
+      }
+    }
+  }
 }
 
 async function* readColumnVectorBatches(
@@ -164,20 +264,42 @@ async function* readColumnVectorBatches(
       pageRowStart = pageRowEnd;
       continue;
     }
-    const page = dataPageValues(compressedBytes, header, columnDecoder, dictionary);
-    if (page === undefined) continue;
     const start = Math.max(pageRowStart, requestedStart);
     const end = Math.min(pageRowEnd, requestedEnd);
     if (start < end) {
-      const batch = batchFromVectors({
-        [column]: flatPageVector(
-          page.values,
-          page.definitionLevels,
-          start - pageRowStart,
-          end - pageRowStart,
-        ),
-      });
-      recordRowsDecoded(options.stats, batch.rowCount);
+      const cache = options.decodedColumnCache;
+      const key =
+        cache === undefined || options.decodedColumnCacheKey === undefined
+          ? undefined
+          : decodedColumnCacheKey({
+              path: options.decodedColumnCacheKey,
+              byteLength: file.byteLength,
+              ...(file.etag === undefined ? {} : { etag: file.etag }),
+              columns: [column],
+              rowStart: start,
+              rowEnd: end,
+            });
+      const cached = key === undefined || cache === undefined ? undefined : cache.get(key);
+      let batch: Batch;
+      if (cached !== undefined) {
+        batch = cached;
+      } else {
+        const page = dataPageValues(compressedBytes, header, columnDecoder, dictionary);
+        if (page === undefined) continue;
+        batch = batchFromVectors({
+          [column]: flatPageVector(
+            page.values,
+            page.definitionLevels,
+            start - pageRowStart,
+            end - pageRowStart,
+          ),
+        });
+        if (key !== undefined && cache !== undefined) cache.set(key, batch);
+      }
+      if (key !== undefined && options.stats !== undefined) {
+        if (cached === undefined) options.stats.cacheMisses += 1;
+        else options.stats.cacheHits += 1;
+      }
       yield {
         rowOffset: start,
         batch,
@@ -242,6 +364,43 @@ function flatPageVector(
 ): Vector {
   if (definitionLevels === undefined) return nonNullFlatVector(values, start, end);
   return nullableFlatVector(values, definitionLevels, start, end);
+}
+
+function sliceVector(vector: Vector, start: number, end: number): Vector {
+  if (start === 0 && end === vectorLength(vector)) return vector;
+  const valid =
+    "valid" in vector && vector.valid !== undefined ? vector.valid.slice(start, end) : undefined;
+  switch (vector.type) {
+    case "null":
+      return { type: "null", length: end - start };
+    case "f64":
+      return optionalVectorValidity(
+        { type: "f64", values: vector.values.slice(start, end) },
+        valid,
+      );
+    case "i64":
+      return optionalVectorValidity(
+        { type: "i64", values: vector.values.slice(start, end) },
+        valid,
+      );
+    case "bool":
+      return optionalVectorValidity(
+        { type: "bool", values: vector.values.slice(start, end) },
+        valid,
+      );
+    case "utf8":
+      return optionalVectorValidity(
+        { type: "utf8", values: vector.values.slice(start, end) },
+        valid,
+      );
+    case "list":
+    case "struct":
+    case "map": {
+      const values = [];
+      for (let index = start; index < end; index += 1) values.push(vectorValue(vector, index));
+      return vectorFromValues(values);
+    }
+  }
 }
 
 function nonNullFlatVector(values: DecodedArray, start: number, end: number): Vector {
