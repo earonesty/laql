@@ -163,18 +163,20 @@ function vectorGroupKeyReader(keys: readonly string[], batch: Batch): VectorGrou
 }
 
 function vectorGroupKeyPart(vector: Vector, index: number): string {
-  if ("valid" in vector && vector.valid !== undefined && vector.valid[index] === 0) return "null:";
+  if ("valid" in vector && vector.valid !== undefined && vector.valid[index] === 0) {
+    return scalarGroupKeyPart(null);
+  }
   switch (vector.type) {
     case "null":
-      return "null:";
+      return scalarGroupKeyPart(null);
     case "f64":
-      return `number:${vector.values[index] ?? 0}`;
+      return scalarGroupKeyPart(vector.values[index] ?? 0);
     case "i64":
-      return `bigint:${vector.values[index] ?? 0n}`;
+      return scalarGroupKeyPart(vector.values[index] ?? 0n);
     case "bool":
-      return `boolean:${vector.values[index] === 1}`;
+      return scalarGroupKeyPart(vector.values[index] === 1);
     case "utf8":
-      return `string:${vector.values[index] ?? ""}`;
+      return scalarGroupKeyPart(vector.values[index] ?? "");
     case "list":
     case "struct":
     case "map":
@@ -317,13 +319,19 @@ function aggregateValue(values: BatchExprValues, index: number): VectorAggregate
 }
 
 function groupKey(values: readonly Scalar[]): string {
-  return JSON.stringify(values.map(groupKeyPart));
+  if (values.length === 1) return scalarGroupKeyPart(values[0] ?? null);
+  let key = "";
+  for (const value of values) {
+    const part = scalarGroupKeyPart(value ?? null);
+    key += `${part.length}:${part}`;
+  }
+  return key;
 }
 
-function groupKeyPart(value: Scalar): [string, string | number | boolean | null] {
-  if (value === null) return ["null", null];
-  if (typeof value === "bigint") return ["bigint", value.toString()];
-  return [typeof value, value];
+function scalarGroupKeyPart(value: Scalar): string {
+  if (value === null) return "null:";
+  if (typeof value === "bigint") return `bigint:${value}`;
+  return `${typeof value}:${value}`;
 }
 
 function snapshotGroupValue(value: Scalar): VectorGroupBySnapshotValue {

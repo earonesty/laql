@@ -4,6 +4,10 @@
 
 - No changes yet.
 
+## 0.1.5
+
+- Fix vector group-by partial merging across JSON work-unit boundaries.
+
 ## 0.1.4
 
 - Add the browser compare page against DuckDB-WASM on the public flights Parquet dataset.
