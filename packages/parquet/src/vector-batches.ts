@@ -153,6 +153,7 @@ function logicalTypeName(logicalType: unknown): string | undefined {
 }
 
 function canDirectVector(metadata: ParquetMetadata, column: ColumnMetaData): boolean {
+  if (usesDictionaryEncoding(column) && column.dictionary_page_offset === undefined) return false;
   const schemaPath = getSchemaPath(metadata.schema, column.path_in_schema);
   if (!isFlatColumn(schemaPath)) return false;
   const leaf = schemaPath[schemaPath.length - 1]?.element;
@@ -205,6 +206,13 @@ function canRepresentDirectVectorLeaf(leaf: ColumnDecoder["element"]): boolean {
     default:
       return false;
   }
+}
+
+function usesDictionaryEncoding(column: ColumnMetaData): boolean {
+  return (
+    column.encodings?.some(isDictionaryEncoding) === true ||
+    column.encoding_stats?.some((stats) => isDictionaryEncoding(stats.encoding)) === true
+  );
 }
 
 interface VectorBatchSource {
@@ -538,6 +546,7 @@ function dataPageValues(
       undefined,
     );
     const { definitionLevels, dataPage } = readDataPage(page, dataHeader, columnDecoder);
+    const compactDataPage = compactPresentValues(dataPage);
     const pageDictionary =
       dictionary !== undefined && isDictionaryEncoding(dataHeader.encoding)
         ? dictionary
@@ -546,8 +555,8 @@ function dataPageValues(
       rowCount: dataHeader.num_values,
       values:
         pageDictionary === undefined
-          ? convertWithDictionary(dataPage, dictionary, dataHeader.encoding, columnDecoder)
-          : dataPage,
+          ? convertWithDictionary(compactDataPage, dictionary, dataHeader.encoding, columnDecoder)
+          : compactDataPage,
       definitionLevels:
         definitionLevels === undefined || definitionLevels.length === 0
           ? undefined
@@ -559,6 +568,7 @@ function dataPageValues(
     const dataHeader = header.data_page_header_v2;
     if (dataHeader === undefined) return undefined;
     const { definitionLevels, dataPage } = readDataPageV2(compressedBytes, header, columnDecoder);
+    const compactDataPage = compactPresentValues(dataPage);
     const pageDictionary =
       dictionary !== undefined && isDictionaryEncoding(dataHeader.encoding)
         ? dictionary
@@ -567,8 +577,8 @@ function dataPageValues(
       rowCount: dataHeader.num_rows,
       values:
         pageDictionary === undefined
-          ? convertWithDictionary(dataPage, dictionary, dataHeader.encoding, columnDecoder)
-          : dataPage,
+          ? convertWithDictionary(compactDataPage, dictionary, dataHeader.encoding, columnDecoder)
+          : compactDataPage,
       definitionLevels:
         definitionLevels === undefined || definitionLevels.length === 0
           ? undefined
@@ -577,6 +587,11 @@ function dataPageValues(
     };
   }
   return undefined;
+}
+
+function compactPresentValues(values: DecodedArray): DecodedArray {
+  if (!Array.isArray(values)) return values;
+  return values.filter((value) => value !== null && value !== undefined);
 }
 
 function estimateDecodedArrayBytes(values: DecodedArray): number {

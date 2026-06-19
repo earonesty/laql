@@ -107,6 +107,178 @@ describe("direct Parquet vector batches", () => {
     expect(warmStats.cacheHits).toBeGreaterThan(0);
   });
 
+  it("slices nested vector sources when scalar pages split the row window", async () => {
+    const store = memoryStore();
+    await writeParquet(store, "data/vector-nested-sliced.parquet", {
+      rowGroupSize: [6],
+      pageSize: 64,
+      schema: [
+        { name: "root", num_children: 3 },
+        { name: "id", type: "INT32", repetition_type: "REQUIRED" },
+        { name: "tags", converted_type: "LIST", repetition_type: "OPTIONAL", num_children: 1 },
+        { name: "list", repetition_type: "REPEATED", num_children: 1 },
+        {
+          name: "element",
+          type: "BYTE_ARRAY",
+          converted_type: "UTF8",
+          repetition_type: "OPTIONAL",
+        },
+        { name: "attrs", converted_type: "MAP", repetition_type: "OPTIONAL", num_children: 1 },
+        { name: "key_value", repetition_type: "REPEATED", num_children: 2 },
+        { name: "key", type: "BYTE_ARRAY", converted_type: "UTF8", repetition_type: "REQUIRED" },
+        { name: "value", type: "BYTE_ARRAY", converted_type: "UTF8", repetition_type: "OPTIONAL" },
+      ],
+      columnData: [
+        { name: "id", data: [1, 2, 3, 4, 5, 6] },
+        {
+          name: "tags",
+          data: [["a"], ["b", "c"], null, [], ["e"], ["f", null]],
+        },
+        {
+          name: "attrs",
+          data: [{ kind: "one" }, { kind: "two" }, null, {}, { kind: "five" }, { kind: null }],
+        },
+      ],
+    });
+    const file = await fileBuffer(store, "data/vector-nested-sliced.parquet");
+    const metadata = await readParquetMetadata(store, "data/vector-nested-sliced.parquet");
+
+    const batches = [];
+    for await (const batch of readParquetVectorBatchesFromFile(file, metadata, {
+      columns: ["id", "tags", "attrs"],
+      rowStart: 1,
+      rowEnd: 6,
+      batchSize: 5,
+      stats: queryStats(),
+    })) {
+      batches.push(batch);
+    }
+
+    expect(batches.flatMap(({ batch }) => materializeBatchRows(batch))).toEqual([
+      { id: 2, tags: ["b", "c"], attrs: { kind: "two" } },
+      { id: 3, tags: null, attrs: null },
+      { id: 4, tags: [], attrs: {} },
+      { id: 5, tags: ["e"], attrs: { kind: "five" } },
+      { id: 6, tags: ["f", null], attrs: { kind: null } },
+    ]);
+    expect(batches.some(({ batch }) => batch.columns.tags?.type === "list")).toBe(true);
+    expect(batches.some(({ batch }) => batch.columns.attrs?.type === "map")).toBe(true);
+  });
+
+  it("reads dictionary and all-null physical pages through direct vectors", async () => {
+    const store = memoryStore();
+    await writeParquet(store, "data/vector-null-dictionary.parquet", {
+      rowGroupSize: [7],
+      pageSize: 1024,
+      schema: [
+        { name: "root", num_children: 5 },
+        { name: "id", type: "INT32", repetition_type: "REQUIRED" },
+        { name: "label", type: "BYTE_ARRAY", converted_type: "UTF8", repetition_type: "REQUIRED" },
+        {
+          name: "plain_label",
+          type: "BYTE_ARRAY",
+          converted_type: "UTF8",
+          repetition_type: "OPTIONAL",
+        },
+        { name: "maybe_bool", type: "BOOLEAN", repetition_type: "OPTIONAL" },
+        {
+          name: "empty_text",
+          type: "BYTE_ARRAY",
+          converted_type: "UTF8",
+          repetition_type: "OPTIONAL",
+        },
+      ],
+      columnData: [
+        { name: "id", data: [1, 2, 3, 4, 5, 6, 7] },
+        {
+          name: "label",
+          data: ["a", "a", "b", "a", "b", "c", "b"],
+          encoding: "RLE_DICTIONARY",
+        },
+        { name: "plain_label", data: ["p1", null, "p3", "p4", null, "p6", "p7"] },
+        { name: "maybe_bool", data: [null, null, null, null, null, null, null] },
+        {
+          name: "empty_text",
+          data: [null, null, null, null, null, null, null],
+          encoding: "PLAIN",
+        },
+      ],
+    });
+    const file = await fileBuffer(store, "data/vector-null-dictionary.parquet");
+    const metadata = await readParquetMetadata(store, "data/vector-null-dictionary.parquet");
+    const decodedColumnCache = new DecodedColumnCache(
+      new SharedMemoryCache({ maxBytes: 1024 * 1024 }),
+      { maxBytes: 1024 * 1024, policy: "latency" },
+    );
+    const coldStats = queryStats();
+
+    const coldRows = await collectVectorRows(file, metadata, {
+      columns: ["id", "label", "plain_label", "maybe_bool", "empty_text"],
+      rowStart: 1,
+      rowEnd: 6,
+      batchSize: 2,
+      stats: coldStats,
+      decodedColumnCache,
+      decodedColumnCacheKey: "data/vector-null-dictionary.parquet",
+    });
+    const warmStats = queryStats();
+    const warmRows = await collectVectorRows(file, metadata, {
+      columns: ["id", "label", "plain_label", "maybe_bool", "empty_text"],
+      rowStart: 1,
+      rowEnd: 6,
+      batchSize: 2,
+      stats: warmStats,
+      decodedColumnCache,
+      decodedColumnCacheKey: "data/vector-null-dictionary.parquet",
+    });
+
+    expect(coldRows).toEqual([
+      { id: 2, label: "a", plain_label: null, maybe_bool: null, empty_text: null },
+      { id: 3, label: "b", plain_label: "p3", maybe_bool: null, empty_text: null },
+      { id: 4, label: "a", plain_label: "p4", maybe_bool: null, empty_text: null },
+      { id: 5, label: "b", plain_label: null, maybe_bool: null, empty_text: null },
+      { id: 6, label: "c", plain_label: "p6", maybe_bool: null, empty_text: null },
+    ]);
+    expect(warmRows).toEqual(coldRows);
+    expect(coldStats.cacheMisses).toBeGreaterThan(0);
+    expect(warmStats.cacheHits).toBeGreaterThan(0);
+
+    const batches = [];
+    for await (const batch of readParquetVectorBatchesFromFile(file, metadata, {
+      columns: ["label", "plain_label", "maybe_bool", "empty_text"],
+      rowStart: 1,
+      rowEnd: 6,
+      batchSize: 2,
+      stats: queryStats(),
+    })) {
+      batches.push(batch.batch);
+    }
+    expect(batches[0]?.columns.label).toMatchObject({
+      type: "dict",
+    });
+    expect(batches[0]?.columns.plain_label).toMatchObject({
+      type: "utf8",
+      valid: new Uint8Array([0, 1, 1, 0, 1]),
+    });
+    expect(batches[0]?.columns.maybe_bool).toMatchObject({
+      type: "null",
+      length: 5,
+    });
+    expect(batches[0]?.columns.empty_text).toMatchObject({
+      type: "null",
+      length: 5,
+    });
+
+    const malformedDictionaryMetadata = structuredClone(metadata);
+    const label = malformedDictionaryMetadata.row_groups[0]?.columns.find(
+      (column) => column.meta_data?.path_in_schema.join(".") === "label",
+    )?.meta_data;
+    if (label !== undefined) delete label.dictionary_page_offset;
+    expect(canReadParquetVectorBatches(malformedDictionaryMetadata, { columns: ["label"] })).toBe(
+      false,
+    );
+  });
+
   it("reads the known emitted DATA_PAGE_V2 vector shapes including dictionary strings", async () => {
     const store = memoryStore();
     await writeParquet(store, "data/vector-physical-shapes.parquet", {
