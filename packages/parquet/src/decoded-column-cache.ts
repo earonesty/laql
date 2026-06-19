@@ -73,6 +73,8 @@ function estimateVectorBytes(vector: Vector): number {
     case "utf8":
       for (const value of vector.values) bytes += value.length * 2;
       return bytes;
+    case "dict":
+      return bytes + vector.indices.byteLength + estimateVectorBytes(vector.dictionary);
     case "list":
       return bytes + vector.offsets.byteLength + estimateVectorBytes(vector.child);
     case "struct":

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { batchFromColumns, materializeBatchRows, predicateSelection } from "./batch.js";
+import {
+  batchFromColumns,
+  batchFromVectors,
+  materializeBatchRows,
+  predicateSelection,
+} from "./batch.js";
 import { gte } from "./expr.js";
 import {
   concatBatches,
@@ -102,6 +107,27 @@ describe("vector sort kernels", () => {
     expect(materializeBatchRows(gathered)).toEqual([
       { id: 3, big: 30n, flag: false, label: "c" },
       { id: 2, big: 20n, flag: null, label: null },
+    ]);
+  });
+
+  it("gathers and orders dictionary vectors without expanding them", () => {
+    const dictionary = batchFromColumns({ value: ["low", "mid", "high"] }).columns.value;
+    if (dictionary === undefined) throw new Error("missing dictionary");
+    const batch = batchFromVectors({
+      label: {
+        type: "dict",
+        indices: new Uint32Array([1, 2, 0]),
+        dictionary,
+      },
+      score: batchFromColumns({ score: [2, 3, 1] }).columns.score ?? { type: "null", length: 0 },
+    });
+
+    const ordered = vectorOrderByBatch(batch, [{ column: "score", direction: "desc" }]);
+    expect(ordered.columns.label?.type).toBe("dict");
+    expect(materializeBatchRows(ordered)).toEqual([
+      { label: "high", score: 3 },
+      { label: "mid", score: 2 },
+      { label: "low", score: 1 },
     ]);
   });
 

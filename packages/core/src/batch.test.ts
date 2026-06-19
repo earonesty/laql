@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   batchExprValues,
   batchFromColumns,
+  batchFromVectors,
   materializeBatchRows,
   materializeSelectedBatchRows,
   predicateSelection,
@@ -119,6 +120,27 @@ describe("column batches", () => {
     const batch = batchFromColumns({ id: [1, 2, 3] });
     expect(selectedRowCount(batch.rowCount)).toBe(3);
     expect(selectedRowCount(batch.rowCount, new Uint8Array([1, 0, 1]))).toBe(2);
+  });
+
+  it("evaluates dictionary vectors with scalar semantics", () => {
+    const batch = batchFromVectors({
+      amount: {
+        type: "dict",
+        indices: new Uint32Array([0, 2, 1, 2]),
+        dictionary: batchFromColumns({ value: [5, 10, 20] }).columns.value ?? {
+          type: "null",
+          length: 0,
+        },
+      },
+    });
+
+    expect(materializeBatchRows(batch)).toEqual([
+      { amount: 5 },
+      { amount: 20 },
+      { amount: 10 },
+      { amount: 20 },
+    ]);
+    expect([...predicateSelection(batch, gt("amount", 10))]).toEqual([0, 1, 0, 1]);
   });
 
   it("evaluates vector predicate selections with SQL null semantics", () => {

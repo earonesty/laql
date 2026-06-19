@@ -292,6 +292,7 @@ async function* readColumnVectorBatches(
             page.definitionLevels,
             start - pageRowStart,
             end - pageRowStart,
+            page.dictionary,
           ),
         });
         if (key !== undefined && cache !== undefined) cache.set(key, batch);
@@ -320,7 +321,14 @@ function dataPageValues(
   header: PageHeader,
   columnDecoder: ColumnDecoder,
   dictionary: DecodedArray | undefined,
-): { rowCount: number; values: DecodedArray; definitionLevels: number[] | undefined } | undefined {
+):
+  | {
+      rowCount: number;
+      values: DecodedArray;
+      definitionLevels: number[] | undefined;
+      dictionary?: DecodedArray;
+    }
+  | undefined {
   if (header.type === "DATA_PAGE") {
     const dataHeader = header.data_page_header;
     if (dataHeader === undefined) return undefined;
@@ -331,29 +339,49 @@ function dataPageValues(
       undefined,
     );
     const { definitionLevels, dataPage } = readDataPage(page, dataHeader, columnDecoder);
+    const pageDictionary =
+      dictionary !== undefined && isDictionaryEncoding(dataHeader.encoding)
+        ? dictionary
+        : undefined;
     return {
       rowCount: dataHeader.num_values,
-      values: convertWithDictionary(dataPage, dictionary, dataHeader.encoding, columnDecoder),
+      values:
+        pageDictionary === undefined
+          ? convertWithDictionary(dataPage, dictionary, dataHeader.encoding, columnDecoder)
+          : dataPage,
       definitionLevels:
         definitionLevels === undefined || definitionLevels.length === 0
           ? undefined
           : definitionLevels,
+      ...(pageDictionary === undefined ? {} : { dictionary: pageDictionary }),
     };
   }
   if (header.type === "DATA_PAGE_V2") {
     const dataHeader = header.data_page_header_v2;
     if (dataHeader === undefined) return undefined;
     const { definitionLevels, dataPage } = readDataPageV2(compressedBytes, header, columnDecoder);
+    const pageDictionary =
+      dictionary !== undefined && isDictionaryEncoding(dataHeader.encoding)
+        ? dictionary
+        : undefined;
     return {
       rowCount: dataHeader.num_rows,
-      values: convertWithDictionary(dataPage, dictionary, dataHeader.encoding, columnDecoder),
+      values:
+        pageDictionary === undefined
+          ? convertWithDictionary(dataPage, dictionary, dataHeader.encoding, columnDecoder)
+          : dataPage,
       definitionLevels:
         definitionLevels === undefined || definitionLevels.length === 0
           ? undefined
           : definitionLevels,
+      ...(pageDictionary === undefined ? {} : { dictionary: pageDictionary }),
     };
   }
   return undefined;
+}
+
+function isDictionaryEncoding(encoding: Encoding): boolean {
+  return encoding === "PLAIN_DICTIONARY" || encoding === "RLE_DICTIONARY";
 }
 
 function flatPageVector(
@@ -361,7 +389,10 @@ function flatPageVector(
   definitionLevels: readonly number[] | undefined,
   start: number,
   end: number,
+  dictionary?: DecodedArray,
 ): Vector {
+  if (dictionary !== undefined)
+    return dictionaryPageVector(values, dictionary, definitionLevels, start, end);
   if (definitionLevels === undefined) return nonNullFlatVector(values, start, end);
   return nullableFlatVector(values, definitionLevels, start, end);
 }
@@ -393,6 +424,15 @@ function sliceVector(vector: Vector, start: number, end: number): Vector {
         { type: "utf8", values: vector.values.slice(start, end) },
         valid,
       );
+    case "dict":
+      return optionalVectorValidity(
+        {
+          type: "dict",
+          indices: vector.indices.slice(start, end),
+          dictionary: vector.dictionary,
+        },
+        valid,
+      );
     case "list":
     case "struct":
     case "map": {
@@ -401,6 +441,29 @@ function sliceVector(vector: Vector, start: number, end: number): Vector {
       return vectorFromValues(values);
     }
   }
+}
+
+function dictionaryPageVector(
+  values: DecodedArray,
+  dictionary: DecodedArray,
+  definitionLevels: readonly number[] | undefined,
+  start: number,
+  end: number,
+): Vector {
+  const dictionaryVector = nonNullFlatVector(dictionary, 0, dictionary.length);
+  const length = end - start;
+  const indices = new Uint32Array(length);
+  if (definitionLevels === undefined) {
+    for (let index = 0; index < length; index += 1) {
+      indices[index] = Number(values[start + index] ?? 0);
+    }
+    return { type: "dict", indices, dictionary: dictionaryVector };
+  }
+  const valid = new Uint8Array(length);
+  copyNullableValues(definitionLevels, start, end, valid, (outIndex, valueIndex) => {
+    indices[outIndex] = Number(values[valueIndex] ?? 0);
+  });
+  return optionalVectorValidity({ type: "dict", indices, dictionary: dictionaryVector }, valid);
 }
 
 function nonNullFlatVector(values: DecodedArray, start: number, end: number): Vector {

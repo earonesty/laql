@@ -222,6 +222,8 @@ function vectorGroupKeyPart(vector: Vector, index: number): string {
       return scalarGroupKeyPart(vector.values[index] === 1);
     case "utf8":
       return scalarGroupKeyPart(vector.values[index] ?? "");
+    case "dict":
+      return vectorGroupKeyPart(vector.dictionary, vector.indices[index] ?? 0);
     case "list":
     case "struct":
     case "map":

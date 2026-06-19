@@ -9,6 +9,7 @@ export type Vector =
   | { type: "i64"; values: BigInt64Array; valid?: Uint8Array }
   | { type: "bool"; values: Uint8Array; valid?: Uint8Array }
   | { type: "utf8"; values: string[]; valid?: Uint8Array }
+  | { type: "dict"; indices: Uint32Array; dictionary: Vector; valid?: Uint8Array }
   | { type: "list"; offsets: Int32Array; child: Vector; valid?: Uint8Array }
   | { type: "struct"; fields: Record<string, Vector>; length: number; valid?: Uint8Array }
   | { type: "map"; offsets: Int32Array; keys: Vector; values: Vector; valid?: Uint8Array };
@@ -21,7 +22,7 @@ export interface Batch {
 export type Selection = Uint8Array;
 
 type VectorValue = unknown;
-type VectorShape = Vector["type"];
+type VectorShape = Exclude<Vector["type"], "dict">;
 
 export function batchFromColumns(columns: Record<string, ArrayLike<VectorValue>>): Batch {
   let rowCount: number | undefined;
@@ -162,6 +163,8 @@ export function vectorValue(
       return vector.values[index] === 1;
     case "utf8":
       return vector.values[index] ?? "";
+    case "dict":
+      return vectorValue(vector.dictionary, vector.indices[index] ?? 0);
     case "list": {
       const start = vector.offsets[index] ?? 0;
       const end = vector.offsets[index + 1] ?? start;
@@ -205,6 +208,8 @@ export function vectorLength(vector: Vector): number {
     case "bool":
     case "utf8":
       return vector.values.length;
+    case "dict":
+      return vector.indices.length;
   }
 }
 
@@ -535,6 +540,8 @@ export function scalarVectorValue(vector: Vector, index: number): Scalar {
       return vector.values[index] === 1;
     case "utf8":
       return vector.values[index] ?? "";
+    case "dict":
+      return scalarVectorValue(vector.dictionary, vector.indices[index] ?? 0);
     case "list":
     case "struct":
     case "map":
@@ -593,6 +600,7 @@ function compareVectorLiteralMasks(
   literal: Scalar,
 ): Uint8Array | undefined {
   if (literal === null) return nullCompareMask(vectorLength(vector));
+  if (vector.type === "dict") return compareDictLiteralMasks(op, vector, literal);
   if (vector.type === "f64" && typeof literal === "number") {
     return compareF64LiteralMasks(op, vector, literal);
   }
@@ -603,6 +611,25 @@ function compareVectorLiteralMasks(
     return compareI64LiteralMasks(op, vector, BigInt(literal));
   }
   return undefined;
+}
+
+function compareDictLiteralMasks(
+  op: CompareOp,
+  vector: Extract<Vector, { type: "dict" }>,
+  literal: Scalar,
+): Uint8Array | undefined {
+  const dictionaryMask = compareVectorLiteralMasks(op, vector.dictionary, literal);
+  if (dictionaryMask === undefined) return undefined;
+  const mask = new Uint8Array(vector.indices.length);
+  const valid = vector.valid;
+  for (let index = 0; index < vector.indices.length; index += 1) {
+    if (valid !== undefined && valid[index] === 0) {
+      mask[index] = 2;
+      continue;
+    }
+    mask[index] = dictionaryMask[vector.indices[index] ?? 0] ?? 2;
+  }
+  return mask;
 }
 
 function compareF64LiteralMasks(

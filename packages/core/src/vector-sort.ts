@@ -269,6 +269,15 @@ function gatherVector(vector: Vector, indices: readonly number[]): Vector {
         { type: vector.type, values: indices.map((index) => vector.values[index] ?? "") },
         valid,
       );
+    case "dict":
+      return optionalValidity(
+        {
+          type: "dict",
+          indices: Uint32Array.from(indices, (index) => vector.indices[index] ?? 0),
+          dictionary: vector.dictionary,
+        },
+        valid,
+      );
     case "list":
     case "struct":
     case "map":
@@ -337,6 +346,11 @@ function concatVectors(name: string, vectors: readonly Vector[]): Vector {
         },
         valid,
       );
+    case "dict":
+      return concatDictVectors(
+        vectors.map((vector) => requireVectorType(vector, "dict")),
+        valid,
+      );
     case "list":
     case "struct":
     case "map":
@@ -346,6 +360,29 @@ function concatVectors(name: string, vectors: readonly Vector[]): Vector {
         ),
       );
   }
+}
+
+function concatDictVectors(
+  vectors: readonly Extract<Vector, { type: "dict" }>[],
+  valid: Uint8Array | undefined,
+): Vector {
+  const first = vectors[0];
+  if (first === undefined) throw new LakeqlError("LAKEQL_TYPE_ERROR", "No vectors to concatenate");
+  if (vectors.every((vector) => vector.dictionary === first.dictionary)) {
+    return optionalValidity(
+      {
+        type: "dict",
+        indices: concatTypedArrays(vectors.map((vector) => vector.indices)),
+        dictionary: first.dictionary,
+      },
+      valid,
+    );
+  }
+  return vectorFromValues(
+    vectors.flatMap((vector) =>
+      Array.from({ length: vectorLength(vector) }, (_, index) => vectorValue(vector, index)),
+    ),
+  );
 }
 
 function requireVectorType<T extends Vector["type"]>(
@@ -361,7 +398,9 @@ function requireVectorType<T extends Vector["type"]>(
   return vector as Extract<Vector, { type: T }>;
 }
 
-function concatTypedArrays<T extends Float64Array | Uint8Array>(arrays: readonly T[]): T {
+function concatTypedArrays<T extends Float64Array | Uint8Array | Uint32Array>(
+  arrays: readonly T[],
+): T {
   const length = arrays.reduce((sum, array) => sum + array.length, 0);
   const first = arrays[0];
   if (first === undefined) {
