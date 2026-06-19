@@ -27,6 +27,7 @@ const DATASET_KEY = "2015_flights.parquet";
 const DATASET_PROXY_PATH = "compare-data/2015_flights.parquet";
 const DATASET_SIZE = 25_238_218;
 const SCAN_RANGE_CACHE_BYTES = 32 * 1024 * 1024;
+const LAKE_WARM_CACHE_BYTES = 256 * 1024 * 1024;
 const PENDING_RUN_KEY = "lakeql_compare_pending_run";
 
 const EXAMPLES = [
@@ -62,8 +63,8 @@ limit 10`,
 ];
 
 let engine: Engine = "lakeql";
-let duckCacheMode: DuckCacheMode = "fresh";
-let lakeCacheMode: LakeCacheMode = "fresh";
+let duckCacheMode: DuckCacheMode = "cached";
+let lakeCacheMode: LakeCacheMode = "cached";
 let activeExample = 0;
 let view: EditorView;
 let lakeRuntime: { lake: Lake; cacheMode: LakeCacheMode } | undefined;
@@ -245,7 +246,7 @@ function createLakeRuntime(cacheMode: LakeCacheMode): { lake: Lake; cacheMode: L
     cacheMode === "cached"
       ? createParquetLake({
           store,
-          cache: { maxBytes: 64 * 1024 * 1024 },
+          cache: { maxBytes: LAKE_WARM_CACHE_BYTES, policy: "balanced" },
           scanRangeCache: { maxBytes: SCAN_RANGE_CACHE_BYTES },
         })
       : createParquetLake({ store, scanRangeCache: { maxBytes: SCAN_RANGE_CACHE_BYTES } });
