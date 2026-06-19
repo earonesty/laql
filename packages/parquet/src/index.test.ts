@@ -2421,6 +2421,24 @@ describe("rejectUnsupportedParquetSchema", () => {
     ).toThrow(/struct/u);
   });
 
+  it("allows projected scalar columns when unprojected columns are unsupported structs", () => {
+    const metadata = metadataWithSchema([
+      { name: "root", num_children: 2 },
+      { name: "id", type: "INT32" },
+      { name: "bbox", num_children: 4, repetition_type: "OPTIONAL" },
+      { name: "xmin", type: "DOUBLE" },
+      { name: "ymin", type: "DOUBLE" },
+      { name: "xmax", type: "DOUBLE" },
+      { name: "ymax", type: "DOUBLE" },
+    ]);
+
+    expect(() => rejectUnsupportedParquetSchema(metadata, { columns: ["id"] })).not.toThrow();
+    expect(() => rejectUnsupportedParquetSchema(metadata, { columns: ["bbox"] })).toThrowError(
+      LakeqlError,
+    );
+    expect(() => rejectUnsupportedParquetSchema(metadata)).toThrowError(LakeqlError);
+  });
+
   it("rejects unsupported precision-sensitive decimals without rejecting timestamps", () => {
     expect(() =>
       rejectUnsupportedParquetSchema(

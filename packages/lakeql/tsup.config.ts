@@ -36,6 +36,7 @@ export default defineConfig({
     "avsc",
     "aws4fetch",
     "fast-xml-parser",
+    "fzstd",
     "h3-js",
     "hyparquet",
     "hyparquet-writer",

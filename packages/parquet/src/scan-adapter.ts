@@ -14,6 +14,7 @@ import {
   throwIfAborted,
 } from "lakeql-core";
 import { readParquetColumnBatchesFromFile } from "./column-batches.js";
+import { lakeqlParquetCompressors } from "./compressors.js";
 import type { DecodedColumnCache } from "./decoded-column-cache.js";
 import { normalizeDecodedRows } from "./decoded-rows.js";
 import { readCachedParquetMetadata } from "./metadata-cache.js";
@@ -54,7 +55,7 @@ export class ParquetScanAdapter implements ScanAdapter {
     const batchSize = options.batchSize || this.defaultBatchSize;
     const file = this.scanBuffer(path, await asyncBufferFromStore(this.store, path, options));
     const metadata = await this.metadata(path, file, options);
-    rejectUnsupportedParquetSchema(metadata);
+    rejectUnsupportedParquetSchema(metadata, { columns: options.columns });
     const readColumns = options.columns;
     if (readColumns) {
       recordReadColumns(options.stats, readColumns);
@@ -79,6 +80,7 @@ export class ParquetScanAdapter implements ScanAdapter {
           rowFormat: "object",
           rowStart,
           rowEnd,
+          compressors: lakeqlParquetCompressors,
           parsers: lakeqlParquetParsers,
         };
         if (readColumns) readOptions.columns = readColumns;
@@ -108,7 +110,7 @@ export class ParquetScanAdapter implements ScanAdapter {
   async *scanVectorBatches(path: string, options: ScanOptions): AsyncIterable<ScanVectorBatch> {
     const file = this.scanBuffer(path, await asyncBufferFromStore(this.store, path, options));
     const metadata = await this.metadata(path, file, options);
-    rejectUnsupportedParquetSchema(metadata);
+    rejectUnsupportedParquetSchema(metadata, { columns: options.columns });
     try {
       const vectorOptions = {
         batchSize: options.batchSize || this.defaultBatchSize,

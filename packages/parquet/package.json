@@ -37,9 +37,10 @@
     "node": ">=22"
   },
   "dependencies": {
-    "lakeql-core": "workspace:*",
+    "fzstd": "^0.1.1",
     "hyparquet": "^1.26.0",
-    "hyparquet-writer": "^0.15.6"
+    "hyparquet-writer": "^0.15.6",
+    "lakeql-core": "workspace:*"
   },
   "devDependencies": {
     "lakeql-fixtures": "workspace:*",

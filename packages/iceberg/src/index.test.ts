@@ -2601,6 +2601,94 @@ describe("loadIcebergTable", () => {
     ).rejects.toMatchObject({ code: "LAKEQL_VALIDATION_ERROR" });
   });
 
+  it("normalizes absolute object-store paths within the table location", async () => {
+    const absoluteStore = memoryStore();
+    await absoluteStore.put(
+      "warehouse/places/metadata/metadata.json",
+      new TextEncoder().encode(
+        JSON.stringify({
+          "format-version": 2,
+          "table-uuid": "table",
+          location: "s3://lakeql-bucket/warehouse/places",
+          "current-snapshot-id": 1,
+          schemas: [
+            { "schema-id": 1, fields: [{ id: 1, name: "id", type: "int", required: true }] },
+          ],
+          snapshots: [
+            {
+              "snapshot-id": 1,
+              "timestamp-ms": 1,
+              "schema-id": 1,
+              manifests: [
+                {
+                  path: "s3://lakeql-bucket/warehouse/places/metadata/manifest.json",
+                  files: [
+                    {
+                      path: "s3://lakeql-bucket/warehouse/places/data/part-000.parquet",
+                      sequenceNumber: 1,
+                      recordCount: 2,
+                      fileSizeInBytes: 123,
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    );
+
+    const table = await loadIcebergTable({
+      store: absoluteStore,
+      metadataPath: "warehouse/places/metadata/metadata.json",
+    });
+    expect(table.planFiles().files).toEqual([
+      expect.objectContaining({
+        path: "warehouse/places/data/part-000.parquet",
+        recordCount: 2,
+        fileSizeInBytes: 123,
+      }),
+    ]);
+  });
+
+  it("rejects absolute object-store paths outside the table authority", async () => {
+    const crossBucketStore = memoryStore();
+    await crossBucketStore.put(
+      "warehouse/places/metadata/metadata.json",
+      new TextEncoder().encode(
+        JSON.stringify({
+          "format-version": 2,
+          "table-uuid": "table",
+          location: "s3://lakeql-bucket/warehouse/places",
+          "current-snapshot-id": 1,
+          schemas: [
+            { "schema-id": 1, fields: [{ id: 1, name: "id", type: "int", required: true }] },
+          ],
+          snapshots: [
+            {
+              "snapshot-id": 1,
+              "timestamp-ms": 1,
+              "schema-id": 1,
+              manifests: [
+                {
+                  path: "s3://other-bucket/warehouse/places/metadata/manifest.json",
+                  files: [],
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    );
+
+    await expect(
+      loadIcebergTable({
+        store: crossBucketStore,
+        metadataPath: "warehouse/places/metadata/metadata.json",
+      }),
+    ).rejects.toMatchObject({ code: "LAKEQL_VALIDATION_ERROR" });
+  });
+
   it("validates append inputs and snapshot schemas", async () => {
     const table = await loadIcebergTable({ store, metadataPath: ICEBERG.metadataFile });
     await expect(table.appendFiles({ files: [] })).rejects.toMatchObject({

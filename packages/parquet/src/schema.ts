@@ -1,14 +1,22 @@
 import { LakeqlError } from "lakeql-core";
 import type { ParquetMetadata } from "./types.js";
 
-export function rejectUnsupportedParquetSchema(metadata: ParquetMetadata): void {
+export interface RejectUnsupportedParquetSchemaOptions {
+  columns?: readonly string[] | undefined;
+}
+
+export function rejectUnsupportedParquetSchema(
+  metadata: ParquetMetadata,
+  options: RejectUnsupportedParquetSchemaOptions = {},
+): void {
   const schema = metadata.schema;
   if (!Array.isArray(schema) || schema.length === 0) return;
+  const selected = options.columns === undefined ? undefined : new Set(options.columns);
   const root = schema[0];
   const childCount = schemaChildCount(root);
   let index = 1;
   for (let child = 0; child < childCount && index < schema.length; child += 1) {
-    index = rejectUnsupportedParquetSchemaNode(schema, index, []);
+    index = rejectUnsupportedParquetSchemaNode(schema, index, [], selected);
   }
 }
 
@@ -18,11 +26,15 @@ function rejectUnsupportedParquetSchemaNode(
   schema: ParquetSchemaElement[],
   index: number,
   path: string[],
+  selected: ReadonlySet<string> | undefined,
 ): number {
   const element = schema[index];
   if (element === undefined) return index + 1;
   const name = String(element.name ?? `field_${index}`);
   const nodePath = [...path, name];
+  if (selected !== undefined && path.length === 0 && !selected.has(name)) {
+    return skipParquetSchemaSubtree(schema, index);
+  }
   const childCount = schemaChildCount(element);
   rejectUnsupportedParquetLeaf(element, nodePath);
   if (childCount === 0) return index + 1;

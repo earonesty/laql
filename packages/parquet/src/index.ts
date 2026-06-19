@@ -196,7 +196,7 @@ export async function* readParquetObjectBatches(
   const file = await asyncBufferFromStore(store, path);
   try {
     const metadata = await readParquetMetadataFromFile(file);
-    rejectUnsupportedParquetSchema(metadata);
+    rejectUnsupportedParquetSchema(metadata, { columns: options.columns });
     yield* readParquetObjectBatchesFromFile(file, metadata, options);
   } catch (cause) {
     if (cause instanceof LakeqlError) throw cause;
@@ -212,7 +212,7 @@ export async function* readParquetColumnBatches(
   const file = await asyncBufferFromStore(store, path);
   try {
     const metadata = await readParquetMetadataFromFile(file);
-    rejectUnsupportedParquetSchema(metadata);
+    rejectUnsupportedParquetSchema(metadata, { columns: options.columns });
     yield* readParquetColumnBatchesFromFile(file, metadata, options);
   } catch (cause) {
     if (cause instanceof LakeqlError) throw cause;

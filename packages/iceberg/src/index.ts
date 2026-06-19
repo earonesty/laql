@@ -1055,7 +1055,7 @@ async function hydrateMetadataManifests(
   controls: ObjectStoreReadControls = {},
 ): Promise<MetadataFile> {
   const hydrated = cloneMetadata(metadata);
-  const tablePrefix = tableLocationObjectPrefix(hydrated.location);
+  const tableLocation = tableLocationRef(hydrated.location);
   for (const snapshot of hydrated.snapshots) {
     throwIfAborted(controls.signal);
     const manifestReferences =
@@ -1063,15 +1063,15 @@ async function hydrateMetadataManifests(
       (snapshot["manifest-list"] !== undefined
         ? await readManifestList(
             store,
-            validateManifestSourcedPath(snapshot["manifest-list"], tablePrefix),
+            validateManifestSourcedPath(snapshot["manifest-list"], tableLocation),
           )
         : []);
     const manifests = await Promise.all(
       manifestReferences.map(async (manifest) => {
-        const manifestPath = validateManifestSourcedPath(manifest.path, tablePrefix);
+        const manifestPath = validateManifestSourcedPath(manifest.path, tableLocation);
         if (Array.isArray(manifest.files))
-          return validateManifestPaths(manifest, manifestPath, tablePrefix);
-        return await readManifest(store, manifestPath, tablePrefix);
+          return validateManifestPaths(manifest, manifestPath, tableLocation);
+        return await readManifest(store, manifestPath, tableLocation);
       }),
     );
     throwIfAborted(controls.signal);
@@ -1129,7 +1129,11 @@ async function readManifestList(store: ObjectStore, path: string): Promise<Manif
   }
 }
 
-async function readManifest(store: ObjectStore, path: string, tablePrefix = ""): Promise<Manifest> {
+async function readManifest(
+  store: ObjectStore,
+  path: string,
+  tableLocation = tableLocationRef(""),
+): Promise<Manifest> {
   const bytes = await store.get(path);
   if (!bytes) {
     throw new LakeqlError("LAKEQL_OBJECT_NOT_FOUND", `No Iceberg manifest at ${path}`, { path });
@@ -1138,7 +1142,7 @@ async function readManifest(store: ObjectStore, path: string, tablePrefix = ""):
     const manifest = avroObjectContainer(bytes)
       ? validateAvroManifest(await decodeAvroObjectContainer(bytes), path)
       : validateManifest(JSON.parse(new TextDecoder().decode(bytes)), path);
-    return validateManifestPaths(manifest, path, tablePrefix);
+    return validateManifestPaths(manifest, path, tableLocation);
   } catch (cause) {
     if (cause instanceof LakeqlError) throw cause;
     throw new LakeqlError("LAKEQL_CATALOG_ERROR", `Invalid Iceberg manifest at ${path}`, {
@@ -1211,7 +1215,7 @@ function validateAvroManifest(records: unknown[], path: string): Manifest {
   }
   const manifest: Manifest = { path, files };
   if (deleteFiles.length > 0) manifest.deleteFiles = deleteFiles;
-  return validateManifestPaths(manifest, path);
+  return manifest;
 }
 
 function avroDeleteContent(content: number, dataFile: Record<string, unknown>): string {
@@ -1379,34 +1383,80 @@ function validateManifestContent(content: unknown, path: string): void {
   );
 }
 
-function validateManifestPaths(manifest: Manifest, path: string, tablePrefix = ""): Manifest {
-  validateManifestSourcedPath(manifest.path, tablePrefix);
-  for (const file of manifest.files) {
-    validateManifestSourcedPath(file.path, tablePrefix);
-    for (const deleteFile of file.deleteFiles ?? []) {
-      validateManifestSourcedPath(deleteFile.path, tablePrefix);
-    }
-  }
-  for (const deleteFile of manifest.deleteFiles ?? []) {
-    validateManifestSourcedPath(deleteFile.path, tablePrefix);
-  }
-  return { ...manifest, path };
+function validateManifestPaths(
+  manifest: Manifest,
+  path: string,
+  tableLocation = tableLocationRef(""),
+): Manifest {
+  validateManifestSourcedPath(manifest.path, tableLocation);
+  return {
+    ...manifest,
+    path,
+    files: manifest.files.map((file) => ({
+      ...file,
+      path: validateManifestSourcedPath(file.path, tableLocation),
+      ...(file.deleteFiles !== undefined
+        ? {
+            deleteFiles: file.deleteFiles.map((deleteFile) => ({
+              ...deleteFile,
+              path: validateManifestSourcedPath(deleteFile.path, tableLocation),
+            })),
+          }
+        : {}),
+    })),
+    ...(manifest.deleteFiles !== undefined
+      ? {
+          deleteFiles: manifest.deleteFiles.map((deleteFile) => ({
+            ...deleteFile,
+            path: validateManifestSourcedPath(deleteFile.path, tableLocation),
+          })),
+        }
+      : {}),
+  };
 }
 
-function validateManifestSourcedPath(path: string, tablePrefix = ""): string {
-  if (/^(?:[a-z][a-z0-9+.-]*:)?\/\//iu.test(path) || path.startsWith("/")) {
+interface IcebergTableLocationRef {
+  prefix: string;
+  uriAuthority?: string;
+}
+
+function validateManifestSourcedPath(path: string, tableLocation = tableLocationRef("")): string {
+  const normalized = normalizeManifestSourcedPath(path, tableLocation);
+  validateRelativeObjectPath(normalized, path);
+  if (
+    tableLocation.prefix !== "" &&
+    normalized !== tableLocation.prefix &&
+    !normalized.startsWith(`${tableLocation.prefix}/`)
+  ) {
     throw new LakeqlError(
       "LAKEQL_VALIDATION_ERROR",
-      `Iceberg manifest path must be relative: ${path}`,
+      `Iceberg manifest path escapes table location: ${path}`,
       {
         path,
+        tableLocation: tableLocation.prefix,
       },
     );
   }
-  for (const segment of path.split("/")) {
-    let decoded: string;
+  return normalized;
+}
+
+function normalizeManifestSourcedPath(
+  path: string,
+  tableLocation: IcebergTableLocationRef,
+): string {
+  if (/^(?:[a-z][a-z0-9+.-]*:)?\/\//iu.test(path) || path.startsWith("/")) {
+    if (tableLocation.uriAuthority === undefined) {
+      throw new LakeqlError(
+        "LAKEQL_VALIDATION_ERROR",
+        `Iceberg manifest path must be relative: ${path}`,
+        {
+          path,
+        },
+      );
+    }
+    let url: URL;
     try {
-      decoded = decodeURIComponent(segment);
+      url = new URL(path);
     } catch {
       throw new LakeqlError(
         "LAKEQL_VALIDATION_ERROR",
@@ -1416,37 +1466,59 @@ function validateManifestSourcedPath(path: string, tablePrefix = ""): string {
         },
       );
     }
-    if (decoded === "." || decoded === "..") {
+    const authority = `${url.protocol}//${url.host}`;
+    if (authority !== tableLocation.uriAuthority) {
       throw new LakeqlError(
         "LAKEQL_VALIDATION_ERROR",
-        `Iceberg manifest path contains traversal: ${path}`,
+        `Iceberg manifest path escapes table location: ${path}`,
         {
           path,
+          tableLocation: tableLocation.uriAuthority,
         },
       );
     }
-  }
-  if (tablePrefix !== "" && path !== tablePrefix && !path.startsWith(`${tablePrefix}/`)) {
-    throw new LakeqlError(
-      "LAKEQL_VALIDATION_ERROR",
-      `Iceberg manifest path escapes table location: ${path}`,
-      {
-        path,
-        tableLocation: tablePrefix,
-      },
-    );
+    return trimSlashes(decodeURIComponent(url.pathname));
   }
   return path;
 }
 
-function tableLocationObjectPrefix(location: string): string {
+function validateRelativeObjectPath(path: string, originalPath: string): void {
+  for (const segment of path.split("/")) {
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(segment);
+    } catch {
+      throw new LakeqlError(
+        "LAKEQL_VALIDATION_ERROR",
+        `Iceberg manifest path is invalid: ${originalPath}`,
+        {
+          path: originalPath,
+        },
+      );
+    }
+    if (decoded === "." || decoded === "..") {
+      throw new LakeqlError(
+        "LAKEQL_VALIDATION_ERROR",
+        `Iceberg manifest path contains traversal: ${originalPath}`,
+        {
+          path: originalPath,
+        },
+      );
+    }
+  }
+}
+
+function tableLocationRef(location: string): IcebergTableLocationRef {
   const trimmed = trimTrailingSlash(location.trim());
-  if (trimmed === "" || !trimmed.includes("/")) return "";
+  if (trimmed === "" || !trimmed.includes("/")) return { prefix: "" };
   if (/^[a-z][a-z0-9+.-]*:\/\//iu.test(trimmed)) {
     const url = new URL(trimmed);
-    return trimSlashes(decodeURIComponent(url.pathname));
+    return {
+      prefix: trimSlashes(decodeURIComponent(url.pathname)),
+      uriAuthority: `${url.protocol}//${url.host}`,
+    };
   }
-  return trimSlashes(trimmed);
+  return { prefix: trimSlashes(trimmed) };
 }
 
 function trimSlashes(value: string): string {

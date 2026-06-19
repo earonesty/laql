@@ -16,6 +16,7 @@ import {
   vectorValue,
 } from "lakeql-core";
 import { readParquetColumnBatch } from "./column-batches.js";
+import { lakeqlParquetCompressors } from "./compressors.js";
 import {
   decodedColumnCacheKey,
   decodedColumnPageCacheKey,
@@ -383,6 +384,7 @@ async function* readColumnVectorBatches(
     element: leaf.element,
     schemaPath,
     parsers: { ...DEFAULT_PARSERS, ...lakeqlParquetParsers },
+    compressors: lakeqlParquetCompressors,
     ...columnMetadata,
   } satisfies ColumnDecoder;
   let dictionary: DecodedArray | undefined;
@@ -501,7 +503,7 @@ function dictionaryPageValues(
     compressedBytes,
     Number(header.uncompressed_page_size),
     columnDecoder.codec,
-    undefined,
+    columnDecoder.compressors,
   );
   const pageReader = {
     view: new DataView(page.buffer, page.byteOffset, page.byteLength),
@@ -543,7 +545,7 @@ function dataPageValues(
       compressedBytes,
       Number(header.uncompressed_page_size),
       columnDecoder.codec,
-      undefined,
+      columnDecoder.compressors,
     );
     const { definitionLevels, dataPage } = readDataPage(page, dataHeader, columnDecoder);
     const compactDataPage = compactPresentValues(dataPage);
