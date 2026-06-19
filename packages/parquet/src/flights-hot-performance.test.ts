@@ -22,6 +22,7 @@ const scanRangeCacheBytes = 32 * 1024 * 1024;
 const lakeCacheBytes = positiveIntegerEnv("LAKEQL_HOT_PERF_CACHE_BYTES", 64 * 1024 * 1024);
 const lakeCachePolicy = cachePolicyEnv("LAKEQL_HOT_PERF_CACHE_POLICY");
 const expectZeroHotBytes = envFlag("LAKEQL_HOT_PERF_EXPECT_ZERO_HOT_BYTES", true);
+const hotProfileRepeats = positiveIntegerEnv("LAKEQL_HOT_PERF_HOT_PROFILE_REPEATS", 1);
 
 interface StoreCounters {
   get: number;
@@ -105,7 +106,10 @@ describe.skipIf(!runHotPerf)("Plotly flights hot performance", () => {
       async () => {
         const cold = await runCase(hotCase, "cold");
         const warmup = await runCase(hotCase, "warmup");
-        const hot = await runCase(hotCase, "hot", warmup.runtime);
+        let hot = await runCase(hotCase, "hot", warmup.runtime);
+        for (let repeat = 1; repeat < hotProfileRepeats; repeat += 1) {
+          hot = await runCase(hotCase, "hot", warmup.runtime);
+        }
 
         expect(cold.result.rows).toBeGreaterThan(0);
         expect(warmup.result.rows).toBe(cold.result.rows);
