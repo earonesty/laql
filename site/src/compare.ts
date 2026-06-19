@@ -369,8 +369,8 @@ async function run(): Promise<void> {
         rows: rows.length,
         ms,
         initMs: 0,
-        requests: stats.requests,
-        bytes: stats.bytes,
+        requests: stats?.requests,
+        bytes: stats?.bytes,
         rowGroups: rowGroupSummary(lakeStats),
         scanRows: lakeStats.rowsDecoded,
         scanRowsLabel: "scan rows",
@@ -382,8 +382,8 @@ async function run(): Promise<void> {
         rows: rows.length,
         ms,
         initMs,
-        requests: stats.requests,
-        bytes: stats.bytes,
+        requests: stats?.requests,
+        bytes: stats?.bytes,
         scanRowsLabel: "scan rows",
       });
     }
