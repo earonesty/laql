@@ -366,6 +366,111 @@ describe("Lake query runtime", () => {
     ).rejects.toMatchObject({ code: "LAKEQL_TYPE_ERROR" });
   });
 
+  it("resumes object operator states and applies default spill ids", async () => {
+    const rowsByPath = {
+      table: [
+        { id: 3, region: "west", amount: 10 },
+        { id: 1, region: "east", amount: 20 },
+        { id: 2, region: "west", amount: 5 },
+      ],
+    };
+    const { lake } = await makeLake({ rowsByPath, budget: { maxBufferedRows: 2 } });
+
+    await expect(lake.path("table").limit(1).topKWithState()).rejects.toMatchObject({
+      code: "LAKEQL_TYPE_ERROR",
+    });
+    await expect(
+      lake
+        .path("table")
+        .orderBy([{ column: "id" }])
+        .topKWithState(),
+    ).rejects.toMatchObject({ code: "LAKEQL_TYPE_ERROR" });
+    await expect(lake.path("table").sortWithState()).rejects.toMatchObject({
+      code: "LAKEQL_TYPE_ERROR",
+    });
+
+    const spill = memorySpillAdapter();
+    const topK = await lake
+      .path("table")
+      .orderBy([{ column: "id" }])
+      .offset(1)
+      .limit(1)
+      .topKWithState({ spill });
+    expect(topK.operatorSpill).toEqual({
+      id: "topk-q_test",
+      byteSize: topK.operatorState.byteLength,
+    });
+    await expect(spill.read("topk-q_test")).resolves.toEqual(topK.operatorState);
+
+    const empty = await makeLake({ rowsByPath: { table: [] }, budget: { maxBufferedRows: 2 } });
+    await expect(
+      empty.lake
+        .path("table")
+        .orderBy([{ column: "id" }])
+        .offset(1)
+        .limit(1)
+        .topKWithState({ operatorState: deserializeTopKOperatorState(topK.operatorState) }),
+    ).resolves.toMatchObject({ rows: [{ id: 2 }] });
+
+    const sort = await lake
+      .path("table")
+      .orderBy([{ column: "id" }])
+      .sortWithState({ spill });
+    expect(sort.operatorSpill).toEqual({
+      id: "sort-q_test",
+      byteSize: sort.operatorState.byteLength,
+    });
+    await expect(spill.read("sort-q_test")).resolves.toEqual(sort.operatorState);
+    const sortState = deserializeSortOperatorState(sort.operatorState);
+    await expect(
+      empty.lake
+        .path("table")
+        .orderBy([{ column: "id" }])
+        .sortWithState({ operatorState: sortState, spill }),
+    ).resolves.toMatchObject({
+      rows: [{ id: 1 }, { id: 2 }, { id: 3 }],
+    });
+    await expect(
+      empty.lake
+        .path("table")
+        .orderBy([{ column: "id" }])
+        .sortWithState({ operatorState: sortState }),
+    ).rejects.toMatchObject({ code: "LAKEQL_BOOKMARK_INVALID" });
+
+    const aggregate = await lake
+      .path("table")
+      .groupBy(["region"])
+      .aggregateWithState(
+        {
+          rows: { op: "count" },
+          total: { op: "sum", column: "amount" },
+        },
+        { spill },
+      );
+    expect(aggregate.operatorSpill).toEqual({
+      id: "aggregate-q_test",
+      byteSize: aggregate.operatorState.byteLength,
+    });
+    await expect(spill.read("aggregate-q_test")).resolves.toEqual(aggregate.operatorState);
+    const resumedAggregate = await empty.lake
+      .path("table")
+      .groupBy(["region"])
+      .aggregateWithState(
+        {
+          rows: { op: "count" },
+          total: { op: "sum", column: "amount" },
+        },
+        { operatorState: deserializeAggregateOperatorState(aggregate.operatorState) },
+      );
+    expect(resumedAggregate.rows).toEqual(
+      expect.arrayContaining([
+        { region: "west", rows: 2, total: 15 },
+        { region: "east", rows: 1, total: 20 },
+      ]),
+    );
+    expect(resumedAggregate.rows).toHaveLength(2);
+  });
+
   it("supports first, count, batches, NDJSON, JSON, and CSV streams", async () => {
     const { lake } = await makeLake({
       rowsByPath: {
@@ -2044,11 +2149,16 @@ describe("Lake query runtime", () => {
       { op: "avg", sum: 1, count: "2" },
       { op: "var_samp", count: 2, mean: 1, m2: "bad" },
       { op: "median", values: [true] },
+      { op: "median", values: "1" },
       { op: "quantile", quantile: 1.5, values: [1] },
+      { op: "quantile", quantile: 0.5, values: [null] },
       { op: "min", value: { nested: true } },
       { op: "count_distinct", values: [1] },
+      { op: "approx_count_distinct", values: [1] },
       { op: "mode", values: [{ key: "x", value: 1, count: -1 }] },
+      { op: "mode", values: [{ key: "x", value: { nested: true }, count: 1 }] },
       { op: "first", value: "a", seen: "yes" },
+      { op: "last", value: { nested: true }, seen: true },
       { op: "unknown" },
     ];
     for (const invalidState of invalidAggregateStates) {
@@ -2069,6 +2179,8 @@ describe("Lake query runtime", () => {
       { version: 1, orderBy: [{ column: "" }], offset: 0, limit: 1, rows: [] },
       { version: 1, orderBy: [{ column: "id" }], offset: -1, limit: 1, rows: [] },
       { version: 1, orderBy: [{ column: "id" }], offset: 0, limit: -1, rows: [] },
+      { version: 1, orderBy: [{ column: "id" }], offset: 0.5, limit: 1, rows: [] },
+      { version: 1, orderBy: [{ column: "id" }], offset: 0, limit: 1.5, rows: [] },
       { version: 1, orderBy: [{ column: "id" }], offset: 0, limit: 1, rows: [{ x: {} }] },
     ];
     for (const invalidState of invalidTopKStates) {
@@ -2086,6 +2198,11 @@ describe("Lake query runtime", () => {
         version: 1,
         orderBy: [{ column: "id" }],
         runs: [{ spillRef: "run", rowCount: 1.5, byteSize: 1 }],
+      },
+      {
+        version: 1,
+        orderBy: [{ column: "id" }],
+        runs: [{ spillRef: "run", rowCount: 1, byteSize: -1 }],
       },
       { version: 1, orderBy: [{ column: "id" }], runs: [{ rows: [{ nested: {} }] }] },
     ];
