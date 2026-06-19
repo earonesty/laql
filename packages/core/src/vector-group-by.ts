@@ -7,6 +7,7 @@ import {
   scalarVectorValue,
   selectedRowIndices,
   type Vector,
+  vectorLength,
 } from "./batch.js";
 import { LakeqlError } from "./errors.js";
 import type { Scalar } from "./expr.js";
@@ -79,6 +80,8 @@ export function updateVectorGroupByState(
   selection?: Selection,
   options: VectorGroupByOptions = {},
 ): number {
+  const dictionaryMatched = updateDictionaryVectorGroupByState(state, batch, selection, options);
+  if (dictionaryMatched !== undefined) return dictionaryMatched;
   const keyReader = vectorGroupKeyReader(state.keys, batch);
   const aggregateInputs = aggregateInputValues(state.spec, batch);
   let matched = 0;
@@ -118,6 +121,82 @@ export function updateVectorGroupByState(
     enforceGroupByMemoryBudget(state, options.budget);
   }
   return matched;
+}
+
+function updateDictionaryVectorGroupByState(
+  state: VectorGroupByState,
+  batch: Batch,
+  selection: Selection | undefined,
+  options: VectorGroupByOptions,
+): number | undefined {
+  if (state.keys.length !== 1) return undefined;
+  const key = state.keys[0];
+  if (key === undefined) return undefined;
+  const vector = batch.columns[key];
+  if (vector === undefined) {
+    throw new LakeqlError("LAKEQL_UNKNOWN_COLUMN", `Unknown column ${key}`, { column: key });
+  }
+  if (vector.type !== "dict") return undefined;
+  const aggregateInputs = aggregateInputValues(state.spec, batch);
+  const groupsByDictionaryId = new Array<VectorGroup | undefined>(vectorLength(vector.dictionary));
+  let nullGroup: VectorGroup | undefined;
+  let matched = 0;
+  for (let index = 0; index < batch.rowCount; index += 1) {
+    if (selection !== undefined && selection[index] !== 1) continue;
+    matched += 1;
+    let group: VectorGroup;
+    if (vector.valid !== undefined && vector.valid[index] === 0) {
+      if (nullGroup === undefined) nullGroup = getOrCreateGroupByValues(state, [null], options);
+      group = nullGroup;
+    } else {
+      group = getOrCreateDictionaryGroup(state, vector, index, groupsByDictionaryId, options);
+    }
+    for (const input of aggregateInputs) {
+      updateVectorGroupAggregateValue(group, input.alias, input.valueAt(index), options);
+    }
+    enforceGroupByMemoryBudget(state, options.budget);
+  }
+  return matched;
+}
+
+function getOrCreateDictionaryGroup(
+  state: VectorGroupByState,
+  vector: Extract<Vector, { type: "dict" }>,
+  index: number,
+  groupsByDictionaryId: (VectorGroup | undefined)[],
+  options: VectorGroupByOptions,
+): VectorGroup {
+  const dictionaryId = vector.indices[index] ?? 0;
+  const group = groupsByDictionaryId[dictionaryId];
+  if (group !== undefined) return group;
+  const keyValue = scalarVectorValue(vector.dictionary, dictionaryId);
+  const next = getOrCreateGroupByValues(state, [keyValue], options);
+  groupsByDictionaryId[dictionaryId] = next;
+  return next;
+}
+
+function getOrCreateGroupByValues(
+  state: VectorGroupByState,
+  keyValues: Scalar[],
+  options: VectorGroupByOptions,
+): VectorGroup {
+  const key = groupKey(keyValues);
+  let group = state.groups.get(key);
+  if (group !== undefined) return group;
+  if (options.maxGroups !== undefined && state.groups.size >= options.maxGroups) {
+    throw new LakeqlError(
+      "LAKEQL_GROUP_LIMIT_EXCEEDED",
+      `Query exceeded group budget (${state.groups.size + 1} > ${options.maxGroups})`,
+      { limit: options.maxGroups, actual: state.groups.size + 1 },
+    );
+  }
+  group = {
+    keyValues,
+    states: createVectorAggregateStates(state.spec, options),
+  };
+  state.groups.set(key, group);
+  enforceGroupByMemoryBudget(state, options.budget);
+  return group;
 }
 
 export function getOrCreateVectorGroup(

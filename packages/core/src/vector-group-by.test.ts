@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { batchFromColumns, materializeBatchRows, predicateSelection } from "./batch.js";
+import {
+  batchFromColumns,
+  batchFromVectors,
+  materializeBatchRows,
+  predicateSelection,
+} from "./batch.js";
 import { col, gt, mul } from "./expr.js";
 import {
   createVectorGroupByState,
@@ -75,6 +80,60 @@ describe("vector group-by kernels", () => {
         modeAmount: 40,
         minId: 4,
         maxId: 4,
+      },
+    ]);
+  });
+
+  it("groups dictionary vectors through the aggregate state machinery", () => {
+    const dictionary = batchFromColumns({ value: ["east", "west"] }).columns.value;
+    const amount = batchFromColumns({ amount: [10, 20, 30, 40, 50] }).columns.amount;
+    const id = batchFromColumns({ id: [1, 2, 3, 4, 5] }).columns.id;
+    if (dictionary === undefined || amount === undefined || id === undefined) {
+      throw new Error("missing test vectors");
+    }
+    const batch = batchFromVectors({
+      region: {
+        type: "dict",
+        indices: new Uint32Array([0, 1, 0, 1, 1]),
+        dictionary,
+      },
+      amount,
+      id,
+    });
+
+    expect(
+      materializeBatchRows(
+        vectorGroupByBatch(
+          ["region"],
+          {
+            rows: { op: "count" },
+            total: { op: "sum", column: "amount" },
+            average: { op: "avg", column: "amount" },
+            medianAmount: { op: "median", column: "amount" },
+            modeAmount: { op: "mode", column: "amount" },
+            distinctIds: { op: "count_distinct", column: "id" },
+          },
+          batch,
+        ),
+      ),
+    ).toEqual([
+      {
+        region: "east",
+        rows: 2,
+        total: 40,
+        average: 20,
+        medianAmount: 20,
+        modeAmount: 10,
+        distinctIds: 2,
+      },
+      {
+        region: "west",
+        rows: 3,
+        total: 110,
+        average: 36.666666666666664,
+        medianAmount: 40,
+        modeAmount: 20,
+        distinctIds: 3,
       },
     ]);
   });
