@@ -138,6 +138,41 @@ describe("vector group-by kernels", () => {
     ]);
   });
 
+  it("uses the encoded group loop for scalar and composite vector keys", () => {
+    const single = materializeBatchRows(
+      vectorGroupByBatch(
+        ["bucket"],
+        { rows: { op: "count" }, total: { op: "sum", column: "amount" } },
+        batchFromColumns({
+          bucket: [2, 1, 2, 1, null],
+          amount: [10, 20, 30, 40, 50],
+        }),
+      ),
+    );
+    expect(single).toEqual([
+      { bucket: 2, rows: 2, total: 40 },
+      { bucket: 1, rows: 2, total: 60 },
+      { bucket: null, rows: 1, total: 50 },
+    ]);
+
+    const composite = materializeBatchRows(
+      vectorGroupByBatch(
+        ["bucket", "flag"],
+        { rows: { op: "count" }, total: { op: "sum", column: "amount" } },
+        batchFromColumns({
+          bucket: [2, 2, 2, 1],
+          flag: [true, true, false, true],
+          amount: [10, 30, 5, 20],
+        }),
+      ),
+    );
+    expect(composite).toEqual([
+      { bucket: 2, flag: true, rows: 2, total: 40 },
+      { bucket: 2, flag: false, rows: 1, total: 5 },
+      { bucket: 1, flag: true, rows: 1, total: 20 },
+    ]);
+  });
+
   it("keeps nulls together and distinguishes composite key primitive types", () => {
     const batch = batchFromColumns({
       key: ["1", "1", null, null],

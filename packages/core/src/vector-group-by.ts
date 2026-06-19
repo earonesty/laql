@@ -63,6 +63,11 @@ interface AggregateInput {
   valueAt(index: number): VectorAggregateValue;
 }
 
+interface GroupKeyEncoder {
+  groupIdAt(index: number): number;
+  keyValues(groupId: number): Scalar[];
+}
+
 export function createVectorGroupByState(
   keys: readonly string[],
   spec: AggregateSpec,
@@ -80,8 +85,8 @@ export function updateVectorGroupByState(
   selection?: Selection,
   options: VectorGroupByOptions = {},
 ): number {
-  const dictionaryMatched = updateDictionaryVectorGroupByState(state, batch, selection, options);
-  if (dictionaryMatched !== undefined) return dictionaryMatched;
+  const encodedMatched = updateEncodedVectorGroupByState(state, batch, selection, options);
+  if (encodedMatched !== undefined) return encodedMatched;
   const keyReader = vectorGroupKeyReader(state.keys, batch);
   const aggregateInputs = aggregateInputValues(state.spec, batch);
   let matched = 0;
@@ -123,33 +128,25 @@ export function updateVectorGroupByState(
   return matched;
 }
 
-function updateDictionaryVectorGroupByState(
+function updateEncodedVectorGroupByState(
   state: VectorGroupByState,
   batch: Batch,
   selection: Selection | undefined,
   options: VectorGroupByOptions,
 ): number | undefined {
-  if (state.keys.length !== 1) return undefined;
-  const key = state.keys[0];
-  if (key === undefined) return undefined;
-  const vector = batch.columns[key];
-  if (vector === undefined) {
-    throw new LakeqlError("LAKEQL_UNKNOWN_COLUMN", `Unknown column ${key}`, { column: key });
-  }
-  if (vector.type !== "dict") return undefined;
+  const encoder = createGroupKeyEncoder(state.keys, batch);
+  if (encoder === undefined) return undefined;
   const aggregateInputs = aggregateInputValues(state.spec, batch);
-  const groupsByDictionaryId = new Array<VectorGroup | undefined>(vectorLength(vector.dictionary));
-  let nullGroup: VectorGroup | undefined;
+  const groupsById: (VectorGroup | undefined)[] = [];
   let matched = 0;
   for (let index = 0; index < batch.rowCount; index += 1) {
     if (selection !== undefined && selection[index] !== 1) continue;
     matched += 1;
-    let group: VectorGroup;
-    if (vector.valid !== undefined && vector.valid[index] === 0) {
-      if (nullGroup === undefined) nullGroup = getOrCreateGroupByValues(state, [null], options);
-      group = nullGroup;
-    } else {
-      group = getOrCreateDictionaryGroup(state, vector, index, groupsByDictionaryId, options);
+    const groupId = encoder.groupIdAt(index);
+    let group = groupsById[groupId];
+    if (group === undefined) {
+      group = getOrCreateGroupByValues(state, encoder.keyValues(groupId), options);
+      groupsById[groupId] = group;
     }
     for (const input of aggregateInputs) {
       updateVectorGroupAggregateValue(group, input.alias, input.valueAt(index), options);
@@ -157,22 +154,6 @@ function updateDictionaryVectorGroupByState(
     enforceGroupByMemoryBudget(state, options.budget);
   }
   return matched;
-}
-
-function getOrCreateDictionaryGroup(
-  state: VectorGroupByState,
-  vector: Extract<Vector, { type: "dict" }>,
-  index: number,
-  groupsByDictionaryId: (VectorGroup | undefined)[],
-  options: VectorGroupByOptions,
-): VectorGroup {
-  const dictionaryId = vector.indices[index] ?? 0;
-  const group = groupsByDictionaryId[dictionaryId];
-  if (group !== undefined) return group;
-  const keyValue = scalarVectorValue(vector.dictionary, dictionaryId);
-  const next = getOrCreateGroupByValues(state, [keyValue], options);
-  groupsByDictionaryId[dictionaryId] = next;
-  return next;
 }
 
 function getOrCreateGroupByValues(
@@ -197,6 +178,95 @@ function getOrCreateGroupByValues(
   state.groups.set(key, group);
   enforceGroupByMemoryBudget(state, options.budget);
   return group;
+}
+
+function createGroupKeyEncoder(keys: readonly string[], batch: Batch): GroupKeyEncoder | undefined {
+  if (keys.length === 0) return undefined;
+  const vectors = keys.map((key) => {
+    const vector = batch.columns[key];
+    if (vector === undefined) {
+      throw new LakeqlError("LAKEQL_UNKNOWN_COLUMN", `Unknown column ${key}`, { column: key });
+    }
+    return vector;
+  });
+  if (vectors.some((vector) => !canEncodeScalarVector(vector))) return undefined;
+  if (vectors.length === 1) {
+    const vector = vectors[0];
+    if (vector === undefined) return undefined;
+    if (vector.type === "dict") return dictionaryGroupKeyEncoder(vector);
+    return scalarGroupKeyEncoder(vector);
+  }
+  return compositeGroupKeyEncoder(vectors);
+}
+
+function canEncodeScalarVector(vector: Vector): boolean {
+  switch (vector.type) {
+    case "null":
+    case "f64":
+    case "i64":
+    case "bool":
+    case "utf8":
+    case "dict":
+      return true;
+    case "list":
+    case "struct":
+    case "map":
+      return false;
+  }
+}
+
+function dictionaryGroupKeyEncoder(vector: Extract<Vector, { type: "dict" }>): GroupKeyEncoder {
+  const nullGroupId = vectorLength(vector.dictionary);
+  return {
+    groupIdAt(index) {
+      return vector.valid !== undefined && vector.valid[index] === 0
+        ? nullGroupId
+        : (vector.indices[index] ?? 0);
+    },
+    keyValues(groupId) {
+      return [groupId === nullGroupId ? null : scalarVectorValue(vector.dictionary, groupId)];
+    },
+  };
+}
+
+function scalarGroupKeyEncoder(vector: Vector): GroupKeyEncoder {
+  const ids = new Map<string, number>();
+  const values: Scalar[][] = [];
+  return {
+    groupIdAt(index) {
+      const value = scalarVectorValue(vector, index);
+      const key = scalarGroupKeyPart(value);
+      const existing = ids.get(key);
+      if (existing !== undefined) return existing;
+      const next = values.length;
+      ids.set(key, next);
+      values.push([value]);
+      return next;
+    },
+    keyValues(groupId) {
+      return values[groupId] ?? [null];
+    },
+  };
+}
+
+function compositeGroupKeyEncoder(vectors: readonly Vector[]): GroupKeyEncoder {
+  const ids = new Map<string, number>();
+  const values: Scalar[][] = [];
+  return {
+    groupIdAt(index) {
+      const keyValues = vectors.map((vector) => scalarVectorValue(vector, index));
+      const key = groupKey(keyValues);
+      const existing = ids.get(key);
+      if (existing !== undefined) return existing;
+      const next = values.length;
+      ids.set(key, next);
+      values.push(keyValues);
+      return next;
+    },
+    keyValues(groupId) {
+      return values[groupId] ?? [];
+    },
+  };
 }
 
 export function getOrCreateVectorGroup(
