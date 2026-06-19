@@ -56,6 +56,54 @@
   },
   {
     "area": "Parquet",
+    "feature": "Direct vector batch reads",
+    "status": "supported+tested",
+    "notes": "Parquet scans can produce aligned column vectors for scalar, dictionary, nullable, timestamp, byte-array, LIST, and MAP physical shapes without materializing row objects at the scan boundary.",
+    "evidence": [
+      {
+        "file": "packages/parquet/src/vector-batches.test.ts",
+        "pattern": "reads supported scalar leaf types with row windows and decoded cache reuse"
+      },
+      {
+        "file": "packages/parquet/src/vector-batches.test.ts",
+        "pattern": "reads supported nested Parquet columns as aligned vector batches"
+      },
+      {
+        "file": "packages/parquet/src/vector-batches.test.ts",
+        "pattern": "reads dictionary and all-null physical pages through direct vectors"
+      },
+      {
+        "file": "packages/parquet/src/vector-batches.test.ts",
+        "pattern": "reads the known emitted DATA_PAGE_V2 vector shapes including dictionary strings"
+      }
+    ]
+  },
+  {
+    "area": "Parquet",
+    "feature": "Shared bounded scan cache",
+    "status": "supported+tested",
+    "notes": "A single caller-sized cache budget can cover object bytes, scan range reads, Parquet metadata, decoded column batches, and decoded page vectors according to the selected cache policy.",
+    "evidence": [
+      {
+        "file": "packages/parquet/src/index.test.ts",
+        "pattern": "reuses cached Parquet footer metadata across scans"
+      },
+      {
+        "file": "packages/parquet/src/index.test.ts",
+        "pattern": "reuses decoded column batches from the shared cache budget"
+      },
+      {
+        "file": "packages/parquet/src/index.test.ts",
+        "pattern": "spends scan range cache entries from the shared cache budget"
+      },
+      {
+        "file": "packages/parquet/src/decoded-column-cache.test.ts",
+        "pattern": "keeps balanced constrained caches focused on encoded bytes"
+      }
+    ]
+  },
+  {
+    "area": "Parquet",
     "feature": "Lists and maps",
     "status": "supported+tested",
     "notes": "Delegated to hyparquet and compared against DuckDB-authored LIST and MAP Parquet values.",
@@ -383,6 +431,50 @@
       {
         "file": "packages/cli/src/index.test.ts",
         "pattern": "describes a local Parquet path through SQL"
+      }
+    ]
+  },
+  {
+    "area": "Execution",
+    "feature": "Vectorized predicates and grouping",
+    "status": "supported+tested",
+    "notes": "The execution layer evaluates scalar, timestamp, dictionary, composite-key, and nullable vector predicates and grouped aggregate states before materializing output rows.",
+    "evidence": [
+      {
+        "file": "packages/core/src/batch.test.ts",
+        "pattern": "evaluates dictionary vectors with scalar semantics"
+      },
+      {
+        "file": "packages/core/src/batch.test.ts",
+        "pattern": "evaluates timestamp vectors with precision-preserving predicate semantics"
+      },
+      {
+        "file": "packages/core/src/vector-group-by.test.ts",
+        "pattern": "groups dictionary vectors through the aggregate state machinery"
+      },
+      {
+        "file": "packages/core/src/vector-group-by.test.ts",
+        "pattern": "uses the encoded group loop for scalar and composite vector keys"
+      }
+    ]
+  },
+  {
+    "area": "Geospatial",
+    "feature": "GeoJSON, WKT point, bbox, and H3 predicates",
+    "status": "supported+tested",
+    "notes": "st_intersects, h3_in, and h3_within can run as composable vector predicates over plain and dictionary string vectors; row-group pruning uses bbox and H3 statistics when available.",
+    "evidence": [
+      {
+        "file": "packages/core/src/batch.test.ts",
+        "pattern": "evaluates geo and h3 predicate kernels over large string and dictionary vectors"
+      },
+      {
+        "file": "packages/parquet/src/index.test.ts",
+        "pattern": "queries geo and h3 fixtures with function predicates"
+      },
+      {
+        "file": "packages/parquet/src/index.test.ts",
+        "pattern": "prunes bbox and h3 function predicates with row-group stats"
       }
     ]
   },
