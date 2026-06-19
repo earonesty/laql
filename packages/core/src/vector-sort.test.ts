@@ -90,6 +90,10 @@ describe("vector sort kernels", () => {
       { id: 3, score: 50 },
       { id: 5, score: 40 },
     ]);
+    expect(vectorTopKIndices(batch, [{ column: "score" }], 0)).toEqual([]);
+    expect(
+      materializeBatchRows(vectorTopKBatch(batch, [{ column: "score" }], { limit: 0 })),
+    ).toEqual([]);
   });
 
   it("orders timestamp vectors by epoch precision", () => {
@@ -195,6 +199,83 @@ describe("vector sort kernels", () => {
     ]);
   });
 
+  it("concatenates null, timestamp, dictionary, and nested vectors with stable materialization", () => {
+    const dictionaryA = batchFromColumns({ value: ["a", "b"] }).columns.value;
+    const dictionaryB = batchFromColumns({ value: ["b", "c"] }).columns.value;
+    if (dictionaryA === undefined || dictionaryB === undefined)
+      throw new Error("missing dictionary");
+    const left = batchFromVectors({
+      empty: { type: "null", length: 2 },
+      loaded_at: {
+        type: "timestamp",
+        values: new BigInt64Array([1_700_000_000_001n, 1_700_000_000_002n]),
+        unit: "millis",
+        isAdjustedToUTC: true,
+      },
+      label: { type: "dict", indices: new Uint32Array([0, 1]), dictionary: dictionaryA },
+      tags: batchFromColumns({ tags: [["a"], null] }).columns.tags ?? { type: "null", length: 2 },
+      attrs: batchFromColumns({ attrs: [{ id: 1 }, null] }).columns.attrs ?? {
+        type: "null",
+        length: 2,
+      },
+      lookup: batchFromColumns({ lookup: [new Map([["k", "v"]]), null] }).columns.lookup ?? {
+        type: "null",
+        length: 2,
+      },
+    });
+    const right = batchFromVectors({
+      empty: { type: "null", length: 1 },
+      loaded_at: {
+        type: "timestamp",
+        values: new BigInt64Array([1_700_000_000_003_000n]),
+        unit: "micros",
+        isAdjustedToUTC: true,
+      },
+      label: { type: "dict", indices: new Uint32Array([1]), dictionary: dictionaryB },
+      tags: batchFromColumns({ tags: [["b", "c"]] }).columns.tags ?? { type: "null", length: 1 },
+      attrs: batchFromColumns({ attrs: [{ id: 2 }] }).columns.attrs ?? { type: "null", length: 1 },
+      lookup: batchFromColumns({ lookup: [new Map([["k", "w"]])] }).columns.lookup ?? {
+        type: "null",
+        length: 1,
+      },
+    });
+
+    const combined = concatBatches([left, right]);
+
+    expect(combined.columns.empty?.type).toBe("null");
+    expect(combined.columns.loaded_at?.type).toBe("timestamp");
+    expect(combined.columns.label?.type).toBe("utf8");
+    expect(combined.columns.tags?.type).toBe("list");
+    expect(combined.columns.attrs?.type).toBe("struct");
+    expect(combined.columns.lookup?.type).toBe("struct");
+    expect(materializeBatchRows(combined)).toEqual([
+      {
+        empty: null,
+        loaded_at: timestampFromEpoch(1_700_000_000_001n, "millis"),
+        label: "a",
+        tags: ["a"],
+        attrs: { id: 1 },
+        lookup: { k: "v" },
+      },
+      {
+        empty: null,
+        loaded_at: timestampFromEpoch(1_700_000_000_002n, "millis"),
+        label: "b",
+        tags: null,
+        attrs: null,
+        lookup: null,
+      },
+      {
+        empty: null,
+        loaded_at: timestampFromEpoch(1_700_000_000_003n, "millis"),
+        label: "c",
+        tags: ["b", "c"],
+        attrs: { id: 2 },
+        lookup: { k: "w" },
+      },
+    ]);
+  });
+
   it("rejects invalid ordering requests with typed errors", () => {
     const batch = batchFromColumns({ id: [1], amount: [10] });
 
@@ -204,8 +285,32 @@ describe("vector sort kernels", () => {
     expect(() => vectorSortIndices(batch, [{ column: "missing" }])).toThrowError(
       expect.objectContaining({ code: "LAKEQL_UNKNOWN_COLUMN" }),
     );
+    expect(() => vectorSortIndices(batch, [{ column: "" }])).toThrowError(
+      expect.objectContaining({ code: "LAKEQL_TYPE_ERROR" }),
+    );
+    expect(() =>
+      vectorSortIndices(batch, [{ column: "amount", direction: "sideways" as never }]),
+    ).toThrowError(expect.objectContaining({ code: "LAKEQL_TYPE_ERROR" }));
+    expect(() =>
+      vectorSortIndices(batch, [{ column: "amount", nulls: "middle" as never }]),
+    ).toThrowError(expect.objectContaining({ code: "LAKEQL_TYPE_ERROR" }));
     expect(() => vectorTopKBatch(batch, [{ column: "amount" }], { limit: -1 })).toThrowError(
       expect.objectContaining({ code: "LAKEQL_TYPE_ERROR" }),
     );
+    expect(() =>
+      vectorTopKBatch(batch, [{ column: "amount" }], { offset: -1, limit: 1 }),
+    ).toThrowError(expect.objectContaining({ code: "LAKEQL_TYPE_ERROR" }));
+    expect(() => vectorTopKIndices(batch, [{ column: "amount" }], 1.5)).toThrowError(
+      expect.objectContaining({ code: "LAKEQL_TYPE_ERROR" }),
+    );
+    expect(() => concatBatches([batch, batchFromColumns({ id: [2], other: [3] })])).toThrowError(
+      expect.objectContaining({ code: "LAKEQL_TYPE_ERROR" }),
+    );
+    expect(() =>
+      concatBatches([batchFromColumns({ id: [1] }), batchFromColumns({ id: ["x"] })]),
+    ).toThrowError(expect.objectContaining({ code: "LAKEQL_TYPE_ERROR" }));
+    expect(() =>
+      vectorSortIndices(batchFromColumns({ nested: [[1], [2]] }), [{ column: "nested" }]),
+    ).toThrowError(expect.objectContaining({ code: "LAKEQL_TYPE_ERROR" }));
   });
 });

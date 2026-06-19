@@ -1,3 +1,4 @@
+import { SharedMemoryCache } from "lakeql-core";
 import { describe, expect, it } from "vitest";
 import { cachedRangeBuffer } from "./range-cache.js";
 import type { StoreAsyncBuffer } from "./types.js";
@@ -13,7 +14,7 @@ describe("cachedRangeBuffer", () => {
         return source.buffer.slice(start, end);
       },
     };
-    const cached = cachedRangeBuffer(file, { maxBytes: 6 });
+    const cached = cachedRangeBuffer(file, { maxBytes: 6 }, "local");
 
     await expect(bytes(cached.slice(1, 4))).resolves.toEqual([2, 3, 4]);
     await expect(bytes(cached.slice(1, 4))).resolves.toEqual([2, 3, 4]);
@@ -32,15 +33,99 @@ describe("cachedRangeBuffer", () => {
         return source.buffer.slice(start, end);
       },
     };
-    const cached = cachedRangeBuffer(file, { maxBytes: 6, maxEntryBytes: 2 });
+    const cached = cachedRangeBuffer(file, { maxBytes: 6, maxEntryBytes: 2 }, "local");
 
     await cached.slice(0, 3);
     await cached.slice(0, 3);
 
     expect(slices).toBe(2);
   });
+
+  it("bypasses caching when either range budget is disabled", async () => {
+    let slices = 0;
+    const file = storeBuffer([1, 2, 3, 4], () => {
+      slices += 1;
+    });
+
+    const noCache = cachedRangeBuffer(file, { maxBytes: 0 }, "disabled");
+    await noCache.slice(0, 2);
+    await noCache.slice(0, 2);
+
+    const noEntries = cachedRangeBuffer(file, { maxBytes: 4, maxEntryBytes: 0 }, "disabled");
+    await noEntries.slice(0, 2);
+    await noEntries.slice(0, 2);
+
+    expect(slices).toBe(4);
+  });
+
+  it("uses file identity and normalized end offsets in shared range cache keys", async () => {
+    let slices = 0;
+    const file = storeBuffer([1, 2, 3, 4], () => {
+      slices += 1;
+    });
+    file.etag = "etag-a";
+    const sharedCache = new SharedMemoryCache({ maxBytes: 8 });
+    const first = cachedRangeBuffer(file, { maxBytes: 8, sharedCache }, "path-a");
+    const sameIdentity = cachedRangeBuffer(file, { maxBytes: 8, sharedCache }, "path-a");
+    const otherPath = cachedRangeBuffer(file, { maxBytes: 8, sharedCache }, "path-b");
+
+    await expect(bytes(first.slice(1))).resolves.toEqual([2, 3, 4]);
+    await expect(bytes(sameIdentity.slice(1, 4))).resolves.toEqual([2, 3, 4]);
+    await expect(bytes(otherPath.slice(1, 4))).resolves.toEqual([2, 3, 4]);
+
+    expect(slices).toBe(2);
+  });
+
+  it("shares cache budget with policy-specific range priorities", async () => {
+    const ioFile = countedBuffer([1, 2, 3, 4]);
+    const ioShared = new SharedMemoryCache({ maxBytes: 4 });
+    const ioCached = cachedRangeBuffer(
+      ioFile,
+      { maxBytes: 4, sharedCache: ioShared, cacheOptions: { policy: "io" } },
+      "io",
+    );
+    await ioCached.slice(0, 2);
+    ioShared.set("decoded", "decoded", 4, { priority: 2 });
+    await ioCached.slice(0, 2);
+    expect(ioFile.slices).toBe(1);
+
+    const latencyFile = countedBuffer([1, 2, 3, 4]);
+    const latencyShared = new SharedMemoryCache({ maxBytes: 4 });
+    const latencyCached = cachedRangeBuffer(
+      latencyFile,
+      { maxBytes: 4, sharedCache: latencyShared, cacheOptions: { policy: "latency" } },
+      "latency",
+    );
+    await latencyCached.slice(0, 2);
+    latencyShared.set("decoded", "decoded", 4, { priority: 2 });
+    await latencyCached.slice(0, 2);
+    expect(latencyFile.slices).toBe(2);
+  });
 });
 
 async function bytes(input: Promise<ArrayBuffer>): Promise<number[]> {
   return [...new Uint8Array(await input)];
+}
+
+function storeBuffer(values: number[], onSlice: () => void): StoreAsyncBuffer {
+  const source = new Uint8Array(values);
+  return {
+    byteLength: source.byteLength,
+    async slice(start, end) {
+      onSlice();
+      return source.buffer.slice(start, end);
+    },
+  };
+}
+
+function countedBuffer(values: number[]): StoreAsyncBuffer & { readonly slices: number } {
+  let slices = 0;
+  return {
+    ...storeBuffer(values, () => {
+      slices += 1;
+    }),
+    get slices() {
+      return slices;
+    },
+  };
 }

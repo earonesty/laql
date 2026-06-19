@@ -1,0 +1,272 @@
+import {
+  add,
+  and,
+  between,
+  col,
+  eq,
+  fn,
+  gt,
+  isIn,
+  isNull,
+  like,
+  lit,
+  memoryCache,
+  not,
+  or,
+  type QueryStats,
+  type TaskInput,
+} from "lakeql-core";
+import { describe, expect, it } from "vitest";
+import {
+  aggregateScanOptions,
+  aggregateTaskReadColumns,
+  appendRowGroupRange,
+  cloneTaskWithRanges,
+  enforceAggregateTaskBudget,
+  groupAggregateTasks,
+  taskReadOptions,
+  taskRowWindows,
+  validateTaskWorkUnitOptions,
+} from "./task.js";
+
+describe("Parquet task planning contracts", () => {
+  it("builds task read options from vector scan inputs without empty-column noise", () => {
+    expect(taskReadOptions(2, 8, undefined, undefined, {})).toEqual({
+      rowStart: 2,
+      rowEnd: 8,
+    });
+    expect(taskReadOptions(2, 8, [], undefined, { batchSize: 3 })).toEqual({
+      rowStart: 2,
+      rowEnd: 8,
+      batchSize: 3,
+    });
+
+    const stats = queryStats();
+    const predicate = gt("amount", 10);
+    expect(taskReadOptions(2, 8, ["amount"], predicate, { batchSize: 3, stats })).toEqual({
+      rowStart: 2,
+      rowEnd: 8,
+      batchSize: 3,
+      columns: ["amount"],
+      where: predicate,
+      stats,
+    });
+  });
+
+  it("derives row windows from finite row-group ranges and skips invalid spans", () => {
+    expect(
+      taskRowWindows(
+        { row_groups: [{ num_rows: 10 }, { num_rows: 5 }, { num_rows: 7 }] },
+        {
+          path: "data.parquet",
+          rowGroupRanges: [
+            { start: -1, end: 1 },
+            { start: 0, end: 2 },
+            { start: 2, end: 9 },
+            { start: 3, end: 4 },
+            { start: 2, end: 2 },
+          ],
+          partitionValues: {},
+        },
+      ),
+    ).toEqual([
+      { rowStart: 0, rowEnd: 15 },
+      { rowStart: 15, rowEnd: 22 },
+    ]);
+  });
+
+  it("validates task work-unit budgets as explicit positive integers", () => {
+    expect(() => validateTaskWorkUnitOptions({})).toThrowError(
+      expect.objectContaining({ code: "LAKEQL_TYPE_ERROR" }),
+    );
+    for (const maxRowGroupsPerTask of [0, 1.5]) {
+      expect(() => validateTaskWorkUnitOptions({ maxRowGroupsPerTask })).toThrowError(
+        expect.objectContaining({ code: "LAKEQL_TYPE_ERROR" }),
+      );
+    }
+    for (const maxRowsPerTask of [0, 1.5]) {
+      expect(() => validateTaskWorkUnitOptions({ maxRowsPerTask })).toThrowError(
+        expect.objectContaining({ code: "LAKEQL_TYPE_ERROR" }),
+      );
+    }
+    expect(() =>
+      validateTaskWorkUnitOptions({ maxRowGroupsPerTask: 1, maxRowsPerTask: 10 }),
+    ).not.toThrow();
+  });
+
+  it("clones and merges row-group ranges without aliasing caller state", () => {
+    const ranges: TaskInput["rowGroupRanges"] = [];
+    appendRowGroupRange(ranges, 1);
+    appendRowGroupRange(ranges, 2);
+    appendRowGroupRange(ranges, 4);
+    expect(ranges).toEqual([
+      { start: 1, end: 3 },
+      { start: 4, end: 5 },
+    ]);
+
+    const task: TaskInput = {
+      path: "data.parquet",
+      size: 10,
+      etag: "abc",
+      rowGroupCount: 5,
+      rowGroupRanges: ranges,
+      projectedColumns: ["amount"],
+      residualPredicate: eq("tenant", "a"),
+      partitionValues: { tenant: "a" },
+    };
+    const clone = cloneTaskWithRanges(task, [{ start: 0, end: 1 }]);
+    clone.partitionValues.tenant = "b";
+    clone.projectedColumns?.push("extra");
+    clone.rowGroupRanges[0].end = 2;
+
+    expect(task.partitionValues).toEqual({ tenant: "a" });
+    expect(task.projectedColumns).toEqual(["amount"]);
+    expect(task.rowGroupRanges).toEqual(ranges);
+
+    const grouped = groupAggregateTasks([
+      { ...task, rowGroupRanges: [{ start: 4, end: 6 }] },
+      { ...task, rowGroupRanges: [{ start: 1, end: 3 }] },
+      { ...task, rowGroupRanges: [{ start: 3, end: 5 }] },
+      { ...task, etag: "other", rowGroupRanges: [{ start: 9, end: 10 }] },
+    ]);
+    expect(grouped).toEqual([
+      { ...task, rowGroupRanges: [{ start: 1, end: 6 }] },
+      { ...task, etag: "other", rowGroupRanges: [{ start: 9, end: 10 }] },
+    ]);
+  });
+
+  it("collects physical aggregate columns across expression families and partitions", () => {
+    const task: TaskInput = {
+      path: "data.parquet",
+      rowGroupRanges: [{ start: 0, end: 1 }],
+      partitionValues: { tenant: "acme", p_region: "west" },
+      residualPredicate: and(
+        or(eq("tenant", "acme"), isIn("status", ["ok", "late"])),
+        not(between("amount", 10, add(col("limit"), 2))),
+        like("label", "A%"),
+      ),
+    };
+    const spec = {
+      rows: { op: "count" },
+      total: { op: "sum", column: "amount" },
+      fallback: { op: "max", expr: fn("coalesce", col("fallback"), lit(0)) },
+      bucketed: {
+        op: "count",
+        expr: {
+          kind: "case",
+          whens: [{ when: isNull("closed_at"), value: col("opened_at") }],
+          else: col("closed_at"),
+        },
+      },
+    } as const;
+
+    expect(aggregateTaskReadColumns(task, spec, ["p_region", "group_key"])).toEqual([
+      "amount",
+      "closed_at",
+      "fallback",
+      "group_key",
+      "label",
+      "limit",
+      "opened_at",
+      "status",
+    ]);
+
+    expect(
+      aggregateTaskReadColumns(
+        { path: "data.parquet", rowGroupRanges: [], partitionValues: { tenant: "acme" } },
+        { rows: { op: "count" } },
+        ["tenant"],
+      ),
+    ).toBeUndefined();
+  });
+
+  it("creates aggregate scan options only when stats or budgets are active", () => {
+    expect(aggregateScanOptions({})).toBeUndefined();
+
+    const stats = queryStats();
+    const withStats = aggregateScanOptions({ stats });
+    expect(withStats?.stats).toBe(stats);
+    expect(withStats?.batchSize).toBe(4096);
+    expect(withStats?.budget).toEqual({});
+
+    const withBudget = aggregateScanOptions({ batchSize: 128, budget: { maxBytes: 10 } });
+    expect(withBudget?.batchSize).toBe(128);
+    expect(withBudget?.stats).toMatchObject({ queryId: "aggregate-parquet-task" });
+  });
+
+  it("enforces every aggregate task budget counter with actionable error details", () => {
+    expect(() => enforceAggregateTaskBudget(undefined)).not.toThrow();
+
+    const counters: Array<[keyof QueryStats, string, number]> = [
+      ["bytesRequested", "bytes", 11],
+      ["rangeRequests", "range requests", 3],
+      ["rowsDecoded", "rows decoded", 5],
+    ];
+    for (const [field, metric, actual] of counters) {
+      const stats = queryStats();
+      stats[field] = actual;
+      expect(() =>
+        enforceAggregateTaskBudget({
+          batchSize: 1,
+          stats,
+          budget:
+            field === "bytesRequested"
+              ? { maxBytes: actual - 1 }
+              : field === "rangeRequests"
+                ? { maxRangeRequests: actual - 1 }
+                : { maxRowsDecoded: actual - 1 },
+          now: () => 0,
+          startedAt: 0,
+        }),
+      ).toThrowError(
+        expect.objectContaining({
+          code: "LAKEQL_BUDGET_EXCEEDED",
+          details: { metric, limit: actual - 1, actual },
+        }),
+      );
+    }
+
+    expect(() =>
+      enforceAggregateTaskBudget({
+        batchSize: 1,
+        stats: queryStats(),
+        budget: { maxElapsedMs: 9 },
+        now: () => 10,
+        startedAt: 0,
+      }),
+    ).toThrowError(
+      expect.objectContaining({
+        code: "LAKEQL_BUDGET_EXCEEDED",
+        details: { metric: "elapsed milliseconds", limit: 9, actual: 10 },
+      }),
+    );
+  });
+
+  it("accepts metadata cache handles in work-unit validation shapes", () => {
+    expect(() =>
+      validateTaskWorkUnitOptions({ maxRowsPerTask: 1, metadataCache: memoryCache() }),
+    ).not.toThrow();
+  });
+});
+
+function queryStats(): QueryStats {
+  return {
+    queryId: "task-test",
+    elapsedMs: 0,
+    manifestsRead: 0,
+    manifestsSkipped: 0,
+    filesPlanned: 0,
+    filesRead: 0,
+    filesSkipped: 0,
+    rowGroupsRead: 0,
+    rowGroupsSkipped: 0,
+    columnsRead: [],
+    bytesRequested: 0,
+    rangeRequests: 0,
+    rowsDecoded: 0,
+    rowsMatched: 0,
+    rowsReturned: 0,
+    cacheHits: 0,
+    cacheMisses: 0,
+  };
+}

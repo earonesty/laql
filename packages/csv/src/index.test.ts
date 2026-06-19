@@ -21,6 +21,24 @@ describe("CSV ingest", () => {
     ]);
   });
 
+  it("detects delimiters, preserves strings when sniffing is off, and accepts browser byte inputs", async () => {
+    await expect(
+      readCsvObjects("id|active|amount\r\n1|TRUE|1e2\r\n", { trim: true }),
+    ).resolves.toEqual([{ id: 1, active: true, amount: 100 }]);
+    await expect(
+      readCsvObjects(new Uint16Array(new TextEncoder().encode("1\tAlice\n2\tBob\n").buffer), {
+        header: false,
+        typeSniffing: false,
+      }),
+    ).resolves.toEqual([
+      { column1: "1", column2: "Alice" },
+      { column1: "2", column2: "Bob" },
+    ]);
+    await expect(
+      readCsvObjects(new Blob(["id,name\n1,Alice\n"]), { header: true }),
+    ).resolves.toEqual([{ id: 1, name: "Alice" }]);
+  });
+
   it("creates a queryable Lake from browser-friendly CSV inputs", async () => {
     const lake = await createCsvLake(
       {
@@ -70,6 +88,21 @@ describe("CSV ingest", () => {
     await expect(readCsvObjects("id,name\n1,Alice,extra\n")).rejects.toMatchObject({
       code: "LAKEQL_VALIDATION_ERROR",
       details: { rowNumber: 2, expectedColumns: 2, actualColumns: 3 },
+    });
+    await expect(readCsvObjects("id,id\n1,2\n", { header: true })).rejects.toMatchObject({
+      code: "LAKEQL_VALIDATION_ERROR",
+    });
+    await expect(readCsvObjects(",name\n1,Alice\n", { header: true })).rejects.toMatchObject({
+      code: "LAKEQL_VALIDATION_ERROR",
+    });
+    await expect(readCsvObjects("id\n1\n", { delimiter: "\n" })).rejects.toMatchObject({
+      code: "LAKEQL_TYPE_ERROR",
+    });
+    await expect(readCsvObjects("id\n1\n", { quote: "\r" })).rejects.toMatchObject({
+      code: "LAKEQL_TYPE_ERROR",
+    });
+    await expect(readCsvObjects("id\n1\n", { maxRows: 0 })).rejects.toMatchObject({
+      code: "LAKEQL_TYPE_ERROR",
     });
   });
 });

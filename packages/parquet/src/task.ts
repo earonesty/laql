@@ -232,7 +232,8 @@ export function aggregateTaskReadColumns(
   groupColumns: readonly string[] = [],
 ): string[] | undefined {
   const columns = new Set<string>();
-  collectExprColumns(task.residualPredicate, columns);
+  const partitionColumns = new Set(Object.keys(task.partitionValues));
+  collectExprColumns(task.residualPredicate, columns, partitionColumns);
   for (const column of groupColumns) {
     if (!(column in task.partitionValues)) columns.add(column);
   }
@@ -240,7 +241,7 @@ export function aggregateTaskReadColumns(
     if (aggregate.column !== undefined && !(aggregate.column in task.partitionValues)) {
       columns.add(aggregate.column);
     }
-    collectExprColumns(aggregate.expr, columns);
+    collectExprColumns(aggregate.expr, columns, partitionColumns);
   }
   return columns.size === 0 ? undefined : [...columns].sort();
 }
@@ -275,47 +276,51 @@ function mergeRowGroupRanges(
   return merged;
 }
 
-function collectExprColumns(expr: Expr | undefined, columns: Set<string>): void {
+function collectExprColumns(
+  expr: Expr | undefined,
+  columns: Set<string>,
+  partitionColumns: ReadonlySet<string>,
+): void {
   if (expr === undefined) return;
   switch (expr.kind) {
     case "literal":
       return;
     case "column":
-      columns.add(expr.name);
+      if (!partitionColumns.has(expr.name)) columns.add(expr.name);
       return;
     case "compare":
     case "arithmetic":
-      collectExprColumns(expr.left, columns);
-      collectExprColumns(expr.right, columns);
+      collectExprColumns(expr.left, columns, partitionColumns);
+      collectExprColumns(expr.right, columns, partitionColumns);
       return;
     case "in":
-      collectExprColumns(expr.target, columns);
-      for (const value of expr.values) collectExprColumns(value, columns);
+      collectExprColumns(expr.target, columns, partitionColumns);
+      for (const value of expr.values) collectExprColumns(value, columns, partitionColumns);
       return;
     case "between":
-      collectExprColumns(expr.target, columns);
-      collectExprColumns(expr.low, columns);
-      collectExprColumns(expr.high, columns);
+      collectExprColumns(expr.target, columns, partitionColumns);
+      collectExprColumns(expr.low, columns, partitionColumns);
+      collectExprColumns(expr.high, columns, partitionColumns);
       return;
     case "null-check":
     case "like":
-      collectExprColumns(expr.target, columns);
+      collectExprColumns(expr.target, columns, partitionColumns);
       return;
     case "logical":
-      for (const operand of expr.operands) collectExprColumns(operand, columns);
+      for (const operand of expr.operands) collectExprColumns(operand, columns, partitionColumns);
       return;
     case "not":
-      collectExprColumns(expr.operand, columns);
+      collectExprColumns(expr.operand, columns, partitionColumns);
       return;
     case "call":
-      for (const arg of expr.args) collectExprColumns(arg, columns);
+      for (const arg of expr.args) collectExprColumns(arg, columns, partitionColumns);
       return;
     case "case":
       for (const branch of expr.whens) {
-        collectExprColumns(branch.when, columns);
-        collectExprColumns(branch.value, columns);
+        collectExprColumns(branch.when, columns, partitionColumns);
+        collectExprColumns(branch.value, columns, partitionColumns);
       }
-      collectExprColumns(expr.else, columns);
+      collectExprColumns(expr.else, columns, partitionColumns);
       return;
   }
 }

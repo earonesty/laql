@@ -68,6 +68,23 @@ describe("column batches", () => {
   it("rejects ragged columns and mixed primitive types", () => {
     expect(() => batchFromColumns({ a: [1], b: [1, 2] })).toThrowError(LakeqlError);
     expect(() => batchFromColumns({ a: [1, "two"] })).toThrowError(LakeqlError);
+    expect(() => batchFromColumns({ a: [Symbol("x")] })).toThrowError(
+      expect.objectContaining({
+        code: "LAKEQL_TYPE_ERROR",
+        details: { type: "symbol" },
+      }),
+    );
+    expect(() =>
+      batchFromVectors({
+        a: { type: "f64", values: new Float64Array([1]) },
+        b: { type: "utf8", values: ["x", "y"] },
+      }),
+    ).toThrowError(
+      expect.objectContaining({
+        code: "LAKEQL_TYPE_ERROR",
+        details: { column: "b", expectedRows: 1, actualRows: 2 },
+      }),
+    );
   });
 
   it("represents nested values as recursive vectors and materializes them at the boundary", () => {
@@ -111,6 +128,54 @@ describe("column batches", () => {
         route: null,
         attrs: { carrier: "DL" },
       },
+    ]);
+
+    const selected = materializeSelectedBatchRows(batch, new Uint8Array([1, 0, 1]));
+    expect(selected).toEqual([
+      {
+        id: 1,
+        tags: ["late", "weather"],
+        route: { dest: "LAX", legs: [1, 2], origin: "JFK" },
+        attrs: { carrier: "AA", status: "active" },
+      },
+      {
+        id: 3,
+        tags: [],
+        route: null,
+        attrs: { carrier: "DL" },
+      },
+    ]);
+  });
+
+  it("normalizes empty and nullable complex vectors without losing shape", () => {
+    expect(batchFromColumns({}).rowCount).toBe(0);
+    expect(batchFromColumns({ nothing: [null, null] })).toEqual({
+      rowCount: 2,
+      columns: { nothing: { type: "null", length: 2 } },
+    });
+    expect(materializeBatchRows(batchFromColumns({ list: [null, [], [1, null, 3]] }))).toEqual([
+      { list: null },
+      { list: [] },
+      { list: [1, null, 3] },
+    ]);
+    expect(
+      materializeBatchRows(
+        batchFromColumns({
+          struct: [null, { b: 2 }, { a: 1, b: null }],
+          map: [
+            null,
+            new Map<unknown, unknown>([[null, null]]),
+            new Map<unknown, unknown>([
+              ["a", 1],
+              ["b", null],
+            ]),
+          ],
+        }),
+      ),
+    ).toEqual([
+      { struct: null, map: null },
+      { struct: { a: null, b: 2 }, map: {} },
+      { struct: { a: 1, b: null }, map: { a: 1, b: null } },
     ]);
   });
 
@@ -337,6 +402,10 @@ describe("column batches", () => {
   it("returns undefined for unsupported vector predicates", () => {
     const batch = batchFromColumns({ name: ["alpha", "beta"] });
     expect(tryPredicateSelection(batch, like("name", "a%"))).toBeUndefined();
+    expect(tryPredicateSelection(batch, eq("missing", "x"))).toBeUndefined();
+    expect(() => tryPredicateSelection(batch, add(lit(1), lit(2)))).toThrowError(
+      expect.objectContaining({ code: "LAKEQL_TYPE_ERROR" }),
+    );
   });
 
   it("evaluates vector regexp_matches predicates", () => {

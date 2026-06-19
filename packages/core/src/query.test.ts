@@ -27,10 +27,44 @@ class FakeScanner implements ScanAdapter {
   readonly requestedColumns: (string[] | undefined)[] = [];
   readonly requestedColumnBatchColumns: (string[] | undefined)[] = [];
   readonly requestedColumnBatchWindows: { rowStart?: number; rowEnd?: number }[] = [];
+  readonly requestedVectorBatchColumns: (string[] | undefined)[] = [];
+  readonly requestedVectorBatchWindows: { rowStart?: number; rowEnd?: number }[] = [];
   readonly requestedBatchSizes: number[] = [];
   readonly requestedPaths: string[] = [];
+  readonly scanVectorBatches?: ScanAdapter["scanVectorBatches"];
 
-  constructor(private readonly rowsByPath: Record<string, Row[]>) {}
+  constructor(
+    private readonly rowsByPath: Record<string, Row[]>,
+    enableVectorBatches = false,
+  ) {
+    if (enableVectorBatches) {
+      this.scanVectorBatches = async function* (
+        this: FakeScanner,
+        path: string,
+        options: ScanOptions,
+      ): AsyncIterable<ScanColumnBatch> {
+        this.requestedPaths.push(path);
+        this.requestedVectorBatchColumns.push(options.columns);
+        this.requestedVectorBatchWindows.push({
+          ...(options.rowStart === undefined ? {} : { rowStart: options.rowStart }),
+          ...(options.rowEnd === undefined ? {} : { rowEnd: options.rowEnd }),
+        });
+        const rows = this.rowsByPath[path] ?? [];
+        const start = options.rowStart ?? 0;
+        const end = Math.min(options.rowEnd ?? rows.length, rows.length);
+        for (let offset = start; offset < end; offset += options.batchSize) {
+          const slice = rows.slice(offset, Math.min(offset + options.batchSize, end));
+          const columns = Object.fromEntries(
+            (options.columns ?? Object.keys(slice[0] ?? {})).map((column) => [
+              column,
+              slice.map((row) => row[column]),
+            ]),
+          );
+          yield { rowOffset: offset, batch: batchFromColumns(columns) };
+        }
+      };
+    }
+  }
 
   async *scan(path: string, options: ScanOptions): AsyncIterable<Row[]> {
     this.requestedPaths.push(path);
@@ -80,12 +114,13 @@ async function makeLake(config: {
   budget?: ConstructorParameters<typeof Lake>[0]["budget"];
   policy?: ConstructorParameters<typeof Lake>[0]["policy"];
   now?: () => number;
+  vectorBatches?: boolean;
 }) {
   const store = memoryStore();
   for (const path of Object.keys(config.rowsByPath)) {
     await store.put(path, new Uint8Array([1, 2, 3]));
   }
-  const scanner = new FakeScanner(config.rowsByPath);
+  const scanner = new FakeScanner(config.rowsByPath, config.vectorBatches);
   const lake = new Lake({
     store,
     scanner,
@@ -215,6 +250,55 @@ describe("Lake query runtime", () => {
         .toArray(),
     ).resolves.toEqual([{ id: 1, doubled: 24, bucket: "large" }]);
     expect(scanner.requestedColumns[0]).toEqual(["amount", "id"]);
+  });
+
+  it("uses vector batch scans for projected queries with vector-supported expressions", async () => {
+    const { lake, scanner } = await makeLake({
+      vectorBatches: true,
+      rowsByPath: {
+        table: [
+          { id: 1, amount: 5, region: "west" },
+          { id: 2, amount: 12, region: "east" },
+          { id: 3, amount: 20, region: "west" },
+          { id: 4, amount: 30, region: "west" },
+        ],
+      },
+    });
+
+    await expect(
+      lake
+        .path("table")
+        .select(["id"])
+        .project({ doubled: { kind: "arithmetic", op: "mul", left: col("amount"), right: lit(2) } })
+        .where(and(eq("region", "west"), gt("amount", 10)))
+        .offset(1)
+        .limit(1)
+        .batchSize(2)
+        .toArray(),
+    ).resolves.toEqual([{ id: 4, doubled: 60 }]);
+
+    expect(scanner.requestedColumns).toEqual([]);
+    expect(scanner.requestedVectorBatchColumns).toEqual([["amount", "id", "region"]]);
+    expect(scanner.requestedVectorBatchWindows).toEqual([{}]);
+  });
+
+  it("pushes simple vector projection limits into scan windows", async () => {
+    const { lake, scanner } = await makeLake({
+      vectorBatches: true,
+      rowsByPath: {
+        table: Array.from({ length: 10 }, (_, id) => ({ id, amount: id * 2 })),
+      },
+    });
+
+    await expect(lake.path("table").select(["id"]).limit(3).toArray()).resolves.toEqual([
+      { id: 0 },
+      { id: 1 },
+      { id: 2 },
+    ]);
+
+    expect(scanner.requestedColumns).toEqual([]);
+    expect(scanner.requestedVectorBatchColumns).toEqual([["id"]]);
+    expect(scanner.requestedVectorBatchWindows).toEqual([{ rowEnd: 3 }]);
   });
 
   it("applies distinct before offset and limit for ordered queries", async () => {
@@ -1604,6 +1688,82 @@ describe("Lake query runtime", () => {
     ).resolves.toEqual([
       { region: "west", rows: 3, amountRows: 2, doubledTotal: 60, nonZeroIdBuckets: 1 },
       { region: "east", rows: 1, amountRows: 1, doubledTotal: 14, nonZeroIdBuckets: 1 },
+    ]);
+  });
+
+  it("aggregates broad expression families through vector and scalar execution paths", async () => {
+    const { lake, scanner } = await makeLake({
+      rowsByPath: {
+        table: [
+          { region: "west", amount: 10, id: 1, label: "alpha", fallback: null },
+          { region: "west", amount: null, id: 2, label: "beta", fallback: 5 },
+          { region: "east", amount: 30, id: 3, label: "alpine", fallback: 7 },
+          { region: "east", amount: 40, id: 4, label: "bravo", fallback: null },
+        ],
+      },
+    });
+
+    await expect(
+      lake
+        .path("table")
+        .where(or(isNull("amount"), gt("amount", 15)))
+        .groupBy(["region"])
+        .aggregate(
+          {
+            matchedRows: { op: "count" },
+            inRows: { op: "sum", expr: fn("cast", isIn("label", ["alpha", "alpine"]), "number") },
+            betweenRows: { op: "sum", expr: fn("cast", between("id", 2, 4), "number") },
+            nullRows: { op: "sum", expr: fn("cast", isNull("fallback"), "number") },
+            logicalRows: {
+              op: "sum",
+              expr: fn("cast", and(not(isNull("amount")), gt("amount", 20)), "number"),
+            },
+            normalizedLabels: { op: "count_distinct", expr: fn("lower", col("label")) },
+            adjustedTotal: { op: "sum", expr: add(fn("coalesce", col("amount"), 0), col("id")) },
+            caseTotal: {
+              op: "sum",
+              expr: {
+                kind: "case",
+                whens: [{ when: like("label", "a%"), value: col("id") }],
+                else: lit(0),
+              },
+            },
+            likeRows: { op: "sum", expr: fn("cast", like("label", "a%"), "number") },
+          },
+          { orderBy: [{ column: "region" }] },
+        ),
+    ).resolves.toEqual([
+      {
+        region: "east",
+        matchedRows: 2,
+        inRows: 1,
+        betweenRows: 2,
+        nullRows: 1,
+        logicalRows: 2,
+        normalizedLabels: 2,
+        adjustedTotal: 77,
+        caseTotal: 3,
+        likeRows: 1,
+      },
+      {
+        region: "west",
+        matchedRows: 1,
+        inRows: 0,
+        betweenRows: 1,
+        nullRows: 0,
+        logicalRows: 0,
+        normalizedLabels: 1,
+        adjustedTotal: 2,
+        caseTotal: 0,
+        likeRows: 0,
+      },
+    ]);
+    expect(scanner.requestedColumns).toContainEqual([
+      "amount",
+      "fallback",
+      "id",
+      "label",
+      "region",
     ]);
   });
 

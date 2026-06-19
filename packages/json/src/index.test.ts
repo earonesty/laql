@@ -30,6 +30,21 @@ describe("JSON ingest", () => {
     ]);
   });
 
+  it("normalizes object arrays and browser byte inputs across explicit formats", async () => {
+    await expect(readJsonObjects([{ id: 1, nested: { ok: true } }])).resolves.toEqual([
+      { id: 1, nested: { ok: true } },
+    ]);
+    await expect(
+      readJsonObjects(new Uint8Array(new TextEncoder().encode('{"id":1}\n{"id":2}\n')), {
+        format: "ndjson",
+      }),
+    ).resolves.toEqual([{ id: 1 }, { id: 2 }]);
+    await expect(
+      readJsonObjects(new Blob([JSON.stringify([{ id: 3, tags: ["x"] }])]), { format: "json" }),
+    ).resolves.toEqual([{ id: 3, tags: ["x"] }]);
+    await expect(readJsonObjects("")).resolves.toEqual([]);
+  });
+
   it("creates a queryable Lake from browser-friendly JSON inputs", async () => {
     const lake = await createJsonLake(
       {
@@ -88,5 +103,18 @@ describe("JSON ingest", () => {
         details: expect.objectContaining({ lineNumber: 2 }),
       },
     );
+    await expect(readJsonObjects({ id: undefined })).rejects.toMatchObject({
+      code: "LAKEQL_VALIDATION_ERROR",
+      details: { rowNumber: 1, column: "id", valueType: "undefined" },
+    });
+    await expect(readJsonObjects("[]", { format: "csv" as never })).rejects.toMatchObject({
+      code: "LAKEQL_TYPE_ERROR",
+    });
+    await expect(readJsonObjects("[]", { maxRows: 0 })).rejects.toMatchObject({
+      code: "LAKEQL_TYPE_ERROR",
+    });
+    await expect(readJsonObjects("[]", { maxBytes: 0 })).rejects.toMatchObject({
+      code: "LAKEQL_TYPE_ERROR",
+    });
   });
 });

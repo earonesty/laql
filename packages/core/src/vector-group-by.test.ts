@@ -259,6 +259,31 @@ describe("vector group-by kernels", () => {
     ]);
   });
 
+  it("rejects nested group keys with the scalar-vector capability boundary made explicit", () => {
+    const batch = batchFromColumns({
+      tags: [["a", "b"], ["a", "b"], ["c"], null],
+      attrs: [{ level: 1 }, { level: 1 }, { level: 2 }, { level: 1 }],
+      lookup: [
+        new Map<string, unknown>([["k", "v"]]),
+        new Map<string, unknown>([["k", "v"]]),
+        new Map<string, unknown>([["k", "w"]]),
+        null,
+      ],
+      amount: [10, 5, 7, 3],
+    });
+
+    expect(() =>
+      vectorGroupByBatch(
+        ["tags", "attrs", "lookup"],
+        {
+          rows: { op: "count" },
+          total: { op: "sum", column: "amount" },
+        },
+        batch,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "LAKEQL_TYPE_ERROR" }));
+  });
+
   it("supports aggregate expression inputs and distinct budgets", () => {
     const batch = batchFromColumns({
       region: ["east", "east", "west", "west"],

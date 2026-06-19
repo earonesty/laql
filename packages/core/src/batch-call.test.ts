@@ -6,6 +6,7 @@ import {
   batchCallPredicateMask,
   vectorCallExprSupported,
 } from "./batch-call.js";
+import { loadGeoBackend } from "./evaluator.js";
 import { col, fn, lit } from "./expr.js";
 
 function values(items: unknown[]): BatchExprValues {
@@ -98,6 +99,30 @@ describe("batch call vector kernels", () => {
       ),
     ).toEqual([1, null, null]);
     expect(
+      collect(
+        batchCallExprValues(3, "cast", [values([1, false, null]), literal(3, "string")], compareEq),
+      ),
+    ).toEqual(["1", "false", null]);
+    expect(
+      collect(
+        batchCallExprValues(3, "cast", [values([0, "x", null]), literal(3, "boolean")], compareEq),
+      ),
+    ).toEqual([false, true, null]);
+    expect(
+      collect(
+        batchCallExprValues(
+          3,
+          "st_bbox",
+          [literal(3, -1), literal(3, -2), literal(3, 1), literal(3, 2)],
+          compareEq,
+        ),
+      ),
+    ).toEqual([
+      '{"type":"BBox","minx":-1,"miny":-2,"maxx":1,"maxy":2}',
+      '{"type":"BBox","minx":-1,"miny":-2,"maxx":1,"maxy":2}',
+      '{"type":"BBox","minx":-1,"miny":-2,"maxx":1,"maxy":2}',
+    ]);
+    expect(
       collect(batchCallExprValues(3, "coalesce", [values([null, "x", null]), text], compareEq)),
     ).toEqual([" Alpha ", "x", null]);
     expect(
@@ -123,6 +148,48 @@ describe("batch call vector kernels", () => {
     expect(() =>
       batchCallExprValues(1, "cast", [values(["1"]), literal(1, "date")], compareEq).valueAt(0),
     ).toThrow(/Unsupported cast/u);
+    expect(() =>
+      batchCallExprValues(1, "cast", [values(["1"]), literal(1, 1)], compareEq).valueAt(0),
+    ).toThrow(/string type name/u);
+    expect(() => batchCallExprValues(1, "regexp_matches", [values(["a"])], compareEq)).toThrow(
+      /2 or 3/u,
+    );
+    expect(() => batchCallExprValues(1, "regexp_replace", [values(["a"])], compareEq)).toThrow(
+      /3 or 4/u,
+    );
+    expect(() =>
+      batchCallExprValues(1, "regexp_matches", [values(["a"]), values([1])], compareEq).valueAt(0),
+    ).toThrow(/must be strings/u);
+    expect(() =>
+      batchCallExprValues(
+        1,
+        "regexp_replace",
+        [values(["a"]), values(["a"]), values([1])],
+        compareEq,
+      ).valueAt(0),
+    ).toThrow(/must be strings/u);
+    expect(() => batchCallExprValues(1, "floor", [values(["1"])], compareEq).valueAt(0)).toThrow(
+      /expects number/u,
+    );
+    expect(() =>
+      batchCallExprValues(1, "round", [values([1]), values(["bad"])], compareEq).valueAt(0),
+    ).toThrow(/must be numbers/u);
+    expect(() =>
+      batchCallExprValues(
+        1,
+        "st_bbox",
+        [literal(1, 2), literal(1, 0), literal(1, 1), literal(1, 3)],
+        compareEq,
+      ),
+    ).toThrow(/bounds/u);
+    expect(() =>
+      batchCallExprValues(
+        1,
+        "st_bbox",
+        [literal(1, Number.POSITIVE_INFINITY), literal(1, 0), literal(1, 1), literal(1, 3)],
+        compareEq,
+      ),
+    ).toThrow(/finite/u);
     expect(() => batchCallExprValues(1, "missing", [], compareEq)).toThrow(
       /does not support call expressions/u,
     );
@@ -132,8 +199,10 @@ describe("batch call vector kernels", () => {
     expect(vectorCallExprSupported(fn("st_bbox", lit(0), lit(1), lit(2), lit(3)))).toBe(true);
     expect(vectorCallExprSupported(fn("st_bbox", lit(0), lit("x"), lit(2), lit(3)))).toBe(false);
     expect(vectorCallExprSupported(fn("h3_in", col("cell"), lit('["a"]')))).toBe(true);
+    expect(vectorCallExprSupported(fn("h3_in", col("cell")))).toBe(false);
     expect(vectorCallExprSupported(fn("h3_in", lit("cell"), lit('["a"]')))).toBe(false);
     expect(vectorCallExprSupported(fn("h3_within", col("cell"), lit("origin"), lit(1)))).toBe(true);
+    expect(vectorCallExprSupported(fn("h3_within", col("cell"), lit("origin")))).toBe(false);
     expect(vectorCallExprSupported(fn("h3_within", col("cell"), lit("origin"), lit(-1)))).toBe(
       false,
     );
@@ -188,5 +257,79 @@ describe("batch call vector kernels", () => {
       ),
     ).toEqual([0, 1, 0, 0]);
     expect(batchCallPredicateMask("not_vectorized", [])).toBeUndefined();
+  });
+
+  it("evaluates vectorized H3 radius and spatial intersection masks", async () => {
+    await loadGeoBackend();
+    const h3 = batchFromColumns({
+      cell: ["8829a1d757fffff", "8829a1d74bfffff", null],
+    }).columns.cell;
+    if (h3 === undefined) throw new Error("missing h3 vector");
+
+    expect(
+      mask(
+        batchCallPredicateMask("h3_within", [
+          { rowCount: 3, vector: h3, valueAt: () => null },
+          literal(3, "8829a1d757fffff"),
+          literal(3, 0),
+        ]),
+      ),
+    ).toEqual([1, 0, 2]);
+    expect(
+      mask(
+        batchCallPredicateMask("h3_within", [
+          { rowCount: 3, vector: h3, valueAt: () => null },
+          literal(3, null),
+          literal(3, 0),
+        ]),
+      ),
+    ).toEqual([2, 2, 2]);
+    expect(() =>
+      batchCallPredicateMask("h3_within", [
+        { rowCount: 3, vector: h3, valueAt: () => null },
+        literal(3, "not-a-cell"),
+        literal(3, 0),
+      ]),
+    ).toThrow(/origin is invalid/u);
+
+    const geom = batchFromColumns({
+      geom: [
+        JSON.stringify({ type: "Point", coordinates: [0, 0] }),
+        JSON.stringify({ type: "Point", coordinates: [10, 10] }),
+        null,
+      ],
+    }).columns.geom;
+    if (geom === undefined) throw new Error("missing geometry vector");
+    const bbox = batchCallExprValues(
+      3,
+      "st_bbox",
+      [literal(3, -1), literal(3, -1), literal(3, 1), literal(3, 1)],
+      (left, right) => left === right,
+    );
+
+    expect(
+      mask(
+        batchCallPredicateMask("st_intersects", [
+          { rowCount: 3, vector: geom, valueAt: () => null },
+          bbox,
+        ]),
+      ),
+    ).toEqual([1, 0, 2]);
+    expect(
+      mask(
+        batchCallPredicateMask("st_intersects", [
+          bbox,
+          { rowCount: 3, vector: geom, valueAt: () => null },
+        ]),
+      ),
+    ).toEqual([1, 0, 2]);
+    expect(
+      mask(
+        batchCallPredicateMask("st_intersects", [
+          { rowCount: 3, vector: geom, valueAt: () => null },
+          literal(3, null),
+        ]),
+      ),
+    ).toEqual([2, 2, 2]);
   });
 });

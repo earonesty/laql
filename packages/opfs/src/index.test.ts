@@ -112,6 +112,59 @@ describe("opfs cache adapters", () => {
     });
   });
 
+  it("expires JSON entries, tolerates missing deletes, and preserves configured spacing", async () => {
+    const root = new FakeDirectory();
+    const cache = opfsJsonCache<{ path: string }>({
+      directory: root as unknown as FileSystemDirectoryHandle,
+      namespace: "json/cache",
+      space: 2,
+    });
+
+    await cache.set("expired", { value: { path: "old" }, expiresAt: Date.now() - 1 });
+    await cache.set("fresh", { value: { path: "new" }, expiresAt: Date.now() + 10_000 });
+    await cache.delete("missing");
+
+    await expect(cache.get("expired")).resolves.toBeUndefined();
+    await expect(cache.get("fresh")).resolves.toEqual({
+      value: { path: "new" },
+      expiresAt: expect.any(Number),
+    });
+
+    const namespace = root.directories.get("json")?.directories.get("cache");
+    const encoded = namespace?.files.get("fresh.bin");
+    expect(encoded).toBeInstanceOf(Uint8Array);
+    if (encoded === undefined) throw new Error("missing encoded cache entry");
+    const headerLength = new DataView(
+      encoded.buffer,
+      encoded.byteOffset,
+      encoded.byteLength,
+    ).getUint32(0, false);
+    expect(JSON.parse(new TextDecoder().decode(encoded.slice(4, 4 + headerLength)))).toMatchObject({
+      expiresAt: expect.any(Number),
+    });
+    expect(new TextDecoder().decode(encoded.slice(4 + headerLength))).toContain(
+      '\n  "path": "new"\n',
+    );
+  });
+
+  it("rejects corrupt byte cache entries and unavailable default OPFS roots", async () => {
+    const root = new FakeDirectory();
+    const cache = opfsByteCache({ directory: root as unknown as FileSystemDirectoryHandle });
+    const namespace = await root.getDirectoryHandle("lakeql", { create: true });
+    namespace.files.set("short.bin", new Uint8Array([0, 1, 2]));
+    namespace.files.set("bad-header.bin", new Uint8Array([0, 0, 0, 99, 123, 125]));
+
+    await expect(cache.get("short")).rejects.toMatchObject({
+      code: "LAKEQL_VALIDATION_ERROR",
+    });
+    await expect(cache.get("bad-header")).rejects.toMatchObject({
+      code: "LAKEQL_VALIDATION_ERROR",
+    });
+    await expect(opfsByteCache().get("anything")).rejects.toMatchObject({
+      code: "LAKEQL_UNSUPPORTED_PUSHDOWN",
+    });
+  });
+
   it("rejects invalid namespaces, empty keys, and non-JSON values with typed errors", async () => {
     const root = new FakeDirectory();
     expect(() =>
