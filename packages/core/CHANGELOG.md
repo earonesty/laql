@@ -1,5 +1,11 @@
 # lakeql-core
 
+## 0.1.2
+
+### Patch Changes
+
+- Add nested Parquet vector batch support, schema-aware MAP vector normalization, broader vector execution coverage, and cache-aware column batch reads.
+
 ## 0.1.1
 
 ### Patch Changes

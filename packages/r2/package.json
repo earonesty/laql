@@ -1,6 +1,6 @@
 {
   "name": "lakeql-r2",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "lakeql Cloudflare R2 object store adapter",
   "keywords": [
     "cloudflare",
