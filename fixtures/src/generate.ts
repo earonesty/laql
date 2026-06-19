@@ -214,7 +214,7 @@ function generateManifestGoldens() {
     snapshot: "snapshot_2",
     tasks: [
       {
-        id: taskId("job_2", 0, taskInput),
+        id: taskId("job_2", 0, normalizedTaskInput),
         input: normalizedTaskInput,
         outputRole: "data-file",
       },
@@ -285,6 +285,7 @@ function generateManifestGoldens() {
     path: "data/stats.parquet",
     etag: "v1",
     size: 1152,
+    rowGroupCount: 3,
     rowGroupRanges: [{ start: 1, end: 3 }],
     projectedColumns: ["id", "metric"],
     partitionValues: {},
@@ -899,7 +900,7 @@ async function avroObjectContainer(
   });
   const encoder = new avro.streams.BlockEncoder(type, {
     codec: "null",
-    syncMarker: Buffer.from("lakeql-iceberg-avr", "utf8"),
+    syncMarker: Buffer.from("lakeql-iceberg!!", "utf8"),
   });
   const chunks: Uint8Array[] = [];
   encoder.on("data", (chunk: Uint8Array) => chunks.push(chunk));
@@ -981,24 +982,34 @@ function normalizeTaskInput(task: {
   path: string;
   etag?: string;
   size?: number;
+  rowGroupCount?: number;
   rowGroupRanges: { start: number; end: number }[];
   projectedColumns?: string[];
   partitionValues: Record<string, string>;
   residualPredicate?: unknown;
 }) {
-  const normalized = {
+  const normalized: {
+    path: string;
+    etag?: string;
+    size?: number;
+    rowGroupCount?: number;
+    rowGroupRanges: { start: number; end: number }[];
+    projectedColumns?: string[];
+    partitionValues: Record<string, string>;
+    residualPredicate?: unknown;
+  } = {
     path: task.path,
-    etag: task.etag,
-    size: task.size,
     rowGroupRanges: [...task.rowGroupRanges]
       .map((range) => ({ start: range.start, end: range.end }))
       .sort((a, b) => a.start - b.start || a.end - b.end),
-    projectedColumns: task.projectedColumns ? [...task.projectedColumns].sort() : undefined,
     partitionValues: sortRecord(task.partitionValues),
   };
-  if (task.residualPredicate !== undefined) {
-    return { ...normalized, residualPredicate: task.residualPredicate };
-  }
+  if (task.etag !== undefined) normalized.etag = task.etag;
+  if (task.size !== undefined) normalized.size = task.size;
+  if (task.rowGroupCount !== undefined) normalized.rowGroupCount = task.rowGroupCount;
+  if (task.projectedColumns !== undefined)
+    normalized.projectedColumns = [...task.projectedColumns].sort();
+  if (task.residualPredicate !== undefined) normalized.residualPredicate = task.residualPredicate;
   return normalized;
 }
 

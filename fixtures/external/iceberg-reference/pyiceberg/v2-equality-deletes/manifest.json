@@ -30,15 +30,15 @@
     },
     {
       "path": "warehouse/db.db/places/metadata/lakeql-data-manifest.json",
-      "sha256": "5a661cc479a41ff9f0975d9e76db37d4bf942cceb6b3d2fb9033b57a31d3287a"
+      "sha256": "8528b9e2815f4cd3e310ad0634d51dc6f4362e9a09e97befa2d90f2f3d49313d"
     },
     {
       "path": "warehouse/db.db/places/metadata/lakeql-delete-manifest.json",
-      "sha256": "87fc7e49e6d7aeecdbdadfbc17f40c1cfcbcb4f68002f1274c1f2eadca9ad76c"
+      "sha256": "0a645084ad90e53e301814761188f39691e8125fae754d3e96892c947e4faac7"
     },
     {
       "path": "warehouse/db.db/places/metadata/lakeql-equality.metadata.json",
-      "sha256": "95376c7ad528e1eae50ff36f0212245d4d1cc8153ec422277734edf1ea2d3ec7"
+      "sha256": "dcfa93bf38ff71c30b8ea2f04b3fe2b7333bd7b4575a6512f06190c5bf26d4c3"
     },
     {
       "path": "warehouse/db.db/places/metadata/snap-6877658114620335408-0-eb3c4c8d-9af9-4212-85f2-6f02970bb168.avro",
