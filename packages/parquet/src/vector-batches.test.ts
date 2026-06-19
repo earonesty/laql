@@ -1,4 +1,10 @@
-import { materializeBatchRows, memoryStore, type QueryStats, SharedMemoryCache } from "lakeql-core";
+import {
+  gt,
+  materializeBatchRows,
+  memoryStore,
+  type QueryStats,
+  SharedMemoryCache,
+} from "lakeql-core";
 import { describe, expect, it } from "vitest";
 import { DecodedColumnCache } from "./decoded-column-cache.js";
 import { readParquetMetadata, writeParquet } from "./index.js";
@@ -101,6 +107,118 @@ describe("direct Parquet vector batches", () => {
       none.push(batch);
     }
     expect(none).toEqual([]);
+  });
+
+  it("reads timestamp and raw byte vectors across pruned row groups", async () => {
+    const store = memoryStore();
+    await writeParquet(store, "data/vector-pruned.parquet", {
+      rowGroupSize: [2, 2, 2],
+      schema: [
+        { name: "root", num_children: 4 },
+        { name: "id", type: "INT32", repetition_type: "OPTIONAL" },
+        {
+          name: "loaded_at",
+          type: "INT64",
+          converted_type: "TIMESTAMP_MICROS",
+          repetition_type: "OPTIONAL",
+        },
+        { name: "raw", type: "BYTE_ARRAY", repetition_type: "OPTIONAL" },
+        { name: "label", type: "BYTE_ARRAY", converted_type: "UTF8", repetition_type: "OPTIONAL" },
+      ],
+      columnData: [
+        { name: "id", data: [1, 2, 3, 4, 5, 6] },
+        {
+          name: "loaded_at",
+          data: [
+            1_700_000_000_000_001n,
+            null,
+            1_700_000_000_000_003n,
+            1_700_000_000_000_004n,
+            null,
+            1_700_000_000_000_006n,
+          ],
+        },
+        {
+          name: "raw",
+          data: [
+            new Uint8Array([1]),
+            new Uint8Array([2]),
+            new Uint8Array([3]),
+            null,
+            new Uint8Array([5]),
+            new Uint8Array([6]),
+          ],
+        },
+        { name: "label", data: ["a", "a", "b", "b", "c", "c"] },
+      ],
+    });
+    const file = await fileBuffer(store, "data/vector-pruned.parquet");
+    const metadata = await readParquetMetadata(store, "data/vector-pruned.parquet");
+    const options = {
+      columns: ["id", "loaded_at", "raw", "label"],
+      rowStart: 1,
+      rowEnd: 6,
+      batchSize: 2,
+      where: gt("id", 3),
+      stats: queryStats(),
+    };
+
+    expect(canReadParquetVectorBatches(metadata, options)).toBe(true);
+    const batches = [];
+    for await (const batch of readParquetVectorBatchesFromFile(file, metadata, options)) {
+      batches.push(batch);
+    }
+    expect(batches.map((batch) => [batch.rowOffset, batch.batch.rowCount])).toEqual([
+      [2, 2],
+      [4, 2],
+    ]);
+    expect(batches.flatMap(({ batch }) => materializeBatchRows(batch))).toEqual([
+      {
+        id: 3,
+        loaded_at: expect.objectContaining({
+          epochNanoseconds: 1_700_000_000_000_003_000n,
+          unit: "micros",
+          isAdjustedToUTC: true,
+        }),
+        raw: "\x03",
+        label: "b",
+      },
+      {
+        id: 4,
+        loaded_at: expect.objectContaining({
+          epochNanoseconds: 1_700_000_000_000_004_000n,
+          unit: "micros",
+          isAdjustedToUTC: true,
+        }),
+        raw: null,
+        label: "b",
+      },
+      { id: 5, loaded_at: null, raw: "\x05", label: "c" },
+      {
+        id: 6,
+        loaded_at: expect.objectContaining({
+          epochNanoseconds: 1_700_000_000_000_006_000n,
+          unit: "micros",
+          isAdjustedToUTC: true,
+        }),
+        raw: "\x06",
+        label: "c",
+      },
+    ]);
+    expect(options.stats.rowGroupsRead).toBe(2);
+    expect(options.stats.rowGroupsSkipped).toBe(1);
+    expect(options.stats.rowsDecoded).toBe(4);
+    expect(options.stats.columnsRead).toEqual(["id", "label", "loaded_at", "raw"]);
+
+    const uuidMetadata = structuredClone(metadata);
+    const rawLeaf = uuidMetadata.schema.find((entry) => entry.name === "raw");
+    if (rawLeaf !== undefined) rawLeaf.logical_type = { type: "UUID" };
+    expect(canReadParquetVectorBatches(uuidMetadata, { columns: ["raw"] })).toBe(false);
+
+    const unsignedMetadata = structuredClone(metadata);
+    const idLeaf = unsignedMetadata.schema.find((entry) => entry.name === "id");
+    if (idLeaf !== undefined) idLeaf.converted_type = "UINT_64";
+    expect(canReadParquetVectorBatches(unsignedMetadata, { columns: ["id"] })).toBe(false);
   });
 });
 
