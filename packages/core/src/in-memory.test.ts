@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { gt, gte } from "./expr.js";
-import { createInMemoryLake } from "./in-memory.js";
+import { createInMemoryLake, InMemoryRowsStore, inMemoryRowsScanner } from "./in-memory.js";
 
 describe("in-memory row ingest", () => {
   it("queries JavaScript row arrays through the normal Lake runtime", async () => {
@@ -125,5 +125,44 @@ describe("in-memory row ingest", () => {
       code: "LAKEQL_BUDGET_EXCEEDED",
       details: { metric: "rows decoded", limit: 1, actual: 2 },
     });
+  });
+
+  it("exposes in-memory tables through the object-store contract", async () => {
+    const scanner = inMemoryRowsScanner({
+      "logs/b": [{ id: 2 }],
+      "logs/a": [{ id: 1 }],
+      other: [{ id: 3 }],
+    });
+    const store = new InMemoryRowsStore(scanner);
+
+    await expect(store.get("logs/a")).resolves.toBeNull();
+    await expect(store.getRange("logs/a", { offset: 0, length: 4 })).resolves.toEqual(
+      new Uint8Array(),
+    );
+    await expect(store.head("missing")).resolves.toBeNull();
+    await expect(store.head("logs/a")).resolves.toEqual({
+      size: expect.any(Number),
+      contentType: "application/vnd.lakeql.rows+json",
+      etag: expect.any(String),
+      lastModified: new Date(0),
+    });
+
+    const listed = [];
+    for await (const entry of store.list("logs/", { limit: 1 })) listed.push(entry.path);
+    expect(listed).toEqual(["logs/a"]);
+    await expect(store.put("logs/c", new Uint8Array())).rejects.toMatchObject({
+      code: "LAKEQL_TYPE_ERROR",
+    });
+    await expect(store.delete("logs/a")).rejects.toMatchObject({
+      code: "LAKEQL_TYPE_ERROR",
+    });
+  });
+
+  it("rejects empty table names before exposing a scanner", () => {
+    expect(() => inMemoryRowsScanner({ " ": [{ id: 1 }] })).toThrowError(
+      expect.objectContaining({
+        code: "LAKEQL_TYPE_ERROR",
+      }),
+    );
   });
 });

@@ -34,6 +34,11 @@ describe("JSON ingest", () => {
     await expect(readJsonObjects([{ id: 1, nested: { ok: true } }])).resolves.toEqual([
       { id: 1, nested: { ok: true } },
     ]);
+    const arrayBuffer = new TextEncoder().encode('[{"id":4}]').buffer;
+    await expect(readJsonObjects(arrayBuffer)).resolves.toEqual([{ id: 4 }]);
+    const viewBytes = new TextEncoder().encode('{"id":5}');
+    const view = new DataView(viewBytes.buffer, viewBytes.byteOffset, viewBytes.byteLength);
+    await expect(readJsonObjects(view)).resolves.toEqual([{ id: 5 }]);
     await expect(
       readJsonObjects(new Uint8Array(new TextEncoder().encode('{"id":1}\n{"id":2}\n')), {
         format: "ndjson",
@@ -45,6 +50,10 @@ describe("JSON ingest", () => {
     await expect(readJsonObjects("")).resolves.toEqual([]);
   });
 
+  it("falls back from auto JSON parsing to NDJSON when text starts like JSON", async () => {
+    await expect(readJsonObjects('{"id":1}\n{"id":2}')).resolves.toEqual([{ id: 1 }, { id: 2 }]);
+  });
+
   it("creates a queryable Lake from browser-friendly JSON inputs", async () => {
     const lake = await createJsonLake(
       {
@@ -52,7 +61,15 @@ describe("JSON ingest", () => {
           '[{"id":1,"amount":10,"region":"west"},{"id":2,"amount":30,"region":"east"},{"id":3,"amount":50,"region":"west"}]',
         ),
       },
-      { queryId: () => "json-query" },
+      {
+        queryId: () => "json-query",
+        policy: { maxRowsPerBatch: 2 },
+        budget: { maxRowsDecoded: 10 },
+        substrate: "node",
+        now: () => new Date("2024-01-01T00:00:00Z"),
+        maxRows: 10,
+        maxBytes: 10_000,
+      },
     );
     const result = lake.path("uploads").select(["id"]).where(gt("amount", 20)).run();
 

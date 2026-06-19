@@ -32,6 +32,7 @@ import {
   notIn,
   or,
   restoreVectorAggregateStates,
+  SharedMemoryCache,
   stableStringify,
   timestampFromEpoch,
 } from "lakeql-core";
@@ -50,6 +51,7 @@ import {
   WRITE,
 } from "lakeql-fixtures";
 import { beforeAll, describe, expect, it } from "vitest";
+import { DecodedColumnCache } from "./decoded-column-cache.js";
 import {
   aggregateParquetGroupTasks,
   aggregateParquetTask,
@@ -276,6 +278,53 @@ describe("readParquetColumnBatches", () => {
     expect(
       materializeBatchRows(batches[0]?.batch ?? { rowCount: 0, columns: {} }).slice(0, 2),
     ).toEqual(expected);
+  });
+
+  it("reads top-level columns by default and reuses decoded column batches", async () => {
+    const outStore = memoryStore();
+    await writeParquet(outStore, "data/column-cache.parquet", {
+      rowGroupSize: [3],
+      columnData: [
+        { name: "id", data: [1, 2, 3], type: "INT32" },
+        { name: "label", data: ["a", "b", "c"], type: "STRING" },
+      ],
+    });
+    const decodedColumnCache = new DecodedColumnCache(
+      new SharedMemoryCache({ maxBytes: 1024 * 1024 }),
+      { maxBytes: 1024 * 1024, policy: "latency" },
+    );
+    const coldStats = testQueryStats();
+    const coldBatches = [];
+    for await (const batch of readParquetColumnBatches(outStore, "data/column-cache.parquet", {
+      batchSize: 2,
+      stats: coldStats,
+      decodedColumnCache,
+      decodedColumnCacheKey: "data/column-cache.parquet",
+    })) {
+      coldBatches.push(batch);
+    }
+
+    expect(coldBatches.map((batch) => [batch.rowOffset, batch.batch.rowCount])).toEqual([
+      [0, 2],
+      [2, 1],
+    ]);
+    expect(materializeBatchRows(coldBatches[0]?.batch ?? { rowCount: 0, columns: {} })).toEqual([
+      { id: 1, label: "a" },
+      { id: 2, label: "b" },
+    ]);
+    expect(coldStats.columnsRead).toEqual(["id", "label"]);
+    expect(coldStats.cacheMisses).toBeGreaterThan(0);
+
+    const warmStats = testQueryStats();
+    for await (const _ of readParquetColumnBatches(outStore, "data/column-cache.parquet", {
+      batchSize: 2,
+      stats: warmStats,
+      decodedColumnCache,
+      decodedColumnCacheKey: "data/column-cache.parquet",
+    })) {
+      // drain the warm read
+    }
+    expect(warmStats.cacheHits).toBeGreaterThan(0);
   });
 
   it("preserves null validity masks in column vectors", async () => {
