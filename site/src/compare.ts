@@ -25,7 +25,6 @@ type Lake = ReturnType<typeof createParquetLake>;
 
 const DATASET_KEY = "2015_flights.parquet";
 const DATASET_PROXY_PATH = "compare-data/2015_flights.parquet";
-const DATASET_SOURCE_BASE = "https://pub-9d5bcb33a5384d79875a943eef183b6d.r2.dev/plotly/";
 const DATASET_SIZE = 25_238_218;
 const SCAN_RANGE_CACHE_BYTES = 32 * 1024 * 1024;
 
@@ -185,36 +184,28 @@ function datasetProxyBase(): string {
   return url.slice(0, url.length - DATASET_KEY.length);
 }
 
-function datasetUrl(): string {
-  return navigator.serviceWorker?.controller
-    ? datasetProxyUrl()
-    : new URL(DATASET_KEY, DATASET_SOURCE_BASE).href;
-}
+let proxyReady: Promise<void> | undefined;
 
-function datasetBaseUrl(): string {
-  return navigator.serviceWorker?.controller ? datasetProxyBase() : DATASET_SOURCE_BASE;
-}
-
-let proxyReady: Promise<boolean> | undefined;
-
-async function ensureCompareProxy(): Promise<boolean> {
+async function ensureCompareProxy(): Promise<void> {
   if (proxyReady) return proxyReady;
   proxyReady = (async () => {
     if (!("serviceWorker" in navigator)) {
-      return false;
+      throw new Error("This browser does not support the file-read counter.");
     }
     await navigator.serviceWorker.register(new URL("compare-sw.js", window.location.href), {
       scope: "./",
     });
     await navigator.serviceWorker.ready;
-    if (navigator.serviceWorker.controller) return true;
-    return new Promise<boolean>((resolve) => {
-      const timeout = window.setTimeout(() => resolve(false), 2000);
+    if (navigator.serviceWorker.controller) return;
+    await new Promise<void>((resolve, reject) => {
+      const timeout = window.setTimeout(() => {
+        reject(new Error("The file-read counter is not active yet. Reload and try again."));
+      }, 4000);
       navigator.serviceWorker.addEventListener(
         "controllerchange",
         () => {
           window.clearTimeout(timeout);
-          resolve(true);
+          resolve();
         },
         { once: true },
       );
@@ -223,11 +214,9 @@ async function ensureCompareProxy(): Promise<boolean> {
   return proxyReady;
 }
 
-async function resetProxyStats(): Promise<boolean> {
-  const active = await ensureCompareProxy();
-  if (!active) return false;
+async function resetProxyStats(): Promise<void> {
+  await ensureCompareProxy();
   await serviceWorkerRequest("resetStats");
-  return true;
 }
 
 async function serviceWorkerRequest(type: "resetStats"): Promise<{ ok: true }>;
@@ -246,7 +235,7 @@ async function serviceWorkerRequest(
 }
 
 function createLakeRuntime(cacheMode: LakeCacheMode): { lake: Lake; cacheMode: LakeCacheMode } {
-  const store = knownSizeStore(httpStore({ baseUrl: datasetBaseUrl() }));
+  const store = knownSizeStore(httpStore({ baseUrl: datasetProxyBase() }));
   const lake =
     cacheMode === "cached"
       ? createParquetLake({
@@ -260,8 +249,8 @@ function createLakeRuntime(cacheMode: LakeCacheMode): { lake: Lake; cacheMode: L
 
 async function runLakeql(
   sqlText: string,
-): Promise<{ rows: Row[]; ms: number; stats: Stats | undefined; lakeStats: QueryStats }> {
-  const proxyActive = await resetProxyStats();
+): Promise<{ rows: Row[]; ms: number; stats: Stats; lakeStats: QueryStats }> {
+  await resetProxyStats();
   if (lakeCacheMode === "fresh" || !lakeRuntime || lakeRuntime.cacheMode !== lakeCacheMode) {
     lakeRuntime = createLakeRuntime(lakeCacheMode);
   }
@@ -293,7 +282,7 @@ async function runLakeql(
   return {
     rows,
     ms: performance.now() - started,
-    stats: proxyActive ? await serviceWorkerRequest("getStats") : undefined,
+    stats: await serviceWorkerRequest("getStats"),
     lakeStats,
   };
 }
@@ -311,7 +300,7 @@ async function initDuckDb() {
     const worker = new Worker(bundle.mainWorker ?? duckdbWorkerMvp);
     const db = new duckdb.AsyncDuckDB(new duckdb.VoidLogger(), worker);
     await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
-    await db.registerFileURL(DATASET_KEY, datasetUrl(), duckdb.DuckDBDataProtocol.HTTP, true);
+    await db.registerFileURL(DATASET_KEY, datasetProxyUrl(), duckdb.DuckDBDataProtocol.HTTP, true);
     await db.collectFileStatistics(DATASET_KEY, true);
     const conn = await db.connect();
     return { db, conn, initMs: performance.now() - started };
@@ -329,8 +318,8 @@ async function resetDuckDb(): Promise<void> {
 
 async function runDuckDb(
   sqlText: string,
-): Promise<{ rows: Row[]; ms: number; initMs: number; stats: Stats | undefined }> {
-  const proxyActive = await resetProxyStats();
+): Promise<{ rows: Row[]; ms: number; initMs: number; stats: Stats }> {
+  await resetProxyStats();
   if (duckCacheMode === "fresh") await resetDuckDb();
   const { conn, initMs } = await initDuckDb();
   const duckSql = sqlText.replace(/\bfrom\s+flights\.parquet\b/giu, `from '${DATASET_KEY}'`);
@@ -340,7 +329,7 @@ async function runDuckDb(
     rows: arrowTableToRows(table),
     ms: performance.now() - started,
     initMs,
-    stats: proxyActive ? await serviceWorkerRequest("getStats") : undefined,
+    stats: await serviceWorkerRequest("getStats"),
   };
 }
 
@@ -369,8 +358,8 @@ async function run(): Promise<void> {
         rows: rows.length,
         ms,
         initMs: 0,
-        requests: stats?.requests,
-        bytes: stats?.bytes,
+        requests: stats.requests,
+        bytes: stats.bytes,
         rowGroups: rowGroupSummary(lakeStats),
         scanRows: lakeStats.rowsDecoded,
         scanRowsLabel: "scan rows",
@@ -382,8 +371,8 @@ async function run(): Promise<void> {
         rows: rows.length,
         ms,
         initMs,
-        requests: stats?.requests,
-        bytes: stats?.bytes,
+        requests: stats.requests,
+        bytes: stats.bytes,
         scanRowsLabel: "scan rows",
       });
     }
