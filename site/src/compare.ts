@@ -372,12 +372,20 @@ async function run(): Promise<void> {
         requests: stats.requests,
         bytes: stats.bytes,
         rowGroups: rowGroupSummary(lakeStats),
-        decodedRows: lakeStats.rowsDecoded,
+        scanRows: lakeStats.rowsDecoded,
+        scanRowsLabel: "scan rows",
       });
     } else {
       const { rows, ms, initMs, stats } = await runDuckDb(text);
       renderResult(rows);
-      setGauges({ rows: rows.length, ms, initMs, requests: stats.requests, bytes: stats.bytes });
+      setGauges({
+        rows: rows.length,
+        ms,
+        initMs,
+        requests: stats.requests,
+        bytes: stats.bytes,
+        scanRowsLabel: "scan rows",
+      });
     }
   } catch (error) {
     showError(error);
@@ -394,7 +402,8 @@ function setGauges(input: {
   requests: number | undefined;
   bytes: number | undefined;
   rowGroups?: string;
-  decodedRows?: number;
+  scanRows?: number;
+  scanRowsLabel?: string;
 }): void {
   setGauge("g-rows", String(input.rows));
   setGauge("g-ms", input.ms < 10 ? input.ms.toFixed(1) : Math.round(input.ms).toString());
@@ -411,11 +420,12 @@ function setGauges(input: {
   );
   setGauge("g-rowgroups", input.rowGroups ?? "n/a");
   setGauge(
-    "g-decoded",
-    input.decodedRows === undefined || !Number.isFinite(input.decodedRows)
+    "g-scan-rows",
+    input.scanRows === undefined || !Number.isFinite(input.scanRows)
       ? "n/a"
-      : formatCount(input.decodedRows),
+      : formatCount(input.scanRows),
   );
+  setGaugeLabel("g-scan-rows-label", input.scanRowsLabel ?? "scan rows");
   setGauge("g-engine", engine === "lakeql" ? "lakeql" : "duckdb");
 }
 
@@ -426,6 +436,11 @@ function setGauge(id: string, value: string): void {
   el.classList.remove("flash");
   void el.offsetWidth;
   el.classList.add("flash");
+}
+
+function setGaugeLabel(id: string, value: string): void {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value;
 }
 
 function renderResult(rows: Row[]): void {
