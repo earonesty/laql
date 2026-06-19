@@ -1937,6 +1937,24 @@ describe("createParquetLake", () => {
     expect(second.stats.cacheHits).toBeGreaterThan(1);
   });
 
+  it("spends scan range cache entries from the shared cache budget", async () => {
+    const taskStore = countingObjectStore(store);
+    const lake = createParquetLake({
+      store: taskStore,
+      cache: { maxBytes: 1, policy: "io" },
+      scanRangeCache: { maxBytes: 1024 * 1024 },
+    });
+
+    const first = lake.path(`data/${STATS.file}`).select(["metric"]).limit(2).run();
+    await expect(first.toArray()).resolves.toHaveLength(2);
+    expect(taskStore.counters.getRange).toBeGreaterThan(0);
+
+    taskStore.resetCounters();
+    const second = lake.path(`data/${STATS.file}`).select(["metric"]).limit(2).run();
+    await expect(second.toArray()).resolves.toHaveLength(2);
+    expect(taskStore.counters.getRange).toBeGreaterThan(0);
+  });
+
   it("invalidates cached Parquet footer metadata when object etag changes", async () => {
     const metadataCache = memoryCache<ParquetMetadata>();
     const etagStore = memoryStore();

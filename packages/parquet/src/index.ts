@@ -1037,7 +1037,12 @@ export function createParquetLake(config: ParquetLakeConfig): Lake {
     scanRangeCache?: RangeCacheOptions;
   } = {};
   if (config.batchSize !== undefined) scannerOptions.batchSize = config.batchSize;
-  if (config.scanRangeCache !== undefined) scannerOptions.scanRangeCache = config.scanRangeCache;
+  if (config.scanRangeCache !== undefined) {
+    scannerOptions.scanRangeCache =
+      config.cache !== undefined && sharedCache !== undefined
+        ? { ...config.scanRangeCache, sharedCache, cacheOptions: config.cache }
+        : config.scanRangeCache;
+  }
   if (config.metadataCache !== undefined) scannerOptions.metadataCache = config.metadataCache;
   else if (config.cache !== undefined)
     scannerOptions.metadataCache = memoryCache<ParquetMetadata>();

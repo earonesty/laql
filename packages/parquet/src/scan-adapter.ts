@@ -51,7 +51,7 @@ export class ParquetScanAdapter implements ScanAdapter {
 
   async *scan(path: string, options: ScanOptions): AsyncIterable<Row[]> {
     const batchSize = options.batchSize || this.defaultBatchSize;
-    const file = this.scanBuffer(await asyncBufferFromStore(this.store, path, options));
+    const file = this.scanBuffer(path, await asyncBufferFromStore(this.store, path, options));
     const metadata = await this.metadata(path, file, options);
     rejectUnsupportedParquetSchema(metadata);
     const readColumns = options.columns;
@@ -104,7 +104,7 @@ export class ParquetScanAdapter implements ScanAdapter {
   }
 
   async *scanVectorBatches(path: string, options: ScanOptions): AsyncIterable<ScanVectorBatch> {
-    const file = this.scanBuffer(await asyncBufferFromStore(this.store, path, options));
+    const file = this.scanBuffer(path, await asyncBufferFromStore(this.store, path, options));
     const metadata = await this.metadata(path, file, options);
     rejectUnsupportedParquetSchema(metadata);
     try {
@@ -179,7 +179,9 @@ export class ParquetScanAdapter implements ScanAdapter {
     return metadata;
   }
 
-  private scanBuffer(file: StoreAsyncBuffer): StoreAsyncBuffer {
-    return this.scanRangeCache === undefined ? file : cachedRangeBuffer(file, this.scanRangeCache);
+  private scanBuffer(path: string, file: StoreAsyncBuffer): StoreAsyncBuffer {
+    return this.scanRangeCache === undefined
+      ? file
+      : cachedRangeBuffer(file, this.scanRangeCache, path);
   }
 }
