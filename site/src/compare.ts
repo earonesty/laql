@@ -65,7 +65,7 @@ limit 10`,
 ];
 
 let engine: Engine = "lakeql";
-let duckCacheMode: DuckCacheMode = "fresh";
+let duckCacheMode: DuckCacheMode = "cached";
 let lakeCacheMode: LakeCacheMode = "cached";
 let memoryBudgetMb = DEFAULT_MEMORY_BUDGET_MB;
 let activeExample = 0;
