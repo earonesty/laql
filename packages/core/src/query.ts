@@ -747,6 +747,11 @@ export class QueryResult {
     const startedAt = config.now();
     const scanVectorBatches = config.scanner.scanVectorBatches;
     if (scanVectorBatches === undefined) return;
+    const lateMaterialized = await this.lateMaterializedLimitRows(startedAt);
+    if (lateMaterialized !== undefined) {
+      yield* rowsAsBatches(lateMaterialized, config.batchSize ?? 4096);
+      return;
+    }
     let offsetSkipped = 0;
     let returned = 0;
     const { planned: paths, skipped: skippedFiles } = await this.planObjects();
@@ -807,6 +812,88 @@ export class QueryResult {
     }
     stats.elapsedMs = config.now() - startedAt;
     config.metrics?.timing("lakeql.query.elapsed", stats.elapsedMs, { queryId: stats.queryId });
+  }
+
+  private async lateMaterializedLimitRows(startedAt: number): Promise<Row[] | undefined> {
+    const config = this.config;
+    if (
+      config.limit === undefined ||
+      config.where === undefined ||
+      config.select === undefined ||
+      config.scanner.scanVectorBatches === undefined ||
+      !vectorExprSupported(config.where) ||
+      !Object.values(config.projections ?? {}).every(vectorExprSupported)
+    ) {
+      return undefined;
+    }
+    const predicateColumns = predicateReadColumns(config.where);
+    const outputColumns = outputReadColumns(config.select, config.projections);
+    if (predicateColumns.length === 0 || outputColumns.length === 0) return undefined;
+    const lateColumns = outputColumns.filter((column) => !predicateColumns.includes(column));
+    if (lateColumns.length === 0) return undefined;
+
+    const refs: RankedRowRef[] = [];
+    const maxRefs = (config.offset ?? 0) + config.limit;
+    const scanVectorBatches = config.scanner.scanVectorBatches;
+    const { planned: paths, skipped: skippedFiles } = await this.planObjects();
+    this.stats.filesSkipped = skippedFiles;
+    for (const object of paths) {
+      this.stats.filesPlanned += 1;
+      this.stats.filesRead += 1;
+      this.stats.bytesRequested += object.size;
+      enforceBudget(config.budget, this.stats, config.now, startedAt);
+      const scanOptions: ScanOptions = {
+        columns: predicateColumns,
+        where: config.where,
+        canStopEarly: true,
+        batchSize: columnarBatchSize(config.batchSize),
+        stats: this.stats,
+        budget: config.budget,
+        now: config.now,
+        startedAt,
+      };
+      for await (const { rowOffset, batch } of scanVectorBatches.call(
+        config.scanner,
+        object.path,
+        scanOptions,
+      )) {
+        const selection = predicateSelection(batch, config.where);
+        const selected = [...selectedRowIndices(batch.rowCount, selection)];
+        this.stats.rowsMatched += selected.length;
+        for (const index of selected) {
+          refs.push({
+            path: object.path,
+            rowIndex: rowOffset + index,
+            keys: rankKeyRow(batch, index, predicateColumns),
+          });
+          enforceBufferedRowsBudget(config.budget, refs.length);
+          enforceOperatorMemoryBudget(config.budget, estimateOperatorMemoryBytes(refs));
+          if (refs.length >= maxRefs) break;
+        }
+        enforceBudget(config.budget, this.stats, config.now, startedAt);
+        if (refs.length >= maxRefs) break;
+      }
+      if (refs.length >= maxRefs) break;
+    }
+
+    const selectedRefs = refs.slice(config.offset ?? 0, maxRefs);
+    const rowsByRef = await this.materializeRowRefs(
+      selectedRefs,
+      outputColumns,
+      predicateColumns,
+      startedAt,
+      config.batchSize ?? 4096,
+    );
+    const rows = selectedRefs
+      .map((ref) => rowsByRef.get(rowRefKey(ref)))
+      .filter((row): row is Row => row !== undefined)
+      .map((row) => project(row, config.select, config.projections));
+    for (const _row of rows) {
+      this.stats.rowsReturned += 1;
+      enforceBudget(config.budget, this.stats, config.now, startedAt);
+    }
+    this.stats.elapsedMs = config.now() - startedAt;
+    return rows;
   }
 
   async toArray(): Promise<Row[]> {
@@ -1433,6 +1520,7 @@ export class QueryResult {
     columns: readonly string[],
     rankColumns: readonly string[],
     startedAt: number,
+    maxWindowRows = columnarBatchSize(this.config.batchSize),
   ): Promise<Map<string, Row>> {
     const scanVectorBatches = vectorBatchScanner(this.config.scanner);
     if (scanVectorBatches === undefined) return new Map();
@@ -1440,7 +1528,7 @@ export class QueryResult {
     for (const ref of refs) rows.set(rowRefKey(ref), { ...ref.keys });
     const lateColumns = columns.filter((column) => !rankColumns.includes(column));
     if (lateColumns.length === 0) return rows;
-    for (const window of materializationWindows(refs, columnarBatchSize(this.config.batchSize))) {
+    for (const window of materializationWindows(refs, maxWindowRows)) {
       const scanOptions: ScanOptions = {
         columns: lateColumns,
         rowStart: window.rowStart,
@@ -3134,6 +3222,28 @@ function projectedReadColumns(
   for (const expr of Object.values(projections ?? {})) collectExprColumns(expr, columns);
   collectExprColumns(where, columns);
   return columns.size === 0 ? undefined : [...columns].sort();
+}
+
+function predicateReadColumns(where: Expr): string[] {
+  const columns = new Set<string>();
+  collectExprColumns(where, columns);
+  return [...columns].sort();
+}
+
+function outputReadColumns(
+  select: readonly string[],
+  projections: Record<string, Expr> | undefined,
+): string[] {
+  const columns = new Set<string>();
+  for (const column of select) columns.add(column);
+  for (const expr of Object.values(projections ?? {})) collectExprColumns(expr, columns);
+  return [...columns].sort();
+}
+
+async function* rowsAsBatches(rows: readonly Row[], batchSize: number): AsyncIterable<Row[]> {
+  for (let index = 0; index < rows.length; index += batchSize) {
+    yield rows.slice(index, index + batchSize);
+  }
 }
 
 function aggregateReadColumns(

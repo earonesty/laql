@@ -278,8 +278,8 @@ describe("Lake query runtime", () => {
     ).resolves.toEqual([{ id: 4, doubled: 60 }]);
 
     expect(scanner.requestedColumns).toEqual([]);
-    expect(scanner.requestedVectorBatchColumns).toEqual([["amount", "id", "region"]]);
-    expect(scanner.requestedVectorBatchWindows).toEqual([{}]);
+    expect(scanner.requestedVectorBatchColumns).toEqual([["amount", "region"], ["id"]]);
+    expect(scanner.requestedVectorBatchWindows).toEqual([{}, { rowStart: 3, rowEnd: 4 }]);
   });
 
   it("pushes simple vector projection limits into scan windows", async () => {
@@ -542,8 +542,8 @@ describe("Lake query runtime", () => {
         .limit(1)
         .toArray(),
     ).resolves.toEqual([{ id: 3, value: "c" }]);
-    expect(scanner.requestedVectorBatchColumns).toEqual([["id", "keep", "value"]]);
-    expect(scanner.requestedVectorBatchWindows).toEqual([{}]);
+    expect(scanner.requestedVectorBatchColumns).toEqual([["keep"], ["id", "value"]]);
+    expect(scanner.requestedVectorBatchWindows).toEqual([{}, { rowStart: 2, rowEnd: 3 }]);
 
     const unfiltered = await makeLake({
       vectorBatches: true,
