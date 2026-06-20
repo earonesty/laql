@@ -168,23 +168,6 @@ function applyAst(builder: ReturnType<Lake["path"]>, ast: ReturnType<typeof pars
   return next;
 }
 
-type OrderTerm = { column: string; direction?: "asc" | "desc" };
-
-function sortRows(rows: Row[], terms: OrderTerm[]): Row[] {
-  return [...rows].sort((a, b) => {
-    for (const term of terms) {
-      const dir = term.direction === "desc" ? -1 : 1;
-      const av = a[term.column];
-      const bv = b[term.column];
-      if (av === bv) continue;
-      if (av === null || av === undefined) return 1;
-      if (bv === null || bv === undefined) return -1;
-      return (av < bv ? -1 : 1) * dir;
-    }
-    return 0;
-  });
-}
-
 function datasetProxyUrl(): string {
   return new URL(DATASET_PROXY_PATH, window.location.href).href;
 }
@@ -297,12 +280,12 @@ async function runLakeql(
     let base = lake.path(DATASET_KEY);
     if (ast.where) base = base.where(ast.where);
     const result = base.run();
-    rows = (await result.aggregate(ast.groupBy ?? [], aggregates ?? {})) as Row[];
+    rows = (await result.aggregate(ast.groupBy ?? [], aggregates ?? {}, {
+      ...(ast.orderBy !== undefined ? { orderBy: ast.orderBy } : {}),
+      ...(ast.limit !== undefined ? { limit: ast.limit } : {}),
+      ...(ast.offset !== undefined ? { offset: ast.offset } : {}),
+    })) as Row[];
     lakeStats = result.stats;
-    if (ast.orderBy) rows = sortRows(rows, ast.orderBy);
-    const offset = ast.offset ?? 0;
-    if (ast.limit !== undefined) rows = rows.slice(offset, offset + ast.limit);
-    else if (offset > 0) rows = rows.slice(offset);
   }
 
   return {
