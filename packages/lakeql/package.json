@@ -67,6 +67,7 @@
   "devDependencies": {
     "lakeql-core": "workspace:*",
     "lakeql-fixtures": "workspace:*",
+    "lakeql-fs": "workspace:*",
     "lakeql-http": "workspace:*",
     "lakeql-iceberg": "workspace:*",
     "lakeql-parquet": "workspace:*",

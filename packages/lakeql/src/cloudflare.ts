@@ -2,7 +2,7 @@ export * from "lakeql-core";
 export * from "lakeql-iceberg";
 export * from "lakeql-parquet";
 export { createParquetLake as createLake, parquetScanner } from "lakeql-parquet";
-export { r2Store } from "lakeql-r2";
+export { cloudflareD1JsonCache, r2Store } from "lakeql-r2";
 export type {
   EngineFilePlan,
   EngineTable,

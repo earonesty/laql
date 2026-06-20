@@ -1,4 +1,6 @@
 import {
+  type CacheAdapter,
+  type CacheEntry,
   LakeqlError,
   type ListOptions,
   type ObjectHead,
@@ -8,6 +10,25 @@ import {
 } from "lakeql-core";
 
 export const PACKAGE = "lakeql-r2" as const;
+
+export interface D1DatabaseLike {
+  prepare(query: string): D1PreparedStatementLike;
+}
+
+export interface D1PreparedStatementLike {
+  bind(...values: unknown[]): D1PreparedStatementLike;
+  first<T = unknown>(column?: string): Promise<T | null>;
+  run(): Promise<unknown>;
+}
+
+export interface CloudflareD1JsonCacheOptions {
+  db: D1DatabaseLike;
+  table?: string;
+  prefix?: string;
+  ttlMs?: number;
+  now?: () => number;
+  createTable?: boolean;
+}
 
 export interface R2ObjectBody {
   key: string;
@@ -39,6 +60,98 @@ export interface R2BucketLike {
 
 export function r2Store(bucket: R2BucketLike): ObjectStore {
   return new R2ObjectStore(bucket);
+}
+
+export function cloudflareD1JsonCache<T = unknown>(
+  options: CloudflareD1JsonCacheOptions,
+): CacheAdapter<T> {
+  return new CloudflareD1JsonCache<T>(options);
+}
+
+export class CloudflareD1JsonCache<T> implements CacheAdapter<T> {
+  private readonly db: D1DatabaseLike;
+  private readonly table: string;
+  private readonly prefix: string;
+  private readonly ttlMs: number | undefined;
+  private readonly now: () => number;
+  private readonly createTable: boolean;
+  private ensurePromise: Promise<void> | undefined;
+
+  constructor(options: CloudflareD1JsonCacheOptions) {
+    this.db = options.db;
+    this.table = validatedD1Identifier(options.table ?? "lakeql_cache");
+    this.prefix = options.prefix ?? "lakeql";
+    this.ttlMs = options.ttlMs;
+    this.now = options.now ?? Date.now;
+    this.createTable = options.createTable ?? true;
+  }
+
+  async get(key: string): Promise<CacheEntry<T> | undefined> {
+    await this.ensureTable();
+    const cacheKey = this.cacheKey(key);
+    const row = await this.db
+      .prepare(`select value, expires_at from ${this.table} where key = ?1`)
+      .bind(cacheKey)
+      .first<{ value: string; expires_at: number | null }>();
+    if (row === null) return undefined;
+    const expiresAt = row.expires_at ?? undefined;
+    if (expiresAt !== undefined && expiresAt <= this.now()) {
+      await this.delete(key);
+      return undefined;
+    }
+    const value = JSON.parse(row.value) as T;
+    const entry: CacheEntry<T> = { value };
+    if (expiresAt !== undefined) entry.expiresAt = expiresAt;
+    return entry;
+  }
+
+  async set(key: string, entry: CacheEntry<T>): Promise<void> {
+    await this.ensureTable();
+    const json = jsonCacheValue(entry.value, key);
+    const expiresAt =
+      entry.expiresAt ?? (this.ttlMs === undefined ? undefined : this.now() + this.ttlMs);
+    await this.db
+      .prepare(
+        `insert into ${this.table} (key, value, expires_at, updated_at)
+values (?1, ?2, ?3, ?4)
+on conflict(key) do update set
+  value = excluded.value,
+  expires_at = excluded.expires_at,
+  updated_at = excluded.updated_at`,
+      )
+      .bind(this.cacheKey(key), json, expiresAt ?? null, this.now())
+      .run();
+  }
+
+  async delete(key: string): Promise<void> {
+    await this.ensureTable();
+    await this.db
+      .prepare(`delete from ${this.table} where key = ?1`)
+      .bind(this.cacheKey(key))
+      .run();
+  }
+
+  private cacheKey(key: string): string {
+    return `${this.prefix}:${key}`;
+  }
+
+  private async ensureTable(): Promise<void> {
+    if (!this.createTable) return;
+    if (this.ensurePromise === undefined) {
+      this.ensurePromise = this.db
+        .prepare(
+          `create table if not exists ${this.table} (
+  key text primary key,
+  value text not null,
+  expires_at integer,
+  updated_at integer not null
+)`,
+        )
+        .run()
+        .then(() => undefined);
+    }
+    await this.ensurePromise;
+  }
 }
 
 export class R2ObjectStore implements ObjectStore {
@@ -109,4 +222,36 @@ function r2Info(object: Omit<R2ObjectBody, "arrayBuffer">): ObjectInfo {
   if (object.etag !== undefined) info.etag = object.etag;
   if (object.uploaded !== undefined) info.lastModified = object.uploaded;
   return info;
+}
+
+function validatedD1Identifier(value: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
+    throw new LakeqlError("LAKEQL_VALIDATION_ERROR", "D1 cache table name is invalid", {
+      table: value,
+    });
+  }
+  return value;
+}
+
+function jsonCacheValue(value: unknown, key: string): string {
+  if (value === undefined) {
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "D1 JSON cache value is not JSON serializable", {
+      key,
+    });
+  }
+  try {
+    const json = JSON.stringify(value);
+    if (json === undefined) {
+      throw new LakeqlError("LAKEQL_TYPE_ERROR", "D1 JSON cache value is not JSON serializable", {
+        key,
+      });
+    }
+    return json;
+  } catch (cause) {
+    if (cause instanceof LakeqlError) throw cause;
+    throw new LakeqlError("LAKEQL_TYPE_ERROR", "D1 JSON cache value is not JSON serializable", {
+      key,
+      cause,
+    });
+  }
 }

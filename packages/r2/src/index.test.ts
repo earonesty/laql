@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { type R2BucketLike, type R2ObjectBody, r2Store } from "./index.js";
+import {
+  cloudflareD1JsonCache,
+  type D1DatabaseLike,
+  type D1PreparedStatementLike,
+  type R2BucketLike,
+  type R2ObjectBody,
+  r2Store,
+} from "./index.js";
 
 const enc = new TextEncoder();
 
@@ -71,6 +78,99 @@ class FakeBucket implements R2BucketLike {
     };
   }
 }
+
+class FakeD1 implements D1DatabaseLike {
+  readonly rows = new Map<
+    string,
+    { value: string; expires_at: number | null; updated_at: number }
+  >();
+  readonly statements: string[] = [];
+
+  prepare(query: string): D1PreparedStatementLike {
+    this.statements.push(query);
+    return new FakeD1Statement(this, query);
+  }
+}
+
+class FakeD1Statement implements D1PreparedStatementLike {
+  private values: unknown[] = [];
+
+  constructor(
+    private readonly db: FakeD1,
+    private readonly query: string,
+  ) {}
+
+  bind(...values: unknown[]): D1PreparedStatementLike {
+    this.values = values;
+    return this;
+  }
+
+  async first<T = unknown>(_column?: string): Promise<T | null> {
+    if (!this.query.startsWith("select value, expires_at")) return null;
+    const key = String(this.values[0]);
+    const row = this.db.rows.get(key);
+    if (row === undefined) return null;
+    return { value: row.value, expires_at: row.expires_at } as T;
+  }
+
+  async run(): Promise<unknown> {
+    if (this.query.startsWith("create table")) return {};
+    if (this.query.startsWith("insert into")) {
+      const [key, value, expiresAt, updatedAt] = this.values;
+      this.db.rows.set(String(key), {
+        value: String(value),
+        expires_at: expiresAt === null ? null : Number(expiresAt),
+        updated_at: Number(updatedAt),
+      });
+      return {};
+    }
+    if (this.query.startsWith("delete from")) {
+      this.db.rows.delete(String(this.values[0]));
+      return {};
+    }
+    throw new Error(`unexpected D1 query: ${this.query}`);
+  }
+}
+
+describe("cloudflareD1JsonCache", () => {
+  it("persists JSON cache entries in D1 with namespaced keys", async () => {
+    const db = new FakeD1();
+    const cache = cloudflareD1JsonCache<{ manifests: number }>({
+      db,
+      table: "catalog_cache",
+      prefix: "prod",
+    });
+
+    await cache.set("iceberg:manifest:path", { value: { manifests: 2 } });
+
+    expect(await cache.get("iceberg:manifest:path")).toEqual({ value: { manifests: 2 } });
+    expect(db.rows.has("prod:iceberg:manifest:path")).toBe(true);
+    expect(db.statements[0]).toContain("create table if not exists catalog_cache");
+  });
+
+  it("expires entries using cache ttl", async () => {
+    const db = new FakeD1();
+    let now = 100;
+    const cache = cloudflareD1JsonCache<string>({
+      db,
+      ttlMs: 50,
+      now: () => now,
+    });
+
+    await cache.set("key", { value: "value" });
+    expect(await cache.get("key")).toEqual({ value: "value", expiresAt: 150 });
+
+    now = 151;
+    expect(await cache.get("key")).toBeUndefined();
+    expect(db.rows.has("lakeql:key")).toBe(false);
+  });
+
+  it("rejects unsafe D1 table names", () => {
+    expect(() =>
+      cloudflareD1JsonCache({ db: new FakeD1(), table: "cache; drop table cache" }),
+    ).toThrow("D1 cache table name is invalid");
+  });
+});
 
 describe("r2Store", () => {
   it("adapts R2 bucket operations to ObjectStore", async () => {

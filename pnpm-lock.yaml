@@ -88,6 +88,12 @@ importers:
         specifier: workspace:*
         version: link:../core
 
+  packages/fs:
+    dependencies:
+      lakeql-core:
+        specifier: workspace:*
+        version: link:../core
+
   packages/geo:
     dependencies:
       '@turf/boolean-contains':
@@ -161,6 +167,9 @@ importers:
       lakeql-fixtures:
         specifier: workspace:*
         version: link:../../fixtures
+      lakeql-fs:
+        specifier: workspace:*
+        version: link:../fs
       lakeql-http:
         specifier: workspace:*
         version: link:../http

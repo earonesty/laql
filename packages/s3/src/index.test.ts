@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { s3Store, signS3Request } from "./index.js";
+import { s3JsonCache, s3Store, signS3Request } from "./index.js";
 
 const enc = new TextEncoder();
 
@@ -122,6 +122,45 @@ describe("signS3Request", () => {
 });
 
 describe("s3Store", () => {
+  it("persists JSON cache entries through signed S3 requests", async () => {
+    const objects = new Map<string, Uint8Array>();
+    const cache = s3JsonCache<{ rows: number }>({
+      ...options((async (input, init) => {
+        const url = new URL(String(input));
+        const key = url.pathname;
+        const method = init?.method ?? "GET";
+        if (method === "GET") {
+          const bytes = objects.get(key);
+          return bytes === undefined ? new Response(null, { status: 404 }) : new Response(bytes);
+        }
+        if (method === "PUT") {
+          const body = init?.body;
+          const bytes =
+            body instanceof ArrayBuffer
+              ? new Uint8Array(body)
+              : body instanceof Uint8Array
+                ? body
+                : enc.encode(String(body ?? ""));
+          objects.set(key, bytes);
+          return new Response(null);
+        }
+        if (method === "DELETE") {
+          objects.delete(key);
+          return new Response(null);
+        }
+        return new Response(null, { status: 405 });
+      }) as typeof fetch),
+      prefix: "cache",
+    });
+
+    await cache.set("iceberg:manifest:path", { value: { rows: 20 } });
+
+    expect(await cache.get("iceberg:manifest:path")).toEqual({ value: { rows: 20 } });
+    expect(objects.size).toBe(1);
+    await cache.delete("iceberg:manifest:path");
+    expect(await cache.get("iceberg:manifest:path")).toBeUndefined();
+  });
+
   it("performs signed head/get/range/list/put/delete requests", async () => {
     const seen: { url: string; method: string; range: string | null; auth: string | null }[] = [];
     const store = s3Store(

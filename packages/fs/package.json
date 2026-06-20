@@ -1,0 +1,42 @@
+{
+  "name": "lakeql-fs",
+  "version": "0.0.1",
+  "description": "lakeql filesystem cache adapters for Node.js",
+  "keywords": [
+    "filesystem",
+    "cache",
+    "lakehouse",
+    "query-engine"
+  ],
+  "author": "Erik Aronesty",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "prepack": "pnpm -w build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/earonesty/lakeql.git",
+    "directory": "packages/fs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "lakeql-core": "workspace:*"
+  },
+  "private": true
+}

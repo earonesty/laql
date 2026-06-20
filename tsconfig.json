@@ -5,6 +5,7 @@
     { "path": "packages/arrow" },
     { "path": "packages/csv" },
     { "path": "packages/json" },
+    { "path": "packages/fs" },
     { "path": "packages/parquet" },
     { "path": "packages/iceberg" },
     { "path": "packages/http" },

@@ -1,12 +1,14 @@
 import { AwsClient } from "aws4fetch";
 import { XMLParser } from "fast-xml-parser";
 import {
+  type CacheAdapter,
   type ConditionalObjectStore,
   type ConditionalPutOptions,
   LakeqlError,
   type ListOptions,
   type ObjectHead,
   type ObjectInfo,
+  objectStoreJsonCache,
   type PutOptions,
 } from "lakeql-core";
 
@@ -34,8 +36,21 @@ export interface S3StoreOptions {
   now?: () => Date;
 }
 
+export interface S3JsonCacheOptions extends S3StoreOptions {
+  prefix: string;
+  ttlMs?: number;
+}
+
 export function s3Store(options: S3StoreOptions): ConditionalObjectStore {
   return new S3ObjectStore(options);
+}
+
+export function s3JsonCache<T = unknown>(options: S3JsonCacheOptions): CacheAdapter<T> {
+  return objectStoreJsonCache<T>({
+    store: s3Store(options),
+    prefix: options.prefix,
+    ...(options.ttlMs !== undefined ? { ttlMs: options.ttlMs } : {}),
+  });
 }
 
 export class S3ObjectStore implements ConditionalObjectStore {

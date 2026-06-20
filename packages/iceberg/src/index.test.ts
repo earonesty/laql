@@ -13,6 +13,7 @@ import {
   LakeqlError,
   like,
   lit,
+  memoryCache,
   memoryStore,
   not,
   type ObjectStore,
@@ -1203,6 +1204,93 @@ describe("loadIcebergTable", () => {
     expect(table.planFiles({ snapshotId: 1 }).files).toHaveLength(1);
     expect(table.planFiles({ snapshotId: 2 }).files).toHaveLength(1);
     expect(reads.get("metadata.json")).toBe(1);
+    expect(reads.get("manifest-list.json")).toBe(1);
+    expect(reads.get("manifests/shared.json")).toBe(1);
+  });
+
+  it("reuses Iceberg manifest metadata from a caller-provided durable cache", async () => {
+    const baseStore = memoryStore();
+    const reads = new Map<string, number>();
+    const countedStore: ObjectStore = {
+      async get(path) {
+        reads.set(path, (reads.get(path) ?? 0) + 1);
+        return await baseStore.get(path);
+      },
+      getRange(path, range) {
+        return baseStore.getRange(path, range);
+      },
+      put(path, body, options) {
+        return baseStore.put(path, body, options);
+      },
+      delete(path) {
+        return baseStore.delete(path);
+      },
+      list(prefix, options) {
+        return baseStore.list(prefix, options);
+      },
+      head(path) {
+        return baseStore.head(path);
+      },
+    };
+    await baseStore.put(
+      "metadata.json",
+      new TextEncoder().encode(
+        JSON.stringify({
+          "format-version": 2,
+          "table-uuid": "table",
+          location: "memory",
+          "current-snapshot-id": 1,
+          schemas: [
+            { "schema-id": 1, fields: [{ id: 1, name: "id", type: "int", required: true }] },
+          ],
+          snapshots: [
+            {
+              "snapshot-id": 1,
+              "timestamp-ms": 1,
+              "schema-id": 1,
+              "manifest-list": "manifest-list.json",
+            },
+          ],
+        }),
+      ),
+    );
+    await baseStore.put(
+      "manifest-list.json",
+      new TextEncoder().encode(JSON.stringify([{ path: "manifests/shared.json" }])),
+    );
+    await baseStore.put(
+      "manifests/shared.json",
+      new TextEncoder().encode(
+        JSON.stringify({
+          path: "manifests/shared.json",
+          files: [
+            {
+              path: "data/shared.parquet",
+              sequenceNumber: 1,
+              partition: {},
+              recordCount: 2,
+              fileSizeInBytes: 10,
+            },
+          ],
+        }),
+      ),
+    );
+    const cache = memoryCache<unknown>();
+
+    const first = await loadIcebergTable({
+      store: countedStore,
+      metadataPath: "metadata.json",
+      cache,
+    });
+    const second = await loadIcebergTable({
+      store: countedStore,
+      metadataPath: "metadata.json",
+      cache,
+    });
+
+    expect(first.planFiles().files).toHaveLength(1);
+    expect(second.planFiles().files).toHaveLength(1);
+    expect(reads.get("metadata.json")).toBe(2);
     expect(reads.get("manifest-list.json")).toBe(1);
     expect(reads.get("manifests/shared.json")).toBe(1);
   });

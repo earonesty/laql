@@ -1,4 +1,5 @@
 import {
+  type CacheAdapter,
   type Expr,
   jsonSafeValue,
   LakeqlError,
@@ -30,11 +31,13 @@ export type IcebergReadMode = "strict" | "ignore-deletes" | "ignore-unsupported-
 export interface LoadIcebergTableOptions extends ObjectStoreReadControls {
   store: ObjectStore;
   metadataPath: string;
+  cache?: CacheAdapter<unknown>;
 }
 
 export interface LoadIcebergTableFromObjectStoreOptions extends ObjectStoreReadControls {
   store: ObjectStore;
   tableLocation: string;
+  cache?: CacheAdapter<unknown>;
 }
 
 export interface IcebergRestCatalogOptions {
@@ -68,6 +71,7 @@ export interface LoadIcebergTableFromRestOptions
     ObjectStoreReadControls {
   store?: ObjectStore;
   storeFactory?: (context: IcebergRestLoadContext) => ObjectStore | Promise<ObjectStore>;
+  cache?: CacheAdapter<unknown>;
 }
 
 export type IcebergRestAccessDelegation = "vended-credentials" | "remote-signing" | (string & {});
@@ -142,8 +146,12 @@ export interface IcebergCommitCatalog {
 }
 
 export interface IcebergCatalog extends IcebergCommitCatalog {
-  loadTable(store: ObjectStore): Promise<IcebergTable>;
+  loadTable(store: ObjectStore, options?: IcebergLoadTableOptions): Promise<IcebergTable>;
   listTables(): Promise<IcebergTableIdentifier[]>;
+}
+
+export interface IcebergLoadTableOptions extends ObjectStoreReadControls {
+  cache?: CacheAdapter<unknown>;
 }
 
 export interface IcebergTableIdentifier {
@@ -680,12 +688,22 @@ export class IcebergRestCatalog implements IcebergCatalog {
     this.fetchFn = options.fetch ?? fetch;
   }
 
-  async loadTable(store: ObjectStore): Promise<IcebergTable> {
+  async loadTable(
+    store: ObjectStore,
+    options: IcebergLoadTableOptions = {},
+  ): Promise<IcebergTable> {
     const response = await this.loadTableResult();
+    const readControls = loadReadControls(options);
+    const controlledStore = withObjectStoreReadControls(store, readControls);
     return new IcebergTable(
-      store,
+      controlledStore,
       response["metadata-location"],
-      await hydrateMetadataManifests(store, response.metadata),
+      await hydrateMetadataManifests(
+        controlledStore,
+        response.metadata,
+        readControls,
+        options.cache,
+      ),
     );
   }
 
@@ -876,7 +894,10 @@ export class IcebergUnsupportedCatalog implements IcebergCatalog {
     this.table = requiredNonEmptyString(table, "table");
   }
 
-  async loadTable(_store: ObjectStore): Promise<IcebergTable> {
+  async loadTable(
+    _store: ObjectStore,
+    _options: IcebergLoadTableOptions = {},
+  ): Promise<IcebergTable> {
     throw this.unsupported("loadTable");
   }
 
@@ -928,7 +949,12 @@ export async function loadIcebergTable(options: LoadIcebergTableOptions): Promis
     return new IcebergTable(
       store,
       options.metadataPath,
-      await hydrateMetadataManifests(store, validateMetadata(JSON.parse(text)), readControls),
+      await hydrateMetadataManifests(
+        store,
+        validateMetadata(JSON.parse(text)),
+        readControls,
+        options.cache,
+      ),
     );
   } catch (cause) {
     if (cause instanceof LakeqlError) throw cause;
@@ -956,7 +982,12 @@ export async function loadIcebergTableFromObjectStore(
     hintedVersion === undefined
       ? await latestMetadataPathFromList(store, metadataPrefix, readControls)
       : `${metadataPrefix}v${hintedVersion}.metadata.json`;
-  return await loadIcebergTable({ store, metadataPath, ...readControls });
+  return await loadIcebergTable({
+    store,
+    metadataPath,
+    ...readControls,
+    ...(options.cache !== undefined ? { cache: options.cache } : {}),
+  });
 }
 
 export async function loadIcebergTableFromRest(
@@ -975,11 +1006,12 @@ export async function loadIcebergTableFromRest(
       "Iceberg REST table loading requires a store or storeFactory",
     );
   }
-  const store = withObjectStoreReadControls(baseStore, loadReadControls(options));
+  const readControls = loadReadControls(options);
+  const store = withObjectStoreReadControls(baseStore, readControls);
   return new IcebergTable(
     store,
     response["metadata-location"],
-    await hydrateMetadataManifests(store, response.metadata),
+    await hydrateMetadataManifests(store, response.metadata, readControls, options.cache),
   );
 }
 
@@ -1177,13 +1209,16 @@ async function hydrateMetadataManifests(
   store: ObjectStore,
   metadata: MetadataFile,
   controls: ObjectStoreReadControls = {},
+  persistentCache?: CacheAdapter<unknown>,
 ): Promise<MetadataFile> {
   const hydrated = cloneMetadata(metadata);
   const tableLocation = tableLocationRef(hydrated.location);
   const cache: ManifestHydrationCache = {
     lists: new Map(),
     manifests: new Map(),
+    tableCacheKey: icebergTableCacheKey(hydrated),
   };
+  if (persistentCache !== undefined) cache.persistent = persistentCache;
   await Promise.all(
     hydrated.snapshots.map(async (snapshot) => {
       throwIfAborted(controls.signal);
@@ -1199,6 +1234,8 @@ async function hydrateMetadataManifests(
 interface ManifestHydrationCache {
   lists: Map<string, Promise<Manifest[]>>;
   manifests: Map<string, Promise<Manifest>>;
+  persistent?: CacheAdapter<unknown>;
+  tableCacheKey: string;
 }
 
 async function hydrateSnapshotManifests(
@@ -1235,10 +1272,18 @@ function cachedManifestList(
 ): Promise<Manifest[]> {
   const cached = cache.lists.get(path);
   if (cached !== undefined) return cached;
-  const promise = readManifestList(store, path).catch((cause) => {
-    cache.lists.delete(path);
-    throw cause;
-  });
+  const key = icebergMetadataCacheKey(cache, "manifest-list", path);
+  const promise = readPersistentCache(cache.persistent, key, cloneManifestReferences)
+    .then(async (persistent) => {
+      if (persistent !== undefined) return persistent;
+      const manifests = await readManifestList(store, path);
+      await cache.persistent?.set(key, { value: manifests.map(cloneManifestOrReference) });
+      return manifests;
+    })
+    .catch((cause) => {
+      cache.lists.delete(path);
+      throw cause;
+    });
   cache.lists.set(path, promise);
   return promise;
 }
@@ -1251,12 +1296,42 @@ function cachedManifest(
 ): Promise<Manifest> {
   const cached = cache.manifests.get(path);
   if (cached !== undefined) return cached;
-  const promise = readManifest(store, path, tableLocation).catch((cause) => {
-    cache.manifests.delete(path);
-    throw cause;
-  });
+  const key = icebergMetadataCacheKey(cache, "manifest", path);
+  const promise = readPersistentCache(cache.persistent, key, cloneManifest)
+    .then(async (persistent) => {
+      if (persistent !== undefined) return validateManifestPaths(persistent, path, tableLocation);
+      const manifest = await readManifest(store, path, tableLocation);
+      await cache.persistent?.set(key, { value: cloneManifest(manifest) });
+      return manifest;
+    })
+    .catch((cause) => {
+      cache.manifests.delete(path);
+      throw cause;
+    });
   cache.manifests.set(path, promise);
   return promise;
+}
+
+async function readPersistentCache<T>(
+  cache: CacheAdapter<unknown> | undefined,
+  key: string,
+  clone: (value: T) => T,
+): Promise<T | undefined> {
+  const entry = await cache?.get(key);
+  if (entry === undefined) return undefined;
+  return clone(entry.value as T);
+}
+
+function icebergTableCacheKey(metadata: MetadataFile): string {
+  return `${metadata["table-uuid"]}:${metadata.location}`;
+}
+
+function icebergMetadataCacheKey(
+  cache: ManifestHydrationCache,
+  kind: "manifest" | "manifest-list",
+  path: string,
+): string {
+  return `iceberg:${cache.tableCacheKey}:${kind}:${path}`;
 }
 
 function mergeDeleteManifests(manifests: Manifest[]): Manifest[] {
@@ -1954,6 +2029,10 @@ function cloneManifestOrReference(manifest: Manifest): Manifest {
     return { path: manifest.path } as Manifest;
   }
   return cloneManifest(manifest);
+}
+
+function cloneManifestReferences(manifests: Manifest[]): Manifest[] {
+  return manifests.map(cloneManifestOrReference);
 }
 
 function snapshotManifests(snapshot: Snapshot): Manifest[] {
