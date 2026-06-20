@@ -493,6 +493,111 @@ describe("direct Parquet vector batches", () => {
     expect(firstStats.columnsRead).toEqual(["f32", "f64", "flag", "i32", "i64", "name"]);
   });
 
+  it("reads only needed page windows for partial row ranges", async () => {
+    const store = memoryStore();
+    await writeParquet(store, "data/vector-page-window.parquet", {
+      rowGroupSize: [256],
+      pageSize: 512,
+      columnData: [
+        {
+          name: "payload",
+          data: Array.from({ length: 256 }, (_, index) => `payload-${index}-${"x".repeat(96)}`),
+          type: "STRING",
+        },
+      ],
+    });
+    const file = await fileBuffer(store, "data/vector-page-window.parquet");
+    const metadata = await readParquetMetadata(store, "data/vector-page-window.parquet");
+    const compressedChunkBytes = Number(
+      metadata.row_groups[0]?.columns.find(
+        (column) => column.meta_data?.path_in_schema.join(".") === "payload",
+      )?.meta_data?.total_compressed_size ?? 0,
+    );
+    const ranges: number[] = [];
+    const countedFile: StoreAsyncBuffer = {
+      ...file,
+      async slice(start, end) {
+        ranges.push((end ?? file.byteLength) - start);
+        return await file.slice(start, end);
+      },
+    };
+
+    const rows = await collectVectorRows(countedFile, metadata, {
+      columns: ["payload"],
+      rowStart: 0,
+      rowEnd: 2,
+      batchSize: 2,
+      stats: queryStats(),
+    });
+
+    expect(rows).toEqual([
+      {
+        payload:
+          "payload-0-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      },
+      {
+        payload:
+          "payload-1-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      },
+    ]);
+    expect(ranges.reduce((sum, bytes) => sum + bytes, 0)).toBeLessThan(compressedChunkBytes);
+  });
+
+  it("streams pages for full row ranges when the consumer can stop early", async () => {
+    const store = memoryStore();
+    await writeParquet(store, "data/vector-early-stop.parquet", {
+      rowGroupSize: [256],
+      pageSize: 512,
+      columnData: [
+        {
+          name: "payload",
+          data: Array.from({ length: 256 }, (_, index) => `payload-${index}-${"x".repeat(96)}`),
+          type: "STRING",
+        },
+      ],
+    });
+    const file = await fileBuffer(store, "data/vector-early-stop.parquet");
+    const metadata = await readParquetMetadata(store, "data/vector-early-stop.parquet");
+    const compressedChunkBytes = Number(
+      metadata.row_groups[0]?.columns.find(
+        (column) => column.meta_data?.path_in_schema.join(".") === "payload",
+      )?.meta_data?.total_compressed_size ?? 0,
+    );
+    const ranges: number[] = [];
+    const countedFile: StoreAsyncBuffer = {
+      ...file,
+      async slice(start, end) {
+        ranges.push((end ?? file.byteLength) - start);
+        return await file.slice(start, end);
+      },
+    };
+    const batches = [];
+
+    for await (const batch of readParquetVectorBatchesFromFile(countedFile, metadata, {
+      columns: ["payload"],
+      batchSize: 2,
+      canStopEarly: true,
+      stats: queryStats(),
+    })) {
+      batches.push(batch);
+      break;
+    }
+
+    expect(
+      materializeBatchRows(batches[0]?.batch ?? { rowCount: 0, columns: {} }).slice(0, 2),
+    ).toEqual([
+      {
+        payload:
+          "payload-0-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      },
+      {
+        payload:
+          "payload-1-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      },
+    ]);
+    expect(ranges.reduce((sum, bytes) => sum + bytes, 0)).toBeLessThan(compressedChunkBytes);
+  });
+
   it("returns no direct batches for empty or unsupported vector requests", async () => {
     const store = memoryStore();
     await writeParquet(store, "data/vector-capability.parquet", {

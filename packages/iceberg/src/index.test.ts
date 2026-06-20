@@ -1124,6 +1124,89 @@ describe("loadIcebergTable", () => {
     ]);
   });
 
+  it("reuses manifest-list and manifest reads across hydrated snapshots", async () => {
+    const baseStore = memoryStore();
+    const reads = new Map<string, number>();
+    const countedStore: ObjectStore = {
+      async get(path) {
+        reads.set(path, (reads.get(path) ?? 0) + 1);
+        return await baseStore.get(path);
+      },
+      getRange(path, range) {
+        return baseStore.getRange(path, range);
+      },
+      put(path, body, options) {
+        return baseStore.put(path, body, options);
+      },
+      delete(path) {
+        return baseStore.delete(path);
+      },
+      list(prefix, options) {
+        return baseStore.list(prefix, options);
+      },
+      head(path) {
+        return baseStore.head(path);
+      },
+    };
+    await baseStore.put(
+      "metadata.json",
+      new TextEncoder().encode(
+        JSON.stringify({
+          "format-version": 2,
+          "table-uuid": "table",
+          location: "memory",
+          "current-snapshot-id": 2,
+          schemas: [
+            { "schema-id": 1, fields: [{ id: 1, name: "id", type: "int", required: true }] },
+          ],
+          snapshots: [
+            {
+              "snapshot-id": 1,
+              "timestamp-ms": 1,
+              "schema-id": 1,
+              "manifest-list": "manifest-list.json",
+            },
+            {
+              "snapshot-id": 2,
+              "timestamp-ms": 2,
+              "schema-id": 1,
+              "manifest-list": "manifest-list.json",
+            },
+          ],
+        }),
+      ),
+    );
+    await baseStore.put(
+      "manifest-list.json",
+      new TextEncoder().encode(JSON.stringify([{ path: "manifests/shared.json" }])),
+    );
+    await baseStore.put(
+      "manifests/shared.json",
+      new TextEncoder().encode(
+        JSON.stringify({
+          path: "manifests/shared.json",
+          files: [
+            {
+              path: "data/shared.parquet",
+              sequenceNumber: 1,
+              partition: {},
+              recordCount: 2,
+              fileSizeInBytes: 10,
+            },
+          ],
+        }),
+      ),
+    );
+
+    const table = await loadIcebergTable({ store: countedStore, metadataPath: "metadata.json" });
+
+    expect(table.planFiles({ snapshotId: 1 }).files).toHaveLength(1);
+    expect(table.planFiles({ snapshotId: 2 }).files).toHaveLength(1);
+    expect(reads.get("metadata.json")).toBe(1);
+    expect(reads.get("manifest-list.json")).toBe(1);
+    expect(reads.get("manifests/shared.json")).toBe(1);
+  });
+
   it("counts manifest pruning against generated Iceberg metadata fixtures", async () => {
     const table = await loadIcebergTable({
       store,

@@ -83,6 +83,7 @@ export async function* readParquetVectorBatchesFromFile(
       rowGroup,
       columns,
       rowGroupStart,
+      rowGroupEnd,
       Math.max(rowGroupStart, requestedStart),
       Math.min(rowGroupEnd, requestedEnd),
       options,
@@ -231,6 +232,7 @@ function columnVectorSources(
   rowGroup: RowGroupMetadata,
   columns: string[],
   rowGroupStart: number,
+  rowGroupEnd: number,
   requestedStart: number,
   requestedEnd: number,
   options: ReadParquetBatchOptions,
@@ -247,6 +249,7 @@ function columnVectorSources(
           metadataForColumn,
           column,
           rowGroupStart,
+          rowGroupEnd,
           requestedStart,
           requestedEnd,
           options,
@@ -365,6 +368,7 @@ async function* readColumnVectorBatches(
   columnMetadata: ColumnMetaData,
   column: string,
   rowGroupStart: number,
+  rowGroupEnd: number,
   requestedStart: number,
   requestedEnd: number,
   options: ReadParquetBatchOptions,
@@ -374,6 +378,25 @@ async function* readColumnVectorBatches(
   );
   const compressedSize = safeNumber(columnMetadata.total_compressed_size);
   if (chunkStart === undefined || compressedSize === undefined) return;
+  if (
+    options.canStopEarly === true ||
+    requestedStart > rowGroupStart ||
+    requestedEnd < rowGroupEnd
+  ) {
+    yield* readColumnWindowVectorBatches(
+      file,
+      metadata,
+      columnMetadata,
+      column,
+      rowGroupStart,
+      requestedStart,
+      requestedEnd,
+      chunkStart,
+      chunkStart + compressedSize,
+      options,
+    );
+    return;
+  }
   const buffer = await file.slice(chunkStart, chunkStart + compressedSize);
   const reader = { view: new DataView(buffer), offset: 0 };
   const schemaPath = getSchemaPath(metadata.schema, columnMetadata.path_in_schema);
@@ -459,6 +482,155 @@ async function* readColumnVectorBatches(
     }
     pageRowStart = pageRowEnd;
   }
+}
+
+async function* readColumnWindowVectorBatches(
+  file: StoreAsyncBuffer,
+  metadata: ParquetMetadata,
+  columnMetadata: ColumnMetaData,
+  column: string,
+  rowGroupStart: number,
+  requestedStart: number,
+  requestedEnd: number,
+  chunkStart: number,
+  chunkEnd: number,
+  options: ReadParquetBatchOptions,
+): AsyncIterable<ParquetVectorBatch> {
+  const schemaPath = getSchemaPath(metadata.schema, columnMetadata.path_in_schema);
+  const leaf = schemaPath[schemaPath.length - 1];
+  if (leaf === undefined) return;
+  const columnDecoder = {
+    pathInSchema: columnMetadata.path_in_schema,
+    element: leaf.element,
+    schemaPath,
+    parsers: { ...DEFAULT_PARSERS, ...lakeqlParquetParsers },
+    compressors: lakeqlParquetCompressors,
+    ...columnMetadata,
+  } satisfies ColumnDecoder;
+  let dictionary: DecodedArray | undefined;
+  let pageRowStart = rowGroupStart;
+  let offset = 0;
+  while (chunkStart + offset < chunkEnd && pageRowStart < requestedEnd) {
+    const page = await readPageWindow(file, chunkStart, chunkEnd, offset);
+    if (page === undefined) return;
+    offset += page.headerBytes + page.header.compressed_page_size;
+    if (page.header.type === "DICTIONARY_PAGE") {
+      dictionary = dictionaryPageValues(
+        page.compressedBytes,
+        page.header,
+        columnDecoder,
+        column,
+        rowGroupStart,
+        page.bodyOffset,
+        file,
+        options,
+      );
+      continue;
+    }
+    const rowCount = dataPageRowCount(page.header);
+    if (rowCount === undefined) continue;
+    const pageRowEnd = pageRowStart + rowCount;
+    if (pageRowEnd <= requestedStart || pageRowStart >= requestedEnd) {
+      pageRowStart = pageRowEnd;
+      continue;
+    }
+    const start = Math.max(pageRowStart, requestedStart);
+    const end = Math.min(pageRowEnd, requestedEnd);
+    if (start < end) {
+      const cache = options.decodedColumnCache;
+      const key =
+        cache === undefined || options.decodedColumnCacheKey === undefined
+          ? undefined
+          : decodedColumnPageCacheKey({
+              path: options.decodedColumnCacheKey,
+              byteLength: file.byteLength,
+              ...(file.etag === undefined ? {} : { etag: file.etag }),
+              column,
+              rowGroupStart,
+              pageRowStart,
+              pageRowEnd,
+              pageOffset: page.bodyOffset,
+              compressedPageSize: page.header.compressed_page_size,
+            });
+      const cached = key === undefined || cache === undefined ? undefined : cache.getVector(key);
+      let vector: Vector;
+      if (cached !== undefined) {
+        vector = cached;
+      } else {
+        const values = dataPageValues(page.compressedBytes, page.header, columnDecoder, dictionary);
+        if (values === undefined) continue;
+        vector = flatPageVector(
+          values.values,
+          values.definitionLevels,
+          0,
+          rowCount,
+          values.dictionary,
+        );
+        if (key !== undefined && cache !== undefined) cache.setVector(key, vector);
+      }
+      if (key !== undefined && options.stats !== undefined) {
+        if (cached === undefined) options.stats.cacheMisses += 1;
+        else options.stats.cacheHits += 1;
+      }
+      yield {
+        rowOffset: start,
+        batch: batchFromVectors({
+          [column]: sliceVector(vector, start - pageRowStart, end - pageRowStart),
+        }),
+      };
+    }
+    pageRowStart = pageRowEnd;
+  }
+}
+
+interface PageWindow {
+  header: PageHeader;
+  headerBytes: number;
+  bodyOffset: number;
+  compressedBytes: Uint8Array;
+}
+
+async function readPageWindow(
+  file: StoreAsyncBuffer,
+  chunkStart: number,
+  chunkEnd: number,
+  offset: number,
+): Promise<PageWindow | undefined> {
+  const absoluteOffset = chunkStart + offset;
+  if (absoluteOffset >= chunkEnd) return undefined;
+  const header = await readPageHeader(file, absoluteOffset, chunkEnd);
+  const bodyOffset = absoluteOffset + header.headerBytes;
+  const bodyEnd = bodyOffset + header.header.compressed_page_size;
+  if (bodyEnd > chunkEnd) return undefined;
+  const body = await file.slice(bodyOffset, bodyEnd);
+  return {
+    ...header,
+    bodyOffset,
+    compressedBytes: new Uint8Array(body),
+  };
+}
+
+async function readPageHeader(
+  file: StoreAsyncBuffer,
+  absoluteOffset: number,
+  chunkEnd: number,
+): Promise<{ header: PageHeader; headerBytes: number }> {
+  let size = 256;
+  let lastError: unknown;
+  while (absoluteOffset + size <= chunkEnd || size === 256) {
+    const end = Math.min(chunkEnd, absoluteOffset + size);
+    const bytes = await file.slice(absoluteOffset, end);
+    const reader = { view: new DataView(bytes), offset: 0 };
+    try {
+      const header = parquetHeader(reader);
+      return { header, headerBytes: reader.offset };
+    } catch (cause) {
+      lastError = cause;
+      if (end === chunkEnd) break;
+      size *= 4;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("Unable to read Parquet page header");
 }
 
 function dataPageRowCount(header: PageHeader): number | undefined {

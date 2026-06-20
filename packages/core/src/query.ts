@@ -101,6 +101,7 @@ export interface ScanOptions {
   where?: Expr;
   rowStart?: number;
   rowEnd?: number;
+  canStopEarly?: boolean;
   batchSize: number;
   stats: QueryStats;
   budget: QueryBudget;
@@ -625,6 +626,7 @@ export class QueryResult {
         now: config.now,
         startedAt,
       };
+      if (config.limit !== undefined) scanOptions.canStopEarly = true;
       const partitionValues = config.hive ? parseHivePartitions(object.path) : {};
       const physicalColumns = readColumns?.filter((column) => !(column in partitionValues));
       if (physicalColumns !== undefined && physicalColumns.length > 0) {
@@ -683,6 +685,7 @@ export class QueryResult {
         now: config.now,
         startedAt,
       };
+      if (config.limit !== undefined) scanOptions.canStopEarly = true;
       const partitionValues = config.hive ? parseHivePartitions(object.path) : {};
       const physicalColumns = columns?.filter((column) => !(column in partitionValues));
       if (physicalColumns !== undefined && physicalColumns.length > 0) {
@@ -766,6 +769,7 @@ export class QueryResult {
         now: config.now,
         startedAt,
       };
+      if (config.limit !== undefined) scanOptions.canStopEarly = true;
       if (columns !== undefined && columns.length > 0) scanOptions.columns = columns;
       if (config.where !== undefined) scanOptions.where = config.where;
       if (config.where === undefined && (config.offset ?? 0) === 0 && config.limit !== undefined) {

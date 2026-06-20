@@ -12,6 +12,7 @@ export interface ReadParquetOptions {
 export interface ReadParquetBatchOptions extends ReadParquetOptions {
   batchSize?: number;
   where?: Expr;
+  canStopEarly?: boolean;
   stats?: QueryStats;
   decodedColumnCache?: DecodedColumnCache;
   decodedColumnCacheKey?: string;

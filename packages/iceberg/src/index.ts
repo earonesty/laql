@@ -1180,28 +1180,83 @@ async function hydrateMetadataManifests(
 ): Promise<MetadataFile> {
   const hydrated = cloneMetadata(metadata);
   const tableLocation = tableLocationRef(hydrated.location);
-  for (const snapshot of hydrated.snapshots) {
-    throwIfAborted(controls.signal);
-    const manifestReferences =
-      snapshot.manifests ??
-      (snapshot["manifest-list"] !== undefined
-        ? await readManifestList(
-            store,
-            validateManifestSourcedPath(snapshot["manifest-list"], tableLocation),
-          )
-        : []);
-    const manifests = await Promise.all(
-      manifestReferences.map(async (manifest) => {
-        const manifestPath = validateManifestSourcedPath(manifest.path, tableLocation);
-        if (Array.isArray(manifest.files))
-          return validateManifestPaths(manifest, manifestPath, tableLocation);
-        return await readManifest(store, manifestPath, tableLocation);
-      }),
-    );
-    throwIfAborted(controls.signal);
-    snapshot.manifests = mergeDeleteManifests(manifests);
-  }
+  const cache: ManifestHydrationCache = {
+    lists: new Map(),
+    manifests: new Map(),
+  };
+  await Promise.all(
+    hydrated.snapshots.map(async (snapshot) => {
+      throwIfAborted(controls.signal);
+      snapshot.manifests = mergeDeleteManifests(
+        await hydrateSnapshotManifests(store, snapshot, tableLocation, cache, controls),
+      );
+      throwIfAborted(controls.signal);
+    }),
+  );
   return hydrated;
+}
+
+interface ManifestHydrationCache {
+  lists: Map<string, Promise<Manifest[]>>;
+  manifests: Map<string, Promise<Manifest>>;
+}
+
+async function hydrateSnapshotManifests(
+  store: ObjectStore,
+  snapshot: Snapshot,
+  tableLocation: IcebergTableLocationRef,
+  cache: ManifestHydrationCache,
+  controls: ObjectStoreReadControls,
+): Promise<Manifest[]> {
+  const manifestReferences =
+    snapshot.manifests ??
+    (snapshot["manifest-list"] !== undefined
+      ? await cachedManifestList(
+          store,
+          validateManifestSourcedPath(snapshot["manifest-list"], tableLocation),
+          cache,
+        )
+      : []);
+  return await Promise.all(
+    manifestReferences.map(async (manifest) => {
+      throwIfAborted(controls.signal);
+      const manifestPath = validateManifestSourcedPath(manifest.path, tableLocation);
+      if (Array.isArray(manifest.files))
+        return validateManifestPaths(manifest, manifestPath, tableLocation);
+      return await cachedManifest(store, manifestPath, tableLocation, cache);
+    }),
+  );
+}
+
+function cachedManifestList(
+  store: ObjectStore,
+  path: string,
+  cache: ManifestHydrationCache,
+): Promise<Manifest[]> {
+  const cached = cache.lists.get(path);
+  if (cached !== undefined) return cached;
+  const promise = readManifestList(store, path).catch((cause) => {
+    cache.lists.delete(path);
+    throw cause;
+  });
+  cache.lists.set(path, promise);
+  return promise;
+}
+
+function cachedManifest(
+  store: ObjectStore,
+  path: string,
+  tableLocation: IcebergTableLocationRef,
+  cache: ManifestHydrationCache,
+): Promise<Manifest> {
+  const cached = cache.manifests.get(path);
+  if (cached !== undefined) return cached;
+  const promise = readManifest(store, path, tableLocation).catch((cause) => {
+    cache.manifests.delete(path);
+    throw cause;
+  });
+  cache.manifests.set(path, promise);
+  return promise;
 }
 
 function mergeDeleteManifests(manifests: Manifest[]): Manifest[] {

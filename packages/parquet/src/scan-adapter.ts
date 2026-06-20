@@ -118,6 +118,7 @@ export class ParquetScanAdapter implements ScanAdapter {
         ...(options.rowEnd === undefined ? {} : { rowEnd: options.rowEnd }),
         ...(options.columns === undefined ? {} : { columns: options.columns }),
         ...(options.where === undefined ? {} : { where: options.where }),
+        ...(options.canStopEarly === undefined ? {} : { canStopEarly: options.canStopEarly }),
         ...(this.decodedColumnCache === undefined
           ? {}
           : {
@@ -143,6 +144,7 @@ export class ParquetScanAdapter implements ScanAdapter {
         ...(options.rowEnd === undefined ? {} : { rowEnd: options.rowEnd }),
         ...(options.columns === undefined ? {} : { columns: options.columns }),
         ...(options.where === undefined ? {} : { where: options.where }),
+        ...(options.canStopEarly === undefined ? {} : { canStopEarly: options.canStopEarly }),
         ...(this.decodedColumnCache === undefined
           ? {}
           : {
