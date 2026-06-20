@@ -76,8 +76,10 @@ let duckState:
       db: duckdb.AsyncDuckDB;
       conn: duckdb.AsyncDuckDBConnection;
       initMs: number;
+      fileName: string;
     }>
   | undefined;
+let duckFreshRunId = 0;
 let initialSqlText: string | undefined;
 
 const highlight = HighlightStyle.define([
@@ -170,6 +172,13 @@ function applyAst(builder: ReturnType<Lake["path"]>, ast: ReturnType<typeof pars
 
 function datasetProxyUrl(): string {
   return new URL(DATASET_PROXY_PATH, window.location.href).href;
+}
+
+function duckDatasetProxyUrl(fileName: string): string {
+  if (fileName === DATASET_KEY) return datasetProxyUrl();
+  const url = new URL(datasetProxyUrl());
+  url.searchParams.set("duckdb_run", fileName);
+  return url.href;
 }
 
 function datasetProxyBase(): string {
@@ -296,7 +305,7 @@ async function runLakeql(
   };
 }
 
-async function initDuckDb() {
+async function initDuckDb(fileName: string) {
   if (duckState) return duckState;
   duckState = (async () => {
     await ensureCompareProxy();
@@ -309,10 +318,15 @@ async function initDuckDb() {
     const worker = new Worker(bundle.mainWorker ?? duckdbWorkerMvp);
     const db = new duckdb.AsyncDuckDB(new duckdb.VoidLogger(), worker);
     await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
-    await db.registerFileURL(DATASET_KEY, datasetProxyUrl(), duckdb.DuckDBDataProtocol.HTTP, true);
-    await db.collectFileStatistics(DATASET_KEY, true);
+    await db.registerFileURL(
+      fileName,
+      duckDatasetProxyUrl(fileName),
+      duckdb.DuckDBDataProtocol.HTTP,
+      true,
+    );
+    await db.collectFileStatistics(fileName, true);
     const conn = await db.connect();
-    return { db, conn, initMs: performance.now() - started };
+    return { db, conn, initMs: performance.now() - started, fileName };
   })();
   return duckState;
 }
@@ -329,9 +343,14 @@ async function runDuckDb(
   sqlText: string,
 ): Promise<{ rows: Row[]; ms: number; initMs: number; stats: Stats }> {
   await resetProxyStats();
+  const fileName = duckCacheMode === "fresh" ? `${duckFreshRunId++}-${DATASET_KEY}` : DATASET_KEY;
   if (duckCacheMode === "fresh") await resetDuckDb();
-  const { conn, initMs } = await initDuckDb();
-  const duckSql = sqlText.replace(/\bfrom\s+flights\.parquet\b/giu, `from '${DATASET_KEY}'`);
+  const state = await initDuckDb(fileName);
+  if (state.fileName !== fileName) {
+    await resetDuckDb();
+  }
+  const { conn, initMs } = state.fileName === fileName ? state : await initDuckDb(fileName);
+  const duckSql = sqlText.replace(/\bfrom\s+flights\.parquet\b/giu, `from '${fileName}'`);
   const started = performance.now();
   const table = await conn.query(duckSql);
   return {
