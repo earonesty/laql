@@ -14,6 +14,8 @@ fi
 docker build -t "$IMAGE" "$SCRIPT_DIR"
 mkdir -p "$OUT_DIR"
 docker run --rm \
+  --user "$(id -u):$(id -g)" \
+  -e HOME=/tmp \
   -v "$OUT_DIR:/out" \
   "$IMAGE" \
   --output /out
