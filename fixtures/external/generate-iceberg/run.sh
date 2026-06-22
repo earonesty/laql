@@ -14,8 +14,9 @@ fi
 docker build -t "$IMAGE" "$SCRIPT_DIR"
 mkdir -p "$OUT_DIR"
 docker run --rm \
-  --user "$(id -u):$(id -g)" \
-  -e HOME=/tmp \
+  -e LAKEQL_HOST_UID="$(id -u)" \
+  -e LAKEQL_HOST_GID="$(id -g)" \
   -v "$OUT_DIR:/out" \
+  --entrypoint sh \
   "$IMAGE" \
-  --output /out
+  -c 'python /work/generate.py --output /out; status=$?; chown -R "$LAKEQL_HOST_UID:$LAKEQL_HOST_GID" /out; exit "$status"'
