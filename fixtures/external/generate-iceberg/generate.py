@@ -27,7 +27,7 @@ def main() -> None:
     args = parse_args()
     output = Path(args.output).resolve()
     if args.case is None and output.exists():
-        shutil.rmtree(output)
+        empty_directory(output)
     output.mkdir(parents=True, exist_ok=True)
 
     cases: list[tuple[str, Callable[[Path], dict[str, Any]]]] = [
@@ -69,6 +69,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", required=True, help="Output directory mounted from fixtures/external/iceberg-reference")
     parser.add_argument("--case", help="Generate one case, used internally for isolated Spark subprocesses")
     return parser.parse_args()
+
+
+def empty_directory(path: Path) -> None:
+    if not path.is_dir():
+        raise NotADirectoryError(f"output path exists but is not a directory: {path}")
+    for child in path.iterdir():
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
 
 
 def generate_spark_v1_table(case_dir: Path) -> dict[str, Any]:

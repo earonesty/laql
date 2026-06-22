@@ -26,6 +26,9 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Validate Iceberg fixture generator
+        run: python fixtures/external/generate-iceberg/generate_test.py
+
       - name: Generate Spark/PyIceberg reference fixtures
         run: pnpm fixtures:iceberg
 
