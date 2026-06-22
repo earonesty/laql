@@ -44,6 +44,7 @@ jobs:
           LAKEQL_REQUIRE_EXTERNAL_ICEBERG: "1"
 
       - name: Open fixture update pull request
+        continue-on-error: true
         uses: peter-evans/create-pull-request@v6
         with:
           branch: automation/iceberg-reference-fixtures
@@ -56,6 +57,7 @@ jobs:
             fixtures/external/CHECKSUMS.txt
 
       - name: Upload generated fixtures
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: iceberg-reference-fixtures
