@@ -1,5 +1,13 @@
 # lakeql-arrow
 
+## 0.0.5
+
+### Patch Changes
+
+- 87aec8a: Add WKB geometry values, GeoParquet geometry byte ingestion, and vectorized `st_contains`/`st_within` spatial predicates for browser/R2 benchmark parity.
+- Updated dependencies [87aec8a]
+  - lakeql-core@0.2.0
+
 ## 0.0.4
 
 ### Patch Changes
